@@ -46,6 +46,21 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Windows cmd(cp949)에서 이모지·박스문자 출력이 UnicodeEncodeError 로 죽는 것을 방지.
+# src 를 import 하기 전에 먼저 걸어둡니다.
+if os.name == "nt":
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+    for _s in (sys.stdout, sys.stderr):
+        try:
+            _s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 # 청크 별칭 → filekey
 CHUNKS: dict[str, dict] = {
     "VL01": {"filekey": "517022", "gb": 21, "desc": "Validation 라벨"},

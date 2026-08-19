@@ -160,8 +160,23 @@ py prepare_local.py --package
 **`aihubshell 은 bash 스크립트라...` 오류**
 → Git for Windows 설치. 설치 후 **명령 프롬프트를 새로 열어야** PATH 가 반영됩니다.
 
-**`UnicodeDecodeError` 또는 한글이 깨짐**
-→ cmd 의 기본 인코딩 문제입니다. 실행 전에:
+**`pip install -r requirements.txt` 에서 `UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2`**
+
+Windows pip 은 `requirements.txt` 를 **시스템 로케일(한국어 Windows = cp949)** 로 읽습니다.
+파일에 한글이나 `─`, `→` 같은 문자가 하나라도 있으면 이 오류로 죽습니다.
+
+→ 이미 고쳤습니다. `git pull` 후 다시 실행하세요.
+   (`requirements.txt` 를 순수 ASCII 로 유지합니다. 편집할 때 한글을 넣지 마세요)
+
+**`UnicodeEncodeError: 'cp949' codec can't encode character '\u2705'`**
+
+반대 방향 문제입니다. cmd 가 `✅`, `⚠️`, `★` 같은 문자를 **출력**하지 못해서 죽습니다.
+
+→ 이것도 고쳤습니다. `prepare_local.py` 와 `src/env.py` 가 시작할 때
+   콘솔을 UTF-8 로 바꾸고, 그래도 못 찍는 글자는 대체 문자로 넘깁니다.
+   로그 한 줄 때문에 몇십 분짜리 전처리가 죽으면 안 되니까요.
+
+수동으로 하려면:
 ```cmd
 chcp 65001
 set PYTHONUTF8=1

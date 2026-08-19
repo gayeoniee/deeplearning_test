@@ -24,6 +24,32 @@ from typing import Literal
 
 EnvName = Literal["colab", "kaggle", "local"]
 
+
+def _fix_console_encoding() -> None:
+    """Windows 콘솔에서 한글·이모지 출력이 죽지 않게 합니다.
+
+    한국어 Windows 의 cmd 는 기본 코드페이지가 cp949 라서, 이 프로젝트가 쓰는
+    ✅ ⚠️ ★ ─ 같은 문자를 인코딩하지 못하고 UnicodeEncodeError 로 죽습니다.
+    출력 스트림을 UTF-8 로 바꾸고, 그래도 못 찍는 글자는 대체 문자로 넘깁니다
+    (로그 한 줄 때문에 몇십 분짜리 전처리가 죽는 것보다 낫습니다).
+    """
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)   # UTF-8 코드페이지
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_fix_console_encoding()
+
 # GPU 이름 → 대략적인 VRAM(GB). 배치 크기 자동 추천에만 씁니다.
 _VRAM_HINT = {
     "T4": 16, "P100": 16, "V100": 16, "L4": 24, "A100": 40,
