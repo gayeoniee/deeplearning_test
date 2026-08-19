@@ -104,6 +104,67 @@ def test_bbox_in_crop_matches_expand_box():
         assert abs(a - b) < 1e-9
 
 
+def test_polygon_maps_into_crop():
+    """polygon 도 bbox 와 같은 창으로 옮겨져야 합니다."""
+    bbox = [860, 440, 1060, 640]
+    poly = [[880, 460], [1040, 460], [1040, 620], [880, 620]]
+    g = crop.geometry_in_crop(
+        {"bbox": bbox, "polygon": poly, "img_w": 1920, "img_h": 1080}, tag="m1.5")
+    assert g["bbox"] is not None and g["polygon"] is not None
+    assert len(g["polygon"]) == 4
+    assert all(0.0 <= v <= 1.0 for p in g["polygon"] for v in p)
+    # polygon 이 bbox 안쪽에 있었으니 옮긴 뒤에도 안쪽이어야 합니다
+    xs = [p[0] for p in g["polygon"]]; ys = [p[1] for p in g["polygon"]]
+    assert min(xs) >= g["bbox"][0] - 1e-9 and max(xs) <= g["bbox"][2] + 1e-9
+    assert min(ys) >= g["bbox"][1] - 1e-9 and max(ys) <= g["bbox"][3] + 1e-9
+
+
+def test_polygon_absent_is_none():
+    g = crop.geometry_in_crop({"bbox": [10, 10, 50, 50], "img_w": 200, "img_h": 200},
+                              tag="m1.5")
+    assert g["polygon"] is None
+    # 점이 2개뿐이면 다각형이 아니므로 버립니다
+    g2 = crop.geometry_in_crop({"bbox": [10, 10, 50, 50], "polygon": [[11, 11], [20, 20]],
+                                "img_w": 200, "img_h": 200}, tag="m1.5")
+    assert g2["polygon"] is None
+
+
+def test_crop_rel_survives_windows_to_linux():
+    """★ 실제로 당한 버그: Windows 에서 만든 crop_rel 은 역슬래시입니다.
+
+    'm1.5\\ab\\file.jpg' 를 리눅스에서 그냥 이어붙이면 파일명 한 덩어리가 되어
+    45,885개 전부 "파일 없음" 이 됩니다. 그런데 switch_tag 는 경로를 다시 계산하니
+    잘 되어서, 두 함수가 서로 다른 답을 내는 상태가 됩니다.
+    """
+    import tempfile
+
+    from src import labels
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td) / "crops"
+        target = root / "m1.5" / "ab" / "img_deadbeef.jpg"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"x")
+
+        import os
+
+        old = os.environ.get("DOG_SKIN_WORK")
+        os.environ["DOG_SKIN_WORK"] = td
+        try:
+            import pandas as pd
+
+            for rel in ("m1.5/ab/img_deadbeef.jpg",          # 리눅스에서 만든 것
+                        "m1.5\\ab\\img_deadbeef.jpg"):        # Windows 에서 만든 것
+                out = labels.rebase_paths(pd.DataFrame([{"crop_rel": rel}]))
+                p = out["crop_path"].iloc[0]
+                assert Path(p).exists(), f"rebase 실패: {rel!r} → {p!r}"
+        finally:
+            if old is None:
+                os.environ.pop("DOG_SKIN_WORK", None)
+            else:
+                os.environ["DOG_SKIN_WORK"] = old
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     fails = 0

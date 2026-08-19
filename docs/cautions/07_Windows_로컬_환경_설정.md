@@ -208,4 +208,42 @@ py -m pip install numpy pandas pillow scikit-learn imagehash pyarrow tqdm matplo
 
 ---
 
+## Colab 으로 넘어갈 때 — 경로 구분자 문제
+
+인코딩 다음으로 Windows↔리눅스에서 조용히 터지는 지점입니다.
+
+**증상**: Colab 에서 `⚠️ 크롭 파일 45,885/45,885개를 찾을 수 없습니다` 가 뜨는데,
+`crop.available_tags()` 는 `['full','m1.5','m2.5']` 를 잘 찾고
+`crop.switch_tag()` 도 "45,885/45,885장 존재" 라고 합니다. **두 함수가 반대 답을 냅니다.**
+
+**원인**: 매니페스트의 `crop_rel` 이 Windows 에서 만들어져
+`m1.5\ab\file.jpg` 처럼 **역슬래시**입니다. 리눅스에서 이걸 경로에 이어붙이면
+디렉터리 구분이 아니라 **파일명 한 덩어리**가 됩니다:
+
+```
+/content/data/work/crops/m1.5\ab\file.jpg     ← 이런 이름의 파일은 없음
+/content/data/work/crops/m1.5/ab/file.jpg     ← 실제로 있는 곳
+```
+
+`switch_tag()` 는 `image_path` 해시로 경로를 **다시 계산**하기 때문에 영향을 안 받고,
+그래서 학습은 그냥 돌아갑니다 — 경고만 이상하게 뜨는 상태가 됩니다.
+
+→ 고쳤습니다. `git pull` 후 다시 실행하세요.
+   (저장할 때 `Path.as_posix()`, 읽을 때 역슬래시를 `/` 로 정규화)
+
+> 💡 **원본 이미지는 Colab 에 없습니다.** `--package` 는 크롭과 매니페스트만 담고
+> 원본 21GB 는 로컬에 남습니다. 그래서 `image_path` 는 Colab 에서 열 수 없는
+> 경로이고, 원본이 필요한 기능들은 **크롭 좌표계로 대체 계산**합니다:
+>
+> | 기능 | 원본 있을 때 | 원본 없을 때 (Colab) |
+> |---|---|---|
+> | `crop.preview_with_box()` | 원본 위에 박스 | 크롭 위에 박스 (창을 되돌려 재계산) |
+> | `explain.lesion_overlap_score()` | 원본 좌표 기준 lift | 크롭 좌표 기준 lift |
+>
+> 둘 다 `frame="auto"` 가 기본이라 알아서 내려갑니다.
+> `crop.geometry_in_crop()` 이 그 재계산을 담당하고,
+> `tests/test_crop_geometry.py` 가 `expand_box()` 와 같은 창을 쓰는지 대조합니다.
+
+---
+
 **관련 문서**: [`06_해외IP_다운로드_차단_우회.md`](06_해외IP_다운로드_차단_우회.md)

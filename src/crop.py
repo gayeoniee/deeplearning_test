@@ -173,8 +173,10 @@ def run(
     out["crop_tag"] = tag
     # ⚠️ 절대경로는 다른 기기(로컬 → Drive → Colab)로 옮기면 전부 깨집니다.
     #    크롭 루트 기준 상대경로를 함께 저장하고, 로드할 때 현재 경로로 다시 붙입니다.
+    # ⚠️ as_posix() 로 저장합니다. Windows 의 str() 은 역슬래시를 넣는데,
+    #    그 매니페스트를 Colab(리눅스)에서 읽으면 경로가 통째로 깨집니다.
     out["crop_rel"] = out["crop_path"].apply(
-        lambda p: str(Path(p).relative_to(out_dir)) if isinstance(p, str) else None
+        lambda p: Path(p).relative_to(out_dir).as_posix() if isinstance(p, str) else None
     )
 
     failed = out["crop_path"].isna().sum()
@@ -198,28 +200,24 @@ def margin_of_tag(tag: str) -> float:
         return 0.0
 
 
-def bbox_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> list[float] | None:
-    """병변 bbox 를 **크롭 이미지 기준 정규화 좌표(0~1)** 로 옮깁니다.
-
-    크롭은 원본을 열지 않고도 재현할 수 있습니다 — `expand_box()` 가
-    (bbox, img_w, img_h, margin) 만으로 결정되기 때문입니다.
-
-    이게 필요한 이유: 학습은 크롭만 올린 Colab 에서 하는데, Grad-CAM 게이트는
-    "CAM 이 병변 위에 있는가"를 재야 합니다. 원본이 없으니 크롭 좌표계로
-    병변 위치를 다시 계산해야 합니다. 정규화 좌표라 저장 해상도와 무관합니다.
-
-    돌려주는 값: [x1, y1, x2, y2] (0~1). 계산 불가면 None.
-    """
-    cfg = cfg or CFG()
-    bbox = row.get("bbox")
-    if isinstance(bbox, str):
+def _as_list(v):
+    if isinstance(v, str):
         try:
-            bbox = json.loads(bbox)
+            return json.loads(v)
         except Exception:
             return None
-    if not bbox or len(bbox) != 4:
-        return None
+    return v
 
+
+def crop_window(row, tag: str | None = None, cfg: CFG | None = None):
+    """크롭이 원본에서 어느 사각형을 잘라냈는지 되돌립니다.
+
+    원본을 열지 않고 계산할 수 있습니다 — `expand_box()` 가
+    (bbox, img_w, img_h, margin) 만으로 결정되기 때문입니다.
+    돌려주는 값: (x1, y1, x2, y2) 원본 픽셀 좌표. 계산 불가면 None.
+    """
+    cfg = cfg or CFG()
+    bbox = _as_list(row.get("bbox"))
     try:
         W, H = int(row["img_w"]), int(row["img_h"])
     except (KeyError, TypeError, ValueError):
@@ -227,27 +225,61 @@ def bbox_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> list[fl
     if W <= 0 or H <= 0:
         return None
 
-    tag = tag or row.get("crop_tag") or ""
-    margin = margin_of_tag(tag)
+    margin = margin_of_tag(tag or row.get("crop_tag") or "")
+    if margin > 0 and bbox and len(bbox) == 4:
+        return expand_box(bbox, W, H, margin=margin, min_px=cfg.crop_min_px)
 
-    if margin > 0:
-        wx1, wy1, wx2, wy2 = expand_box(bbox, W, H, margin=margin, min_px=cfg.crop_min_px)
-    else:
-        # 'full' 태그는 중앙 정사각 크롭이었습니다 (_crop_one 의 else 분기)
-        s = min(W, H)
-        wx1, wy1 = (W - s) // 2, (H - s) // 2
-        wx2, wy2 = wx1 + s, wy1 + s
+    # margin 이 없거나 bbox 가 없으면 중앙 정사각 크롭이었습니다 (_crop_one 의 else 분기)
+    s = min(W, H)
+    x1, y1 = (W - s) // 2, (H - s) // 2
+    return (x1, y1, x1 + s, y1 + s)
 
+
+def geometry_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> dict:
+    """병변 bbox/polygon 을 **크롭 이미지 기준 정규화 좌표(0~1)** 로 옮깁니다.
+
+    이게 필요한 이유: 학습은 크롭만 올린 Colab 에서 하는데,
+    "크롭이 병변을 담고 있는가"(눈으로 확인)와 "CAM 이 병변 위에 있는가"(게이트)를
+    둘 다 재야 합니다. 원본이 없으니 크롭 좌표계로 병변 위치를 다시 계산합니다.
+    정규화 좌표라 저장 해상도와 무관합니다.
+
+    돌려주는 값: {"bbox": [x1,y1,x2,y2] | None, "polygon": [[x,y],...] | None}
+    """
+    win = crop_window(row, tag, cfg)
+    if win is None:
+        return {"bbox": None, "polygon": None}
+    wx1, wy1, wx2, wy2 = win
     ww, wh = wx2 - wx1, wy2 - wy1
     if ww <= 0 or wh <= 0:
-        return None
+        return {"bbox": None, "polygon": None}
 
-    rel = [(bbox[0] - wx1) / ww, (bbox[1] - wy1) / wh,
-           (bbox[2] - wx1) / ww, (bbox[3] - wy1) / wh]
-    rel = [min(max(v, 0.0), 1.0) for v in rel]
-    if rel[2] - rel[0] <= 0 or rel[3] - rel[1] <= 0:
-        return None            # 크롭 밖으로 완전히 밀려난 경우 (full 태그에서 발생 가능)
-    return rel
+    def clip01(v):
+        return min(max(v, 0.0), 1.0)
+
+    out: dict = {"bbox": None, "polygon": None}
+
+    bbox = _as_list(row.get("bbox"))
+    if bbox and len(bbox) == 4:
+        rel = [clip01((bbox[0] - wx1) / ww), clip01((bbox[1] - wy1) / wh),
+               clip01((bbox[2] - wx1) / ww), clip01((bbox[3] - wy1) / wh)]
+        # 크롭 밖으로 완전히 밀려난 경우 (full 태그에서 발생 가능)
+        if rel[2] - rel[0] > 0 and rel[3] - rel[1] > 0:
+            out["bbox"] = rel
+
+    poly = _as_list(row.get("polygon"))
+    if poly:
+        try:
+            pts = [[clip01((p[0] - wx1) / ww), clip01((p[1] - wy1) / wh)] for p in poly]
+            if len(pts) >= 3:
+                out["polygon"] = pts
+        except (TypeError, IndexError):
+            pass
+    return out
+
+
+def bbox_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> list[float] | None:
+    """`geometry_in_crop()` 의 bbox 만. (0~1 정규화, 계산 불가면 None)"""
+    return geometry_in_crop(row, tag, cfg)["bbox"]
 
 
 def available_tags() -> list[str]:
@@ -266,7 +298,8 @@ def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True) -> pd.DataFrame
     out_dir = env.work_root() / "crops"
     out = df.copy()
     out["crop_path"] = out["image_path"].apply(lambda p: str(_out_path(p, out_dir, tag)))
-    out["crop_rel"] = out["crop_path"].apply(lambda p: str(Path(p).relative_to(out_dir)))
+    out["crop_rel"] = out["crop_path"].apply(
+        lambda p: Path(p).relative_to(out_dir).as_posix())
     out["crop_tag"] = tag
 
     exists = out["crop_path"].apply(lambda p: Path(p).exists())
@@ -323,33 +356,75 @@ def preview(df: pd.DataFrame, n: int = 8, by_class: bool = True, seed: int = 0) 
     plt.show()
 
 
-def preview_with_box(df: pd.DataFrame, n: int = 4, seed: int = 0) -> None:
-    """원본 이미지 위에 bbox/polygon 을 그려 좌표계가 맞는지 확인합니다."""
+def preview_with_box(df: pd.DataFrame, n: int = 4, seed: int = 0,
+                     frame: str = "auto", cfg: CFG | None = None) -> None:
+    """bbox/polygon 을 이미지 위에 그려 좌표계가 맞는지 확인합니다.
+
+    frame:
+      "original" — 원본 이미지 위에. 원본이 있는 환경(로컬)에서 가장 직관적입니다.
+      "crop"     — **크롭 이미지 위에.** 원본을 안 올린 Colab 용입니다.
+                   크롭 창을 되돌려(`geometry_in_crop`) 박스를 다시 그립니다.
+      "auto"     — 원본을 열어보고 안 되면 crop 으로 내려갑니다 (기본).
+    """
     import matplotlib.patches as patches
     import matplotlib.pyplot as plt
     from PIL import Image
 
-    picks = df[df["bbox"].notna()].sample(min(n, int(df["bbox"].notna().sum())),
-                                          random_state=seed)
-    fig, axes = plt.subplots(1, len(picks), figsize=(4.2 * len(picks), 4.4))
+    cfg = cfg or CFG()
+    sub = df[df["bbox"].notna()]
+    if not len(sub):
+        print("bbox 가 있는 행이 없습니다 — 보여줄 게 없습니다.")
+        return
+
+    if frame == "auto":
+        frame = "original"
+        probe = sub.head(20)
+        if not any(isinstance(p, str) and Path(p).exists() for p in probe["image_path"]):
+            frame = "crop"
+            print("[crop] 원본 이미지가 없어 **크롭 이미지 위에** 박스를 그립니다.")
+            print("       (로컬에서 만든 크롭만 업로드한 환경이면 정상입니다)")
+
+    picks = sub.sample(min(n, len(sub)), random_state=seed)
+    fig, axes = plt.subplots(1, len(picks), figsize=(4.2 * len(picks), 4.6))
     axes = [axes] if len(picks) == 1 else list(axes)
 
     for ax, (_, r) in zip(axes, picks.iterrows()):
-        with Image.open(r["image_path"]) as im:
-            ax.imshow(im.convert("RGB"))
-        b = r["bbox"]
-        if isinstance(b, str):
-            b = json.loads(b)
-        ax.add_patch(patches.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
-                                       fill=False, lw=2, edgecolor="red"))
-        poly = r.get("polygon")
-        if isinstance(poly, str):
-            poly = json.loads(poly)
+        try:
+            if frame == "crop":
+                with Image.open(r["crop_path"]) as im:
+                    im = im.convert("RGB")
+                    W, H = im.size
+                    ax.imshow(im)
+                g = geometry_in_crop(r, cfg=cfg)
+                # 정규화 좌표 → 이 크롭 이미지의 픽셀 좌표
+                b = [g["bbox"][0] * W, g["bbox"][1] * H,
+                     g["bbox"][2] * W, g["bbox"][3] * H] if g["bbox"] else None
+                poly = [[p[0] * W, p[1] * H] for p in g["polygon"]] if g["polygon"] else None
+                title = f"{r.get('label')}  크롭 {W}x{H} ({r.get('crop_tag')})"
+            else:
+                with Image.open(r["image_path"]) as im:
+                    ax.imshow(im.convert("RGB"))
+                b = _as_list(r.get("bbox"))
+                poly = _as_list(r.get("polygon"))
+                title = f"{r.get('label')}  원본 {r.get('img_w')}x{r.get('img_h')}"
+        except Exception as exc:
+            ax.text(0.5, 0.5, f"열기 실패\n{str(exc)[:60]}", ha="center", fontsize=8)
+            ax.axis("off")
+            continue
+
+        if b:
+            ax.add_patch(patches.Rectangle((b[0], b[1]), b[2] - b[0], b[3] - b[1],
+                                           fill=False, lw=2, edgecolor="red"))
         if poly:
             ax.add_patch(patches.Polygon(poly, fill=False, lw=1.5, edgecolor="yellow"))
-        ax.set_title(f"{r.get('label')}  {r.get('img_w')}x{r.get('img_h')}", fontsize=9)
+        ax.set_title(title, fontsize=9)
         ax.axis("off")
+
     plt.tight_layout()
     plt.show()
     print("빨강=bbox, 노랑=polygon. 병변 위에 정확히 얹혀 있어야 합니다.")
-    print("어긋나 있다면 labels.extract_geometry 의 좌표 해석이 틀린 것입니다.")
+    if frame == "crop":
+        print("💡 크롭 프레임이라 박스가 화면 가운데를 크게 차지하는 게 정상입니다")
+        print("   (margin 1.5 정사각이면 박스가 폭의 약 2/3). 박스가 병변을 감싸는지 보세요.")
+    else:
+        print("어긋나 있다면 labels 의 좌표 해석이 틀린 것입니다.")

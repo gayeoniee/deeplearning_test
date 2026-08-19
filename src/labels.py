@@ -742,9 +742,15 @@ def rebase_paths(df: pd.DataFrame) -> pd.DataFrame:
         return df
     root = env.work_root() / "crops"
     df = df.copy()
-    df["crop_path"] = df["crop_rel"].apply(
-        lambda r: str(root / r) if isinstance(r, str) else None
-    )
+
+    def join(r):
+        if not isinstance(r, str):
+            return None
+        # ⚠️ Windows 에서 만든 crop_rel 은 'm1.5\ab\file.jpg' 처럼 역슬래시입니다.
+        #    리눅스(Colab)에서 그대로 붙이면 파일명 한 덩어리가 되어 전부 "없음" 이 됩니다.
+        return str(root.joinpath(*r.replace("\\", "/").split("/")))
+
+    df["crop_path"] = df["crop_rel"].apply(join)
     missing = df["crop_path"].apply(lambda p: p is not None and not Path(p).exists())
     if missing.any():
         print(f"⚠️ 크롭 파일 {missing.sum():,}/{len(df):,}개를 찾을 수 없습니다.")
