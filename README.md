@@ -32,6 +32,15 @@ export AIHUB_API_KEY="발급받은키"
 python prepare_local.py --all
 ```
 
+데이터를 더 쓰고 싶으면 청크를 이어붙일 수 있습니다 (받고→정제→원본삭제 반복):
+
+```bash
+python prepare_local.py --chunk VL01     # 21GB
+python prepare_local.py --chunk TL01     # 90GB 추가
+python prepare_local.py --finalize       # ★ 마지막에 한 번 (교차 누수 방지)
+python prepare_local.py --package
+```
+
 원본 21GB → ROI 크롭 후 **2~5GB** 로 줄어들어 업로드가 현실적입니다.
 생성된 `dogskin_prepared.zip` 을 **Kaggle 에 비공개로** 올린 뒤 학습만 클라우드에서 하세요.
 
@@ -129,10 +138,10 @@ JSON 키를 추측해 박아두면 거의 확실히 틀립니다.
 
 ### ⚠️ 주의사항
 
-[`docs/cautions/`](docs/cautions/) — 5편.
+[`docs/cautions/`](docs/cautions/) — 6편.
 
 `01` 라이선스·재배포 · **`02` 데이터 누수** · `03` 의료AI 안전설계 ·
-`04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성
+`04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성 · **`06` 해외IP 다운로드 차단**
 
 ### 🗺️ 전체 진행표
 
