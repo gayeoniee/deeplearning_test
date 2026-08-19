@@ -431,6 +431,20 @@ def _as_xy(v: Any) -> list[tuple[float, float]]:
         v = nums
     if isinstance(v, dict):
         keys = {k.lower(): k for k in v}
+        # AI Hub 561 폴리곤: {"x1":..,"y1":..,"x2":..,"y2":.., ... "x111":..,"y111":..}
+        # 점 목록이 아니라 번호가 붙은 평평한 dict 입니다. 이걸 못 읽어서
+        # polygon 추출률이 0% 로 나왔습니다.
+        if "x1" in keys and "y1" in keys:
+            pts: list[tuple[float, float]] = []
+            i = 1
+            while f"x{i}" in keys and f"y{i}" in keys:
+                try:
+                    pts.append((float(v[keys[f"x{i}"]]), float(v[keys[f"y{i}"]])))
+                except (TypeError, ValueError):
+                    pass
+                i += 1
+            if len(pts) >= 2:
+                return pts
         if "x" in keys and "y" in keys:
             try:
                 x, y = float(v[keys["x"]]), float(v[keys["y"]])

@@ -34,8 +34,150 @@ from src.config import CLASSES, EXCLUDE_CAMERA, EXCLUDE_SPECIES, INCLUDE_CAMERA,
 IMG_EXT = scan.IMG_EXT
 
 
+# ══════════════════════════════════════════════════════════════
+# AI Hub 561 실제 스키마 전용 파서
+#
+# 실물 JSON 을 확인해서 확정한 구조입니다 (diagnose.py 출력 기준).
+# 이전에는 키를 추론했는데, 그 방식이 세 군데에서 조용히 틀렸습니다:
+#   · polygon 이 점 목록이 아니라 {"x1":..,"y1":..,"x2":..} 평평한 dict → 추출률 0%
+#   · 이미지 크기가 box 의 width/height 로 잡혀 병변 면적이 항상 100%
+#   · 라벨을 폴더명에서 읽어 무증상 사진에 병변 라벨이 붙음
+#
+# 실제 구조:
+#   metaData.lesions      A1~A6 = 병변, **A7 = 무증상**  ← 진짜 정답
+#   metaData.Path         유증상 / 무증상
+#   metaData.resolution   "1920X1080"  ← 이미지 크기는 여기 (문자열)
+#   metaData.species      D = 개, C = 고양이  ← 폴더가 반려견이어도 고양이가 섞여 있음
+#   metaData.합성유무      Y = 합성 이미지
+#   labelingInfo[].polygon.location[0]  {"x1","y1",...,"xN","yN"}
+#   labelingInfo[].box.location[0]      {"x","y","width","height"}
+#
+# ⚠️ 개체ID 필드가 없습니다. (breed, age, gender, date) 조합으로 대용합니다 —
+#    아래 surrogate_animal_id() 주석 참고.
+# ══════════════════════════════════════════════════════════════
+NORMAL_LESION_CODE = "A7"      # AI Hub 561 에서 무증상을 뜻하는 코드
+
+
+def _parse_resolution(s) -> tuple[int | None, int | None]:
+    """'1920X1080' → (1920, 1080)."""
+    if not isinstance(s, str):
+        return (None, None)
+    m = re.match(r"\s*(\d+)\s*[xX*×]\s*(\d+)\s*$", s)
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def _numbered_points(loc) -> list[list[float]]:
+    """{"x1":..,"y1":..,...} → [[x,y], ...]."""
+    if isinstance(loc, list):
+        loc = loc[0] if loc else {}
+    if not isinstance(loc, dict):
+        return []
+    pts: list[list[float]] = []
+    i = 1
+    while f"x{i}" in loc and f"y{i}" in loc:
+        try:
+            pts.append([float(loc[f"x{i}"]), float(loc[f"y{i}"])])
+        except (TypeError, ValueError):
+            pass
+        i += 1
+    return pts
+
+
+def _xywh_box(loc) -> list[float] | None:
+    """{"x":..,"y":..,"width":..,"height":..} → [x1,y1,x2,y2]."""
+    if isinstance(loc, list):
+        loc = loc[0] if loc else {}
+    if not isinstance(loc, dict):
+        return None
+    try:
+        x, y = float(loc["x"]), float(loc["y"])
+        w, h = float(loc["width"]), float(loc["height"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return [x, y, x + w, y + h]
+
+
+def surrogate_animal_id(meta: dict) -> str:
+    """개체ID 대용 키.
+
+    ⚠️ 이 데이터셋에는 개체(강아지) 식별자가 **없습니다.**
+       'Raw data ID' 는 이미지마다 고유하고, 파일명 번호도 전역 일련번호입니다.
+       그대로 두면 개체당 1장이 되어 그룹 분할이 무의미해집니다.
+
+    그래서 (종, 견종, 나이, 성별, 촬영일) 조합을 개체 대용으로 씁니다.
+    같은 날 촬영된 같은 견종·나이·성별 개체는 같은 강아지일 가능성이 매우 높습니다.
+
+    이 방식은 **과하게 묶는 쪽으로 틀립니다** — 서로 다른 두 마리가 한 그룹이 될 수는
+    있어도, 같은 강아지가 train/val 로 쪼개지지는 않습니다. 누수 방지 관점에서
+    안전한 방향의 오차입니다. (부위 region 은 같은 개체라도 사진마다 달라 제외)
+    """
+    parts = [str(meta.get(k, "")).strip() for k in
+             ("species", "breed", "age", "gender", "date")]
+    return "G_" + "|".join(parts)
+
+
+def parse_record_561(rec: dict, path_hint: str = "") -> dict | None:
+    """AI Hub 561 레코드 하나를 표준 필드로 변환합니다. 스키마가 다르면 None."""
+    meta = rec.get("metaData")
+    if not isinstance(meta, dict):
+        return None
+
+    lesion = str(meta.get("lesions", "")).strip().upper()
+    if not re.fullmatch(r"A[1-7]", lesion):
+        # 폴더명에서라도 건져봅니다 (metaData 가 비어 있는 소수 케이스)
+        m = re.search(r"\b(A[1-7])\b", path_hint)
+        lesion = m.group(1) if m else ""
+
+    w, h = _parse_resolution(meta.get("resolution"))
+
+    polygon: list[list[float]] | None = None
+    bbox: list[float] | None = None
+    n_lesion = 0
+    for item in rec.get("labelingInfo") or []:
+        if not isinstance(item, dict):
+            continue
+        if "polygon" in item and polygon is None:
+            pts = _numbered_points(item["polygon"].get("location"))
+            if len(pts) >= 3:
+                polygon = pts
+        if "box" in item and bbox is None:
+            bbox = _xywh_box(item["box"].get("location"))
+        n_lesion += 1
+
+    if bbox is None and polygon:
+        xs = [p[0] for p in polygon]
+        ys = [p[1] for p in polygon]
+        bbox = [min(xs), min(ys), max(xs), max(ys)]
+
+    area = None
+    if bbox and w and h:
+        area = min(max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / (w * h), 1.0)
+
+    name = str(meta.get("Raw data ID") or "").strip()
+    return {
+        "image_name": Path(name).name if name else None,
+        "label": lesion or None,
+        "is_normal": lesion == NORMAL_LESION_CODE,
+        "animal_id": surrogate_animal_id(meta),
+        "species_code": str(meta.get("species", "")).strip().upper(),
+        "breed": meta.get("breed"),
+        "age": meta.get("age"),
+        "gender": meta.get("gender"),
+        "region": meta.get("region"),
+        "date": meta.get("date"),
+        "synthetic": str(meta.get("합성유무", "")).strip().upper() == "Y",
+        "symptom_meta": meta.get("Path"),
+        "bbox": bbox,
+        "polygon": polygon,
+        "img_w": w,
+        "img_h": h,
+        "area_ratio": area,
+        "n_lesion": n_lesion,
+    }
+
+
 # ──────────────────────────────────────────────────────────────
-# 값 추출 — 키 이름을 모르는 상태에서 최대한 버티기
+# 값 추출 — 키 이름을 모르는 상태에서 최대한 버티기 (561 파서 실패 시 대비)
 # ──────────────────────────────────────────────────────────────
 def _find_first(rec: Any, hints: list[str], want: str = "any",
                 exclude: list[str] | None = None) -> Any:
@@ -253,6 +395,7 @@ def build_from_zip(
                   f"이미지 {sum(1 for n in names if Path(n).suffix.lower() in IMG_EXT):,}장")
 
         unmatched = 0
+        n_generic = 0
         for jn in tqdm_maybe(jsons, verbose):
             try:
                 data = json.loads(z.read(jn).decode("utf-8-sig"))
@@ -275,26 +418,33 @@ def build_from_zip(
 
                 iaxes = path_axes(Path(member))
                 merged = {k: (iaxes[k] or axes[k]) for k in axes}
-                label = extract_label(rec, member)
-                if label is None and merged["symptom"] == "무증상":
-                    label = "A0"
-                w, h = extract_wh(rec)
-                bbox, polygon = extract_geometry(rec)
-                area = None
-                if bbox and w and h:
-                    area = min(max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / (w * h), 1.0)
 
+                # 실제 스키마 파서를 먼저 시도하고, 안 맞으면 추론 방식으로 넘어갑니다.
+                parsed = parse_record_561(rec, member)
+                if parsed is None:
+                    label = extract_label(rec, member)
+                    w, h = extract_wh(rec)
+                    bbox, polygon = extract_geometry(rec)
+                    area = (min(max(0.0, (bbox[2]-bbox[0]) * (bbox[3]-bbox[1])) / (w*h), 1.0)
+                            if bbox and w and h else None)
+                    parsed = {
+                        "image_name": Path(member).name, "label": label,
+                        "is_normal": merged["symptom"] == "무증상",
+                        "animal_id": extract_animal_id(rec, Path(member).name,
+                                                       animal_token_index),
+                        "bbox": bbox, "polygon": polygon,
+                        "img_w": w, "img_h": h, "area_ratio": area,
+                    }
+                    n_generic += 1
+
+                parsed["image_name"] = Path(member).name    # zip 내부 실제 파일명으로 확정
                 rows.append({
                     "image_path": f"{zip_path}!{member}",   # 사람이 읽기 위한 표기
                     "zip_path": str(zip_path),
                     "zip_member": member,
                     "json_path": f"{zip_path}!{jn}",
-                    "image_name": Path(member).name,
-                    "label": label,
-                    "animal_id": extract_animal_id(rec, Path(member).name, animal_token_index),
-                    "bbox": bbox, "polygon": polygon,
-                    "img_w": w, "img_h": h, "area_ratio": area,
                     **merged,
+                    **parsed,
                 })
 
     df = pd.DataFrame(rows)
@@ -302,6 +452,10 @@ def build_from_zip(
         raise RuntimeError(f"{zip_path} 에서 매니페스트를 만들지 못했습니다.")
     if verbose:
         print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건)")
+        if n_generic:
+            print(f"[labels] ⚠️ {n_generic:,}건은 561 스키마가 아니라 추론 방식으로 처리")
+        if "synthetic" in df.columns:
+            print(f"[labels] 합성 이미지: {int(df['synthetic'].sum()):,}건")
 
     df = _filter_scope(df, dogs_only, normal_camera_only, verbose)
     df = _finalize_animal_id(df, verbose)
@@ -426,6 +580,16 @@ def build(
 def _filter_scope(df: pd.DataFrame, dogs_only: bool, normal_camera_only: bool,
                   verbose: bool) -> pd.DataFrame:
     before = len(df)
+
+    # ⚠️ 폴더가 '반려견' 이어도 고양이 이미지가 섞여 있습니다 (IMG_C_A7_*.json 확인).
+    #    폴더명이 아니라 metaData.species 로 걸러야 합니다.
+    if dogs_only and "species_code" in df.columns and df["species_code"].notna().any():
+        n_cat = int((df["species_code"] == "C").sum())
+        df = df[df["species_code"] == "D"]
+        if verbose and n_cat:
+            print(f"[labels] 반려견 폴더 안의 고양이 {n_cat:,}건 제외 "
+                  "(metaData.species 기준)")
+
     if dogs_only and df["species"].notna().any():
         df = df[~df["species"].isin(EXCLUDE_SPECIES)]
         if df["species"].isin(INCLUDE_SPECIES).any():

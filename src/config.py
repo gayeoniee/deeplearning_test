@@ -43,10 +43,18 @@ CLASS_EN: dict[str, str] = {
     "A6": "Nodule / Mass",
 }
 
-# 1단계(정상/이상) 이진 분류용 라벨. 무증상 데이터 존재 여부는 STEP 2 스캔으로 확정합니다.
-NORMAL_LABEL = "A0"
+# 1단계(정상/이상) 이진 분류용 라벨.
+# ✅ 실물 확인 결과 무증상 데이터가 존재합니다 — metaData.lesions == "A7".
+#    유증상 26,191 / 무증상 28,042 로 거의 반반이라 2단계 모델이 가능합니다.
+#    ⚠️ 무증상 이미지가 'A1_구진_플라크' 같은 폴더 안에 들어 있습니다.
+#       폴더명이 아니라 metaData.lesions 를 봐야 합니다.
+NORMAL_LABEL = "A7"
 CLASS_KO[NORMAL_LABEL] = "무증상(정상)"
 CLASS_EN[NORMAL_LABEL] = "Normal / Asymptomatic"
+
+# 1단계에서 쓰는 클래스 (정상 vs 이상)
+CLASSES_STAGE1 = [NORMAL_LABEL, "ABNORMAL"]
+# 2단계에서 쓰는 클래스 (병변 6종) = CLASSES
 
 # 병변별 임상적 긴급도 힌트 — "의심된다"의 톤을 조절할 때 씁니다.
 # 진단이 아니라 안내 문구의 강도를 정하는 용도일 뿐입니다.

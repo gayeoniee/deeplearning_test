@@ -95,12 +95,7 @@ def cluster(hashes: dict[str, str], max_hamming: int = 6) -> dict[str, int]:
     bands = 4
     band_bits = max(nbits // bands, 1)
 
-    buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
     ints = [_hex_to_bits(h) for _, h in items]
-    for i, v in enumerate(ints):
-        for b in range(bands):
-            key = (b, (v >> (b * band_bits)) & ((1 << band_bits) - 1))
-            buckets[key].append(i)
 
     # union-find
     parent = list(range(n))
@@ -116,9 +111,36 @@ def cluster(hashes: dict[str, str], max_hamming: int = 6) -> dict[str, int]:
         if ra != rb:
             parent[max(ra, rb)] = min(ra, rb)
 
-    MAX_BUCKET = 400  # 과대 버킷은 O(n²) 폭발을 막기 위해 건너뜀
+    # ── 1단계: 완전히 같은 해시는 무조건 먼저 묶습니다 ──────────────
+    # ⚠️ 이걸 빼먹으면 안 됩니다. 아래 LSH 는 과대 버킷을 건너뛰는데,
+    #    똑같은 이미지가 수백 장이면 그 버킷이 정확히 과대 버킷이 되어
+    #    **완전 동일한 이미지들이 서로 다른 클러스터로 갈라집니다.**
+    #    (실측: 동일 이미지 600장 → 클러스터 600개, 중복 제거 0건)
+    #    dict 그룹핑이라 O(n) 이고 크기 제한이 필요 없습니다.
+    exact: dict[int, int] = {}
+    for i, v in enumerate(ints):
+        if v in exact:
+            union(exact[v], i)
+        else:
+            exact[v] = i
+
+    # ── 2단계: 비슷하지만 같지는 않은 것들 (LSH 밴딩) ───────────────
+    #    대표 하나씩만 비교하면 되므로 후보 수가 크게 줄어듭니다.
+    reps = sorted(exact.values())
+    buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i in reps:
+        v = ints[i]
+        for b in range(bands):
+            key = (b, (v >> (b * band_bits)) & ((1 << band_bits) - 1))
+            buckets[key].append(i)
+
+    MAX_BUCKET = 2000  # O(n²) 폭발 방지. 대표만 담기므로 이 정도면 충분합니다.
+    skipped = 0
     for idxs in buckets.values():
-        if len(idxs) < 2 or len(idxs) > MAX_BUCKET:
+        if len(idxs) < 2:
+            continue
+        if len(idxs) > MAX_BUCKET:
+            skipped += 1
             continue
         for a in range(len(idxs)):
             ia = idxs[a]
@@ -128,6 +150,9 @@ def cluster(hashes: dict[str, str], max_hamming: int = 6) -> dict[str, int]:
                     continue
                 if bin(ints[ia] ^ ints[ib]).count("1") <= max_hamming:
                     union(ia, ib)
+    if skipped:
+        print(f"[dedup] ⚠️ 후보가 너무 많은 버킷 {skipped}개는 근사 비교를 건너뛰었습니다 "
+              "(완전 동일 이미지는 1단계에서 이미 묶였습니다)")
 
     return {items[i][0]: find(i) for i in range(n)}
 
@@ -204,6 +229,23 @@ def run(
     info["duplicate_rate"] = round(1 - len(out) / max(info["n_before"], 1), 4)
 
     out = out.sort_index().reset_index(drop=True)
+
+    # 중복 제거가 데이터를 과도하게 날리면 조용히 넘어가면 안 됩니다.
+    # (라벨 충돌 클러스터 제거가 폭주하면 학습할 데이터가 사라집니다)
+    if info["duplicate_rate"] > 0.5:
+        print(f"\n🚨 중복 제거로 {info['duplicate_rate']:.0%} 가 사라졌습니다 "
+              f"({info['n_before']:,} → {info['n_after']:,}).")
+        print("   정상적인 상황이 아닙니다. 확인할 것:")
+        print(f"   · 라벨 충돌로 제거된 그룹: {info['cross_class_clusters']:,}개 "
+              f"({info['cross_class_images']:,}장)")
+        print(f"   · dedup_hamming={cfg.dedup_hamming} 이 너무 커서 "
+              "서로 다른 이미지까지 묶고 있지 않은지")
+        print("   · 이미지가 실제로 서로 다른지 (crop.preview 로 눈으로 확인)")
+        if info["n_after"] == 0:
+            raise RuntimeError(
+                "중복 제거 후 데이터가 하나도 남지 않았습니다.\n"
+                "  drop_cross_class=False 로 두고 원인을 먼저 확인하세요."
+            )
 
     if verbose:
         print(f"[dedup] {info['n_before']:,} → {info['n_after']:,} "
