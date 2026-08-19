@@ -296,10 +296,24 @@ def recommend_plan(free_gb: float | None = None) -> list[dict]:
     print("            · 들어있다면 VS01 은 안 받아도 됩니다")
     print("            · JSON 만이라면 2단계로 VS01 을 받습니다")
     print("   2단계  VS01.zip (517021, 21GB)  ← 이미지. 1단계 결과에 따라 결정")
-    print("   3단계  Training(340GB) 은 받지 않습니다")
-    print("            · Colab 디스크로 불가능하고, 필요하지도 않습니다")
-    print("            · 우리는 split.py 로 개체 단위 재분할을 하므로")
-    print("              AI Hub 의 Training/Validation 구분을 따를 이유가 없습니다")
+    print("   3단계  Training 은 받지 않습니다 — 물리적으로 불가능합니다")
+
+    # "라벨만 받으면 Training 도 되지 않나?" — 자주 나오는 질문이라 숫자로 답해둡니다.
+    label_all = sum(f["gb"] for f in KNOWN_FILES_561 if f["kind"] == "라벨")
+    tl01 = next(f["gb"] for f in KNOWN_FILES_561 if f["name"] == "TL01.zip")
+    print(f"            · 라벨 zip 전체(TL01+TL02+VL01) = {label_all}GB > 여유 {free:.0f}GB")
+    print(f"            · TL01 하나만 해도 {tl01}GB 로 이미 초과")
+    print("            · zip 을 통째로 받은 뒤 풀어야 해서 쪼개 받는 것도 불가")
+    print(f"            · 코랩에서 다룰 수 있는 라벨 파일은 VL01({21}GB) 뿐입니다")
+
+    # 규모 감각: 전체 382GB / 이미지 50만 장 ≈ 장당 0.76MB
+    est = int(21 * 1024 / 0.76)
+    print(f"\n   그래도 충분한 이유")
+    print(f"            · VL01 21GB ≈ 이미지 약 {est:,}장 (전체 평균 장당 0.76MB 기준)")
+    print("            · 반려견+일반카메라 필터 후 대략 1만~1.3만 장 예상")
+    print("            · 전이학습에는 충분한 규모 (밑바닥 학습이 아님)")
+    print("            · 'Validation' 이라는 이름은 무시하세요. 우리는 이걸 전체 데이터로 보고")
+    print("              split.py 로 train/val/holdout 을 개체 단위로 다시 나눕니다")
 
     if free < 45:
         print(f"\n ⚠️ 여유 {free:.0f}GB 로는 VL01+VS01 동시 보관이 빠듯합니다.")
