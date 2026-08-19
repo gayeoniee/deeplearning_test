@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,6 +36,24 @@ from src.config import (
 )
 
 AIHUBSHELL_URL = "https://api.aihub.or.kr/api/aihubshell.do"
+
+# ──────────────────────────────────────────────────────────────
+# 561 데이터셋의 실제 파일 구성 (2026-08 확인)
+#
+# ⚠️ 파일이 6개 대용량 zip 으로만 나뉘어 있습니다.
+#    "반려견+일반카메라만" 같은 선별 다운로드가 **파일 단위로는 불가능**합니다.
+#    → Validation 만 받아서 우리가 직접 개체 단위로 재분할하는 편이 낫습니다.
+#      (어차피 AI Hub 의 Training/Validation 구분은 개체 누수를 보장하지 않으므로
+#       그대로 쓰면 안 되고, 우리가 split.py 로 다시 나눕니다)
+# ──────────────────────────────────────────────────────────────
+KNOWN_FILES_561: list[dict] = [
+    {"filekey": "517021", "name": "VS01.zip", "gb": 21, "split": "Validation", "kind": "원천"},
+    {"filekey": "517022", "name": "VL01.zip", "gb": 21, "split": "Validation", "kind": "라벨"},
+    {"filekey": "517017", "name": "TS01.zip", "gb": 90, "split": "Training", "kind": "원천"},
+    {"filekey": "517018", "name": "TS02.zip", "gb": 80, "split": "Training", "kind": "원천"},
+    {"filekey": "517019", "name": "TL01.zip", "gb": 90, "split": "Training", "kind": "라벨"},
+    {"filekey": "517020", "name": "TL02.zip", "gb": 80, "split": "Training", "kind": "라벨"},
+]
 
 
 # ──────────────────────────────────────────────────────────────
@@ -254,6 +273,81 @@ def select_files(
     return picked
 
 
+def recommend_plan(free_gb: float | None = None) -> list[dict]:
+    """디스크 여유에 맞춰 어떤 순서로 받을지 제안합니다.
+
+    핵심 판단: 라벨 zip 과 원천 zip 의 크기가 정확히 같아서(90=90, 80=80, 21=21)
+    라벨 zip 안에 이미지가 함께 들어있을 가능성이 높습니다.
+    그래서 **VL01(라벨) 하나를 먼저 받아 내용물을 확인**하는 것이 가장 저렴한 수순입니다.
+    """
+    free = free_gb if free_gb is not None else env.free_disk_gb()
+    print("=" * 68)
+    print(" AI Hub 561 다운로드 전략")
+    print("=" * 68)
+    print(f" 여유 디스크: {free:.1f} GB\n")
+    print(" 파일 구성 (6개 통짜 zip, 총 382GB) — 선별 다운로드 불가")
+    print(f"   {'filekey':>8}  {'파일':<10}{'용량':>6}  {'구분'}")
+    for f in KNOWN_FILES_561:
+        print(f"   {f['filekey']:>8}  {f['name']:<10}{f['gb']:>4}GB  {f['split']} / {f['kind']}")
+
+    print("\n 권장 순서")
+    print("   1단계  VL01.zip (517022, 21GB)  ← 라벨. 먼저 이것만 받아 내용 확인")
+    print("            · 라벨 zip 이 원천 zip 과 크기가 같음 → 이미지가 함께 들어있을 수 있음")
+    print("            · 들어있다면 VS01 은 안 받아도 됩니다")
+    print("            · JSON 만이라면 2단계로 VS01 을 받습니다")
+    print("   2단계  VS01.zip (517021, 21GB)  ← 이미지. 1단계 결과에 따라 결정")
+    print("   3단계  Training(340GB) 은 받지 않습니다")
+    print("            · Colab 디스크로 불가능하고, 필요하지도 않습니다")
+    print("            · 우리는 split.py 로 개체 단위 재분할을 하므로")
+    print("              AI Hub 의 Training/Validation 구분을 따를 이유가 없습니다")
+
+    if free < 45:
+        print(f"\n ⚠️ 여유 {free:.0f}GB 로는 VL01+VS01 동시 보관이 빠듯합니다.")
+        print("    1단계 결과를 보고 크롭 후 원본을 지우는 방식으로 진행하세요.")
+    print("=" * 68)
+    return KNOWN_FILES_561
+
+
+def peek(root: Path | None = None, n: int = 30) -> dict:
+    """받은 zip 을 푼 뒤, 안에 무엇이 들어있는지 빠르게 확인합니다.
+
+    라벨 zip 에 이미지가 함께 들어있는지 판단하는 용도입니다.
+    """
+    root = root or env.data_root()
+    ext: Counter = Counter()
+    samples: list[str] = []
+    total = 0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        ext[p.suffix.lower()] += 1
+        total += p.stat().st_size
+        if len(samples) < n:
+            samples.append(str(p.relative_to(root)))
+
+    print(f"[aihub] {root}")
+    print(f"  총 {sum(ext.values()):,}개 파일 / {total / 1024**3:.2f} GB\n")
+    print("  확장자별 개수")
+    for e, c in ext.most_common(10):
+        print(f"    {e or '(없음)':<8} {c:>10,}")
+
+    imgs = sum(c for e, c in ext.items() if e in {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+    jsons = ext.get(".json", 0)
+    print()
+    if imgs and jsons:
+        print(f"  ✅ 이미지({imgs:,})와 JSON({jsons:,})이 함께 있습니다 → 이 zip 만으로 진행 가능")
+    elif jsons and not imgs:
+        print(f"  ℹ️ JSON({jsons:,})만 있습니다 → 이미지가 든 원천 zip 을 추가로 받아야 합니다")
+    elif imgs and not jsons:
+        print(f"  ℹ️ 이미지({imgs:,})만 있습니다 → 라벨 zip 을 추가로 받아야 합니다")
+
+    print("\n  경로 샘플")
+    for s in samples[:12]:
+        print(f"    {s}")
+    return {"ext": dict(ext), "images": imgs, "jsons": jsons,
+            "size_gb": round(total / 1024**3, 2), "samples": samples}
+
+
 # ──────────────────────────────────────────────────────────────
 # 다운로드
 # ──────────────────────────────────────────────────────────────
@@ -286,6 +380,17 @@ def download(
 
     todo = [k for k in keys if k not in already]
     failed: list[str] = []
+
+    # 다운로드 전 용량 점검: zip 을 받은 뒤 압축을 풀므로 잠깐 2배가 필요합니다.
+    known = {f["filekey"]: f for f in KNOWN_FILES_561}
+    need = sum(known[k]["gb"] for k in todo if k in known)
+    if need:
+        free_now = env.free_disk_gb(dest)
+        print(f"[aihub] 받을 용량 {need}GB, 압축 해제까지 순간 최대 약 {need * 2}GB 필요 "
+              f"(여유 {free_now:.1f}GB)")
+        if need * 2 > free_now:
+            print("  ⚠️ 여유 공간이 부족할 수 있습니다. 한 번에 하나씩 받고,")
+            print("     전처리(크롭) 후 원본을 지우며 진행하세요.")
 
     for i in range(0, len(todo), chunk):
         batch = todo[i : i + chunk]
