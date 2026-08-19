@@ -326,6 +326,68 @@ def test_scale_robust_preset_actually_changes_transform():
     assert rrc_scale(tf_b)[0] < rrc_scale(tf_a)[0]
 
 
+# ──────────────────────────────────────────────────────────────
+# 파인튜닝 강도 프리셋
+#
+# ⚠️ 우리는 처음부터 fine-tuning 이었습니다 (freeze_backbone 은 호출되지 않음).
+#    프리셋이 정하는 건 "할까 말까" 가 아니라 "백본을 얼마나 움직일까" 입니다.
+# ──────────────────────────────────────────────────────────────
+def test_ft_presets_scale_backbone_lr():
+    from src import models
+    from src.config import FT_PRESETS, with_finetune
+
+    base = CFG(model_name="resnet18", lr=3e-4, exp_name="s2")
+    seen = {}
+    for name in FT_PRESETS:
+        m = models.build("resnet18", 6, pretrained=False, verbose=False)
+        c = with_finetune(base, name)
+        groups = models.param_groups(m, c)
+        lrs = sorted({g["lr"] for g in groups})
+        seen[name] = (min(lrs), max(lrs),
+                      sum(p.numel() for p in m.parameters() if p.requires_grad))
+
+    # 백본 lr 순서: linear_probe(동결) < conservative < moderate
+    assert seen["conservative"][0] < seen["moderate"][0], "moderate 가 백본을 더 안 움직임"
+    # aggressive 는 백본과 헤드 lr 이 같아야 합니다
+    assert abs(seen["aggressive"][0] - seen["aggressive"][1]) < 1e-12
+
+
+def test_linear_probe_actually_freezes_backbone():
+    """lr 0 으로 두는 것과 requires_grad 를 끄는 건 결과는 같지만 속도가 다릅니다.
+
+    얼리지 않으면 백본까지 역전파해 계산을 낭비합니다 — 대조군 실험이 느려집니다.
+    """
+    from src import models
+    from src.config import CFG as _CFG
+
+    m = models.build("resnet18", 6, pretrained=False, verbose=False)
+    total = sum(p.numel() for p in m.parameters())
+    models.param_groups(m, _CFG(model_name="resnet18", backbone_lr_mult=0.0))
+    trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+
+    assert trainable < total * 0.01, f"백본이 안 얼었습니다 ({trainable:,}/{total:,})"
+    assert trainable > 0, "헤드까지 얼렸습니다"
+
+
+def test_finetune_default_is_not_frozen():
+    """★ 기본 설정은 fine-tuning 이어야 합니다 (linear probe 가 아니라).
+
+    freeze_backbone() 이 실수로 호출되거나 기본값이 0 이 되면
+    조용히 linear probe 로 바뀌어 성능이 크게 떨어집니다.
+    """
+    from src import models
+    from src.config import CFG as _CFG
+
+    c = _CFG(model_name="resnet18")
+    assert c.backbone_lr_mult > 0, "기본 설정이 백본을 얼리고 있습니다"
+
+    m = models.build("resnet18", 6, pretrained=False, verbose=False)
+    total = sum(p.numel() for p in m.parameters())
+    models.param_groups(m, c)
+    trainable = sum(p.numel() for p in m.parameters() if p.requires_grad)
+    assert trainable > total * 0.9, "기본 설정에서 백본이 학습되지 않습니다"
+
+
 if __name__ == "__main__":
     import io
     from contextlib import redirect_stdout

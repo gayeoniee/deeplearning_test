@@ -257,6 +257,60 @@ AUG_PRESETS: dict[str, dict] = {
 }
 
 
+# ──────────────────────────────────────────────────────────────
+# 파인튜닝 강도 프리셋
+#
+# ⚠️ 용어 정리 — 자주 헷갈립니다.
+#   "전이학습(transfer learning)" 은 우산 개념입니다. 그 안에 두 방식이 있습니다:
+#     · linear probe   백본을 얼리고 헤드만 학습 (freeze_backbone(True))
+#     · fine-tuning    백본까지 같이 학습 ← **우리는 처음부터 이쪽입니다**
+#   `freeze_backbone()` 은 정의만 되어 있고 어디서도 호출하지 않습니다.
+#
+# 그러면 남는 질문은 "파인튜닝을 할까?" 가 아니라 "얼마나 세게 할까?" 입니다.
+# 그걸 정하는 게 backbone_lr_mult 입니다:
+#
+#     헤드 lr   = cfg.lr                        (랜덤 초기화라 빨리 배워야 함)
+#     백본 lr   = cfg.lr × backbone_lr_mult     (사전학습 지식을 지키려고 낮춤)
+#
+# 기본 0.1 은 "ImageNet 특징이 이미 쓸만하다" 는 전제입니다. 그런데 우리 과제는
+# 물체 인식이 아니라 **피부 질감·색의 미세한 구분**이라 도메인 격차가 큽니다.
+# 백본이 3e-5 로 움직이면 12 에폭 동안 거의 제자리입니다.
+#
+# 실측 근거 (VL01 2단계): train 1.352 / val 1.474 — 학습 데이터조차 잘 못 맞춥니다.
+# 과적합이 아니라 **덜 배운** 상태이고, 백본 lr 이 유력한 원인입니다.
+# ──────────────────────────────────────────────────────────────
+FT_PRESETS: dict[str, dict] = {
+    # 지금까지 쓰던 설정 (비교 기준)
+    "conservative": {"backbone_lr_mult": 0.1},
+
+    # 백본을 3배 더 움직입니다. 도메인 격차가 클 때의 표준적인 선택.
+    "moderate": {"backbone_lr_mult": 0.3, "warmup_epochs": 3},
+
+    # 백본과 헤드를 같은 lr 로. 격차가 아주 클 때 가장 좋을 수 있지만
+    # 사전학습 지식을 잃을 위험(catastrophic forgetting)이 있어 warmup 을 길게 둡니다.
+    "aggressive": {"backbone_lr_mult": 1.0, "warmup_epochs": 4, "lr": 1e-4},
+
+    # 백본을 얼리고 헤드만. 우리 데이터(1.5만장)에는 부족하지만,
+    # "백본 적응이 실제로 기여하는가" 를 재는 대조군으로 유용합니다.
+    "linear_probe": {"backbone_lr_mult": 0.0},
+}
+
+
+def ft_preset(name: str) -> dict:
+    """파인튜닝 강도 프리셋 → CFG 오버라이드 사전."""
+    if name not in FT_PRESETS:
+        raise KeyError(f"모르는 프리셋: {name}. 가능: {sorted(FT_PRESETS)}")
+    return dict(FT_PRESETS[name])
+
+
+def with_finetune(cfg: "CFG", name: str) -> "CFG":
+    """cfg 에 파인튜닝 강도 프리셋을 얹은 새 CFG."""
+    d = {**cfg.to_dict(), **ft_preset(name)}
+    if name != "conservative":
+        d["exp_name"] = f"{cfg.exp_name}_{name}"
+    return CFG.from_dict(d)
+
+
 def aug_preset(name: str) -> dict:
     """프리셋 이름 → CFG 오버라이드 사전.
 

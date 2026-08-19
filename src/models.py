@@ -138,18 +138,26 @@ def param_groups(model: nn.Module, cfg: CFG) -> list[dict]:
     이들에 decay 를 걸면 정규화 통계가 왜곡됩니다.
     """
     head_names = ("head", "fc", "classifier", "last_linear")
+    bb_lr = cfg.lr * cfg.backbone_lr_mult
+
+    # backbone_lr_mult == 0 은 "백본을 얼린다"(linear probe)는 뜻입니다.
+    # lr 0 으로 두면 결과는 같지만 백본까지 역전파해 계산을 낭비합니다.
+    # requires_grad 를 꺼서 실제로 건너뛰게 합니다.
+    freeze_bb = cfg.backbone_lr_mult == 0
 
     groups = {
         "head_decay": {"params": [], "lr": cfg.lr, "weight_decay": cfg.weight_decay},
         "head_nodecay": {"params": [], "lr": cfg.lr, "weight_decay": 0.0},
-        "bb_decay": {"params": [], "lr": cfg.lr * cfg.backbone_lr_mult,
-                     "weight_decay": cfg.weight_decay},
-        "bb_nodecay": {"params": [], "lr": cfg.lr * cfg.backbone_lr_mult, "weight_decay": 0.0},
+        "bb_decay": {"params": [], "lr": bb_lr, "weight_decay": cfg.weight_decay},
+        "bb_nodecay": {"params": [], "lr": bb_lr, "weight_decay": 0.0},
     }
     for n, p in model.named_parameters():
+        is_head = any(h in n for h in head_names)
+        if freeze_bb and not is_head:
+            p.requires_grad = False
+            continue
         if not p.requires_grad:
             continue
-        is_head = any(h in n for h in head_names)
         no_decay = p.ndim <= 1 or n.endswith(".bias")
         key = ("head_" if is_head else "bb_") + ("nodecay" if no_decay else "decay")
         groups[key]["params"].append(p)
