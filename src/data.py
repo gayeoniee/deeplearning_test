@@ -182,9 +182,9 @@ def build_loaders(
     sampler = weighted_sampler(ds_tr) if cfg.balance_strategy == "weighted_sampler" else None
 
     common = dict(
-        num_workers=cfg.num_workers,
+        num_workers=cfg.resolved_num_workers(),
         pin_memory=torch.cuda.is_available(),
-        persistent_workers=cfg.num_workers > 0,
+        persistent_workers=cfg.resolved_num_workers() > 0,
     )
     dl_tr = DataLoader(ds_tr, batch_size=bs, shuffle=sampler is None,
                        sampler=sampler, drop_last=True, **common)
@@ -219,7 +219,7 @@ def eval_loader(
         ds,
         batch_size=max(cfg.resolved_batch_size() * batch_mult, 1),
         shuffle=False,
-        num_workers=cfg.num_workers,
+        num_workers=cfg.resolved_num_workers(),
         pin_memory=torch.cuda.is_available(),
     )
     if len(ds) != len(df):

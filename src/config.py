@@ -125,7 +125,7 @@ class CFG:
     amp: bool = True
     ema_decay: float = 0.999          # 0 이면 EMA 끔
     clip_grad_norm: float = 1.0
-    num_workers: int = 2
+    num_workers: int = -1        # -1 = CPU 코어 수에 맞춰 자동
     early_stop_patience: int = 5
     monitor: str = "macro_f1"         # ⚠️ accuracy 아님. 불균형 데이터에서 accuracy 는 거짓말을 합니다.
 
@@ -168,6 +168,14 @@ class CFG:
 
         scale = _infer_scale(self.model_name)
         return env.suggest_batch_size(self.img_size, scale)
+
+    def resolved_num_workers(self) -> int:
+        """-1 이면 CPU 코어 수에 맞춰 정합니다."""
+        if self.num_workers >= 0:
+            return self.num_workers
+        from src import env
+
+        return env.suggest_workers()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

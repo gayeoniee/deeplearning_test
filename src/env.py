@@ -242,16 +242,37 @@ def suggest_batch_size(img_size: int, model_scale: str = "base") -> int:
         return 8
     vram = dev.vram_gb or _VRAM_HINT.get(dev.name.split()[-1], 16)
 
-    # 224px / base 모델 / 16GB 를 기준점 32 로 두고 스케일링
+    # 224px / base 모델 / 16GB 를 기준점 48 로 두고 스케일링
+    # (ResNet50@224 를 AMP 로 돌리면 배치 48 이 8GB 남짓입니다. 여전히 보수적입니다)
     scale_factor = {"tiny": 2.0, "small": 1.4, "base": 1.0, "large": 0.5}.get(model_scale, 1.0)
     px_factor = (224 / max(img_size, 64)) ** 2
-    bs = 32 * (vram / 16) * scale_factor * px_factor
+    bs = 48 * (vram / 16) * scale_factor * px_factor
 
-    # 2의 거듭제곱으로 내림, 최소 2 최대 256
-    out = 2
-    while out * 2 <= bs and out < 256:
-        out *= 2
+    # ⚠️ 2의 거듭제곱으로 내림하면 최대 절반을 버립니다.
+    #    실제로 T4(14.7GB)에서 계산값 44 가 32 도 아닌 **16** 이 됐습니다
+    #    (이전 기준점 32 × 0.92 = 29.4 → 16). 학습이 2~3배 느려집니다.
+    #    중간 단계를 둔 사다리로 내림합니다.
+    ladder = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 192, 256]
+    out = ladder[0]
+    for v in ladder:
+        if v <= bs:
+            out = v
     return out
+
+
+def suggest_workers() -> int:
+    """DataLoader 워커 수. CPU 코어에 맞춥니다.
+
+    왜 중요한가: 512px JPEG 을 디코딩+리사이즈하는 건 CPU 일입니다.
+    워커가 부족하면 GPU 가 놀면서 데이터를 기다립니다 — 배치를 키워도 안 빨라집니다.
+    실측: Colab T4 에서 74 img/s 였는데, ResNet50@224 AMP 의 계산 능력은
+          150~200 img/s 입니다. 절반 이상을 데이터 로딩에서 흘리고 있었습니다.
+    """
+    import os
+
+    n = os.cpu_count() or 2
+    # 메인 프로세스 몫을 남기고, 너무 많으면 오히려 컨텍스트 스위칭 비용이 큽니다
+    return max(2, min(n - 1, 8))
 
 
 def free_disk_gb(path: Path | None = None) -> float:

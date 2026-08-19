@@ -132,7 +132,7 @@ def _score(model, df, view, cfg: CFG, classes: list[str], device: str,
     tf = T.Compose([view, T.ToTensor(), T.Normalize(mean, std)])
     ds = SkinDataset(df, tf, path_col, classes=classes)
     dl = DataLoader(ds, batch_size=max(cfg.resolved_batch_size() * 2, 1), shuffle=False,
-                    num_workers=cfg.num_workers, pin_memory=torch.cuda.is_available())
+                    num_workers=cfg.resolved_num_workers(), pin_memory=torch.cuda.is_available())
 
     model = model.to(device).eval()
     preds, ys = [], []
