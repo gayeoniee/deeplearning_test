@@ -86,6 +86,26 @@ def install(force: bool = False) -> Path:
     return p
 
 
+# aihubshell 은 실패해도 종료 코드 0 을 돌려줍니다. 출력 본문을 봐야 합니다.
+_ERROR_PATTERNS: list[tuple[str, str]] = [
+    ("해외에서의 데이터 다운로드를 제한",
+     "AI Hub 가 해외 IP 다운로드를 차단합니다. Colab/Kaggle VM 은 한국 밖에 있어\n"
+     "     클라우드에서는 받을 수 없습니다. → docs/cautions/06_해외IP_다운로드_차단_우회.md"),
+    ("Download failed with HTTP status", "다운로드 실패 (HTTP 오류)"),
+    ("승인", "활용신청이 아직 승인되지 않았을 수 있습니다"),
+    ("Invalid", "API Key 가 올바르지 않습니다"),
+    ("권한", "이 데이터셋에 대한 권한이 없습니다"),
+]
+
+
+def _detect_error(output: str) -> str | None:
+    """aihubshell 출력에서 실패 신호를 찾습니다."""
+    for pat, msg in _ERROR_PATTERNS:
+        if pat in output:
+            return msg
+    return None
+
+
 def _run(args: list[str], apikey: str, timeout: int | None = None,
          cwd: Path | None = None, stream: bool = False) -> subprocess.CompletedProcess:
     """aihubshell 실행. 키는 인자로만 넘기고 로그에는 남기지 않습니다."""
@@ -416,23 +436,45 @@ def download(
             break
 
         print(f"\n[aihub] ({i + len(batch)}/{len(todo)}) filekey={','.join(batch)}  여유 {free}GB")
+        before = _dir_size_gb(dest)
         r = _run(
             ["-mode", "d", "-datasetkey", dataset_key, "-filekey", ",".join(batch)],
             apikey, cwd=dest, stream=True, timeout=None,
         )
-        if r.returncode != 0:
-            print(f"  ✗ 실패 (rc={r.returncode})")
+        # ⚠️ aihubshell 은 실패해도 rc=0 을 돌려줍니다.
+        #    종료 코드만 믿으면 실패를 성공이라고 보고하게 됩니다.
+        err = _detect_error(r.stdout or "")
+        gained = _dir_size_gb(dest) - before
+
+        if r.returncode != 0 or err or gained < 0.01:
+            reason = err or (f"rc={r.returncode}" if r.returncode else
+                             f"받아진 데이터가 없음 ({gained:.2f}GB)")
+            print(f"\n  ✗ 실패 — {reason}")
             failed.extend(batch)
             continue
 
+        print(f"  ✓ {gained:.1f}GB 확보")
         already.update(batch)
         done_marker.write_text("\n".join(sorted(already)), encoding="utf-8")
 
     if failed:
-        print(f"\n⚠️ 실패 {len(failed)}건: {failed}\n   같은 셀을 다시 실행하면 성공분은 건너뛰고 재시도합니다.")
+        print(f"\n❌ 다운로드 실패 {len(failed)}건: {failed}")
+        print("   해결되기 전까지 다음 단계로 넘어가지 마세요.")
     else:
-        print("\n✅ 다운로드 완료")
+        print(f"\n✅ 다운로드 완료 — {_dir_size_gb(dest):.1f}GB @ {dest}")
     return failed
+
+
+def _dir_size_gb(path: Path) -> float:
+    """디렉터리 실제 사용량. 다운로드가 정말 됐는지 확인하는 데 씁니다."""
+    total = 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total / 1024**3
 
 
 def unpack_all(root: Path | None = None, remove_archives: bool = True) -> int:

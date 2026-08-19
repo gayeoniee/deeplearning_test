@@ -17,10 +17,30 @@ AI Hub 「반려동물 피부 질환 데이터」(dataSetSn=561)로 **반려견 
 2. [561번 데이터셋](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=561) → **활용신청**
 3. 승인 후 마이페이지 → **API Key 발급**
 
-### 2. Colab 에서 실행
+### 2. ⚠️ 데이터는 한국 PC 에서 받아야 합니다
 
-> 💡 **리포를 다운로드하거나 드라이브에 올릴 필요 없습니다.**
-> 아래 버튼으로 열면 노트북 첫 셀이 코랩 안에서 알아서 `git clone` 합니다.
+**AI Hub 는 해외 IP 다운로드를 차단합니다.** Colab/Kaggle VM 은 한국 밖이라
+다운로드가 502 로 실패합니다 (목록 조회는 되는데 다운로드만 막혀서 헷갈립니다).
+
+그래서 역할을 나눕니다 — **한국 PC 에서 다운로드+전처리, 클라우드에서 학습**:
+
+```bash
+# 내 컴퓨터(한국)에서. GPU 불필요, CPU 만 있으면 됩니다
+git clone https://github.com/gayeoniee/deeplearning_test.git
+cd deeplearning_test && pip install -r requirements.txt
+export AIHUB_API_KEY="발급받은키"
+python prepare_local.py --all
+```
+
+원본 21GB → ROI 크롭 후 **2~5GB** 로 줄어들어 업로드가 현실적입니다.
+생성된 `dogskin_prepared.zip` 을 **Kaggle 에 비공개로** 올린 뒤 학습만 클라우드에서 하세요.
+
+📖 [`docs/cautions/06_해외IP_다운로드_차단_우회.md`](docs/cautions/06_해외IP_다운로드_차단_우회.md)
+
+### 3. Colab / Kaggle 에서 학습
+
+> 💡 리포를 다운로드하거나 드라이브에 올릴 필요 없습니다.
+> 아래 버튼으로 열면 노트북 첫 셀이 알아서 `git clone` 합니다.
 
 [![Colab 에서 열기](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gayeoniee/deeplearning_test/blob/main/notebooks/00_데이터_다운로드.ipynb)
 
