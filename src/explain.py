@@ -61,11 +61,12 @@ def _is_transformer(model) -> bool:
 # 실행
 # ──────────────────────────────────────────────────────────────
 def cam_for(model, img_tensor: torch.Tensor, target_class: int | None = None,
-            device: str = "cuda") -> np.ndarray:
+            device: str | None = None) -> np.ndarray:
     """단일 이미지의 CAM 히트맵 (H, W) 0~1."""
     from pytorch_grad_cam import GradCAM
     from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     layers = find_target_layer(model)
     if not layers:
         raise RuntimeError("CAM 을 걸 레이어를 찾지 못했습니다.")
@@ -90,7 +91,7 @@ def overlay(img_np: np.ndarray, heat: np.ndarray, alpha: float = 0.45) -> np.nda
 
 
 def grid(model, df, cfg: CFG | None = None, n: int = 8, classes: list[str] | None = None,
-         path_col: str = "crop_path", device: str = "cuda", seed: int = 0,
+         path_col: str = "crop_path", device: str | None = None, seed: int = 0,
          only_correct: bool | None = None) -> None:
     """여러 장을 한 화면에 놓고 CAM 을 확인합니다.
 
@@ -105,6 +106,7 @@ def grid(model, df, cfg: CFG | None = None, n: int = 8, classes: list[str] | Non
 
     cfg = cfg or CFG()
     classes = classes or CLASSES
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tf = transforms_for_model(cfg, model, train=False)
     model = model.to(device).eval()
 
@@ -152,41 +154,101 @@ def grid(model, df, cfg: CFG | None = None, n: int = 8, classes: list[str] | Non
     print("─" * 60)
 
 
+def _norm_box(row, frame: str, cfg: CFG) -> tuple[str, list[float]] | None:
+    """(열 이미지 경로, 그 이미지 기준 정규화 병변 박스 0~1) 또는 None.
+
+    frame="original" — 원본 이미지 + 원본 좌표 bbox
+    frame="crop"     — 크롭 이미지 + 크롭 좌표로 옮긴 bbox (원본이 없는 환경용)
+    """
+    from src.crop import bbox_in_crop
+
+    if frame == "crop":
+        p = row.get("crop_path")
+        rel = bbox_in_crop(row, cfg=cfg)
+        return (str(p), rel) if isinstance(p, str) and rel else None
+
+    p = row.get("image_path")
+    b = row.get("bbox")
+    if isinstance(b, str):
+        try:
+            b = json.loads(b)
+        except Exception:
+            return None
+    if not isinstance(p, str) or not b or len(b) != 4:
+        return None
+    try:
+        W, H = int(row["img_w"]), int(row["img_h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if W <= 0 or H <= 0:
+        return None
+    rel = [min(max(v, 0.0), 1.0) for v in (b[0] / W, b[1] / H, b[2] / W, b[3] / H)]
+    if rel[2] - rel[0] <= 0 or rel[3] - rel[1] <= 0:
+        return None
+    return p, rel
+
+
 def lesion_overlap_score(model, df, cfg: CFG | None = None, n: int = 200,
-                         device: str = "cuda", seed: int = 0) -> dict:
+                         device: str | None = None, seed: int = 0,
+                         frame: str = "auto", verbose: bool = True) -> dict:
     """CAM 이 실제 병변 박스와 얼마나 겹치는지 **수치로** 잽니다.
 
     눈으로 보는 것보다 객관적이라 모델 비교에 쓸 수 있습니다.
-    원본 이미지 좌표계의 bbox 가 있어야 하므로 path_col='image_path' 기준입니다.
+
+    frame:
+      "original" — 원본 이미지 기준. 원본이 있는 환경(로컬)에서 가장 정확합니다.
+      "crop"     — 크롭 이미지 기준. **Colab 처럼 크롭만 올린 환경용**입니다.
+                   크롭 창을 `crop.bbox_in_crop()` 으로 재현해 병변 위치를 되찾습니다.
+      "auto"     — 원본을 열어보고 안 되면 crop 으로 내려갑니다 (기본).
+
+    ⚠️ crop 프레임의 lift 는 원본 프레임보다 **낮게 나옵니다.**
+       크롭 자체가 이미 병변 주변만 담고 있어서 "우연히 겹칠 확률"이 높기 때문입니다
+       (margin 1.5 정사각이면 병변이 이미 크롭 면적의 약 44% 를 차지합니다).
+       그래서 게이트 기준 1.3 은 crop 프레임에서 더 엄격한 요구입니다.
     """
     from PIL import Image
 
     from src.data import transforms_for_model
 
     cfg = cfg or CFG()
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tf = transforms_for_model(cfg, model, train=False)
     model = model.to(device).eval()
 
-    sub = df[df["bbox"].notna() & df["image_path"].notna()]
+    sub = df[df["bbox"].notna()]
+    if not len(sub):
+        print("계산할 샘플이 없습니다 — bbox 가 있는 행이 없습니다.")
+        print("💡 A7(정상) 만 남은 데이터프레임을 넘겼는지 확인하세요.")
+        return {}
+
+    if frame == "auto":
+        frame = "original"
+        probe = sub.head(20)
+        if not any(_readable(r.get("image_path")) for _, r in probe.iterrows()):
+            frame = "crop"
+            if verbose:
+                print("[explain] 원본 이미지를 못 열어 **크롭 좌표계**로 계산합니다.")
+                print("          (로컬에서 만든 크롭만 업로드한 환경이면 정상입니다)")
+
     picks = sub.sample(min(n, len(sub)), random_state=seed)
     scores: list[float] = []
 
     for _, r in picks.iterrows():
+        got = _norm_box(r, frame, cfg)
+        if got is None:
+            continue
+        path, rel = got
         try:
-            with Image.open(r["image_path"]) as im:
-                W, H = im.size
+            with Image.open(path) as im:
                 pil = im.convert("RGB").resize((cfg.img_size, cfg.img_size))
             x = tf(pil)
             with torch.no_grad():
                 pi = int(model(x.unsqueeze(0).to(device)).argmax())
             heat = cam_for(model, x, pi, device)
 
-            b = r["bbox"]
-            if isinstance(b, str):
-                b = json.loads(b)
             hh, hw = heat.shape
-            x1 = int(np.clip(b[0] / W * hw, 0, hw - 1)); x2 = int(np.clip(b[2] / W * hw, 1, hw))
-            y1 = int(np.clip(b[1] / H * hh, 0, hh - 1)); y2 = int(np.clip(b[3] / H * hh, 1, hh))
+            x1 = int(np.clip(rel[0] * hw, 0, hw - 1)); x2 = int(np.clip(rel[2] * hw, 1, hw))
+            y1 = int(np.clip(rel[1] * hh, 0, hh - 1)); y2 = int(np.clip(rel[3] * hh, 1, hh))
             if x2 <= x1 or y2 <= y1:
                 continue
             total = heat.sum()
@@ -200,15 +262,23 @@ def lesion_overlap_score(model, df, cfg: CFG | None = None, n: int = 200,
             continue
 
     if not scores:
-        print("계산할 샘플이 없습니다 (bbox 가 필요합니다).")
+        print(f"계산에 성공한 샘플이 0개입니다 (frame={frame}).")
+        print("💡 frame='crop' 으로 명시해 보세요. crop_path 와 img_w/img_h 가 필요합니다.")
         return {}
 
     arr = np.array(scores)
-    out = {"n": len(arr), "mean_lift": float(arr.mean()), "median_lift": float(np.median(arr)),
-           "frac_above_1": float((arr > 1).mean())}
-    print(f"\n[CAM–병변 정렬도] n={out['n']}")
-    print(f"  평균 lift {out['mean_lift']:.2f} (1.0 = 우연 수준, 클수록 병변을 잘 봄)")
-    print(f"  중앙값 {out['median_lift']:.2f}, 우연보다 나은 비율 {out['frac_above_1']:.1%}")
-    if out["median_lift"] < 1.3:
-        print("  ⚠️ 모델이 병변을 특별히 보고 있지 않습니다. 배경 학습을 의심하세요.")
+    out = {"n": len(arr), "frame": frame, "mean_lift": float(arr.mean()),
+           "median_lift": float(np.median(arr)), "frac_above_1": float((arr > 1).mean())}
+    if verbose:
+        print(f"\n[CAM–병변 정렬도] n={out['n']}  기준 프레임={frame}")
+        print(f"  평균 lift {out['mean_lift']:.2f} (1.0 = 우연 수준, 클수록 병변을 잘 봄)")
+        print(f"  중앙값 {out['median_lift']:.2f}, 우연보다 나은 비율 {out['frac_above_1']:.1%}")
+        if out["median_lift"] < 1.3:
+            print("  ⚠️ 모델이 병변을 특별히 보고 있지 않습니다. 배경 학습을 의심하세요.")
     return out
+
+
+def _readable(p) -> bool:
+    from pathlib import Path
+
+    return isinstance(p, str) and Path(p).exists()

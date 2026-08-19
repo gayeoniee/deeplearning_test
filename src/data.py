@@ -196,6 +196,38 @@ def build_loaders(
     return dl_tr, dl_va, ds_tr, ds_va
 
 
+def eval_loader(
+    df: pd.DataFrame,
+    cfg: CFG,
+    model=None,
+    path_col: str = "crop_path",
+    classes: list[str] | None = None,
+    batch_mult: int = 2,
+) -> tuple[DataLoader, SkinDataset]:
+    """평가 전용 로더 하나. **행 순서를 보존**합니다 (shuffle=False).
+
+    2단계 파이프라인을 이어붙여 평가할 때 반드시 필요합니다:
+    1단계 모델과 2단계 모델을 **같은 행, 같은 순서**로 돌려야 두 출력을 짝지을
+    수 있습니다. 순서가 어긋나면 점수가 조용히 엉망이 됩니다 — 에러도 안 납니다.
+
+    돌려주는 ds.df 를 정답의 출처로 쓰세요. SkinDataset 이 경로가 없는 행을
+    걸러내므로, 원본 df 를 정답으로 쓰면 한 칸씩 밀릴 수 있습니다.
+    """
+    tf = transforms_for_model(cfg, model, False) if model else build_transforms(cfg, False)
+    ds = SkinDataset(df, tf, path_col, classes=classes)
+    dl = DataLoader(
+        ds,
+        batch_size=max(cfg.resolved_batch_size() * batch_mult, 1),
+        shuffle=False,
+        num_workers=cfg.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    if len(ds) != len(df):
+        print(f"⚠️ {len(df) - len(ds):,}행이 제외됐습니다 (크롭 파일 없음). "
+              "정답은 ds.df 에서 가져오세요.")
+    return dl, ds
+
+
 # ──────────────────────────────────────────────────────────────
 # Mixup / CutMix
 # ──────────────────────────────────────────────────────────────

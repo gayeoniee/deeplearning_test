@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from src.config import CFG, CLASS_EN, CLASS_KO, CLASSES, URGENCY_HINT
+from src.config import CFG, CLASS_EN, CLASS_KO, CLASSES, NORMAL_LABEL, URGENCY_HINT
 
 DISCLAIMER = (
     "이 결과는 수의학적 진단이 아니며, 수의사의 진료를 대체하지 않습니다. "
@@ -78,7 +78,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     c, p = pred.topk[0]
     ko = CLASS_KO.get(c, c)
 
-    if c == "A0":
+    if c == NORMAL_LABEL:
         L.append("🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.**")
         L.append("")
         L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
@@ -193,12 +193,16 @@ class Engine:
         return json.dumps(self.predict(path).to_dict(), ensure_ascii=False, indent=2)
 
     # -------------------------------------------------------
-    def show(self, path: str) -> None:
-        """이미지 + 판정 + CAM 을 한 번에 보여줍니다 (노트북용)."""
+    def show(self, path: str, pred: Prediction | None = None) -> None:
+        """이미지 + 판정 + CAM 을 한 번에 보여줍니다 (노트북용).
+
+        pred 를 주면 그 판정을 그대로 씁니다 — 2단계 파이프라인처럼
+        확률을 이미 조정해둔 경우에 필요합니다.
+        """
         import matplotlib.pyplot as plt
         from PIL import Image
 
-        pred = self.predict(path)
+        pred = pred if pred is not None else self.predict(path)
         fig, ax = plt.subplots(1, 2, figsize=(9, 4.4))
         with Image.open(path) as im:
             pil = im.convert("RGB").resize((self.cfg.img_size, self.cfg.img_size))
@@ -225,22 +229,43 @@ class Engine:
 class TwoStageEngine:
     """1단계에서 '이상'으로 걸러진 것만 2단계 병변 분류로 넘깁니다.
 
-    1단계 임계값은 재현율 우선으로 잡습니다 — 놓치는 것이 오탐보다 나쁘므로.
+        사진 → 1단계 ─ 이상확률 < threshold → "정상으로 보입니다" (2단계 안 봄)
+                      └ threshold 이상 ────→ 2단계 → "A2 소견이 의심됩니다"
+
+    threshold 는 재현율 우선으로 잡습니다 — 놓치는 것이 오탐보다 나쁘므로.
+    노트북 03 이 `stage1_threshold.json` 에 저장한 값을 쓰세요.
+
+        s1 = infer.Engine.load(".../stage1_.../best.pt")
+        s2 = infer.Engine.load(".../stage2_.../best.pt")
+        eng = infer.TwoStageEngine(s1, s2, threshold=0.31)
+        print(eng.explain("my_dog.jpg"))
     """
 
     def __init__(self, stage1: Engine, stage2: Engine, threshold: float = 0.5):
+        from src.stages import ABNORMAL_LABEL
+
         self.s1, self.s2, self.thr = stage1, stage2, threshold
+        self._ab = ABNORMAL_LABEL
+        if self._ab not in stage1.classes:
+            raise ValueError(
+                f"1단계 엔진의 클래스가 {stage1.classes} 입니다 — "
+                f"'{self._ab}' 가 없습니다. 2단계용으로 학습한 체크포인트인지 확인하세요."
+            )
 
     def predict(self, path: str) -> Prediction:
         p1 = self.s1.predict(path)
-        if p1.abstain:
+        if not p1.topk:                       # 이미지를 못 열었음
             return p1
-        abnormal = next((p for c, p in p1.topk if c != "A0"), 0.0)
+        abnormal = dict(p1.topk).get(self._ab, 0.0)
+
         if abnormal < self.thr:
-            return Prediction(topk=[("A0", 1 - abnormal)], abstain=False,
+            # ⚠️ "정상" 도 단정하지 않습니다 — 놓쳤을 수 있으므로 문구가 그 한계를 말합니다
+            return Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)], abstain=False,
                               confidence_band=band(1 - abnormal), image=path)
+
         p2 = self.s2.predict(path)
-        # 2단계 확률에 1단계의 '이상' 확률을 곱해 전체 신뢰도를 보수적으로 유지
+        # 2단계 확률에 1단계의 '이상' 확률을 곱해 전체 신뢰도를 보수적으로 유지합니다.
+        # (1단계가 애매하게 통과시킨 사진에 2단계가 90% 라고 말하면 과신입니다)
         p2.topk = [(c, p * abnormal) for c, p in p2.topk]
         p2.confidence_band = band(p2.topk[0][1]) if p2.topk else "낮음"
         p2.abstain = bool(p2.topk) and p2.topk[0][1] < self.s2.cfg.abstain_threshold
@@ -248,3 +273,19 @@ class TwoStageEngine:
 
     def explain(self, path: str) -> str:
         return compose_message(self.predict(path))
+
+    def show(self, path: str) -> None:
+        """이미지 + CAM + 최종 문구. 1단계에서 걸러지면 CAM 은 생략합니다."""
+        pred = self.predict(path)
+        if pred.topk and pred.topk[0][0] == NORMAL_LABEL:
+            import matplotlib.pyplot as plt
+            from PIL import Image
+
+            with Image.open(path) as im:
+                plt.figure(figsize=(4.4, 4.4))
+                plt.imshow(im.convert("RGB")); plt.axis("off")
+                plt.title("1단계: 정상으로 판단 (2단계 미실행)")
+                plt.tight_layout(); plt.show()
+            print(compose_message(pred))
+            return
+        self.s2.show(path, pred)          # CAM 은 2단계 모델, 문구는 파이프라인 확률로

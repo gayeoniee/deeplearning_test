@@ -188,6 +188,68 @@ def run(
     return out
 
 
+def margin_of_tag(tag: str) -> float:
+    """크롭 태그에서 margin 을 되돌립니다. 'm1.5' → 1.5, 'full' → 0."""
+    if not isinstance(tag, str) or not tag.startswith("m"):
+        return 0.0
+    try:
+        return float(tag[1:])
+    except ValueError:
+        return 0.0
+
+
+def bbox_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> list[float] | None:
+    """병변 bbox 를 **크롭 이미지 기준 정규화 좌표(0~1)** 로 옮깁니다.
+
+    크롭은 원본을 열지 않고도 재현할 수 있습니다 — `expand_box()` 가
+    (bbox, img_w, img_h, margin) 만으로 결정되기 때문입니다.
+
+    이게 필요한 이유: 학습은 크롭만 올린 Colab 에서 하는데, Grad-CAM 게이트는
+    "CAM 이 병변 위에 있는가"를 재야 합니다. 원본이 없으니 크롭 좌표계로
+    병변 위치를 다시 계산해야 합니다. 정규화 좌표라 저장 해상도와 무관합니다.
+
+    돌려주는 값: [x1, y1, x2, y2] (0~1). 계산 불가면 None.
+    """
+    cfg = cfg or CFG()
+    bbox = row.get("bbox")
+    if isinstance(bbox, str):
+        try:
+            bbox = json.loads(bbox)
+        except Exception:
+            return None
+    if not bbox or len(bbox) != 4:
+        return None
+
+    try:
+        W, H = int(row["img_w"]), int(row["img_h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if W <= 0 or H <= 0:
+        return None
+
+    tag = tag or row.get("crop_tag") or ""
+    margin = margin_of_tag(tag)
+
+    if margin > 0:
+        wx1, wy1, wx2, wy2 = expand_box(bbox, W, H, margin=margin, min_px=cfg.crop_min_px)
+    else:
+        # 'full' 태그는 중앙 정사각 크롭이었습니다 (_crop_one 의 else 분기)
+        s = min(W, H)
+        wx1, wy1 = (W - s) // 2, (H - s) // 2
+        wx2, wy2 = wx1 + s, wy1 + s
+
+    ww, wh = wx2 - wx1, wy2 - wy1
+    if ww <= 0 or wh <= 0:
+        return None
+
+    rel = [(bbox[0] - wx1) / ww, (bbox[1] - wy1) / wh,
+           (bbox[2] - wx1) / ww, (bbox[3] - wy1) / wh]
+    rel = [min(max(v, 0.0), 1.0) for v in rel]
+    if rel[2] - rel[0] <= 0 or rel[3] - rel[1] <= 0:
+        return None            # 크롭 밖으로 완전히 밀려난 경우 (full 태그에서 발생 가능)
+    return rel
+
+
 def available_tags() -> list[str]:
     """만들어져 있는 크롭 태그 목록 (예: ['full', 'm1.5', 'm2.5'])."""
     d = env.work_root() / "crops"

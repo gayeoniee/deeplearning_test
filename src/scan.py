@@ -9,8 +9,12 @@ JSON 키 이름이나 폴더 구조를 코드에 박아두면 거의 확실히 �
     scan.write_dataset_card(rep)
 
 출력:
-  - work/reports/scan_report.json   기계가 읽을 결과 (labels.py 가 씀)
-  - docs/data/DATASET_CARD.md       사람이 읽을 요약
+  - work/reports/scan_report.json          기계가 읽을 결과 (labels.py 가 씀)
+  - docs/data/스캔리포트_자동생성.md        이번 실행의 요약
+
+⚠️ `docs/data/DATASET_CARD.md` 는 **손으로 정리한 참고 문서**입니다 (확정 스키마,
+   당한 함정, 남은 리스크). 스캐너가 덮어쓰지 않습니다 — 청크를 추가했으면
+   자동생성 리포트를 보고 카드를 직접 갱신하세요.
 """
 
 from __future__ import annotations
@@ -625,14 +629,20 @@ def summary(rep: ScanReport) -> None:
 
 
 def write_dataset_card(rep: ScanReport, path: Path | None = None) -> Path:
-    """스캔 결과를 docs/data/DATASET_CARD.md 로 씁니다."""
-    p = Path(path) if path else env.project_root() / "docs" / "data" / "DATASET_CARD.md"
+    """스캔 결과를 `docs/data/스캔리포트_자동생성.md` 로 씁니다.
+
+    ⚠️ `DATASET_CARD.md` 는 건드리지 않습니다 — 그건 손으로 정리한 참고 문서라
+       매번 덮어쓰면 확정 스키마 설명과 주의사항이 날아갑니다.
+    """
+    p = (Path(path) if path
+         else env.project_root() / "docs" / "data" / "스캔리포트_자동생성.md")
     p.parent.mkdir(parents=True, exist_ok=True)
 
     L: list[str] = []
     a = L.append
-    a("# 데이터셋 카드 — AI Hub 반려동물 피부 질환 (561)\n")
-    a("> ⚠️ 이 파일은 `src/scan.py` 가 실물 데이터를 훑어 자동 생성합니다. 손으로 고치지 마세요.")
+    a("# 스캔 리포트 (자동 생성) — AI Hub 반려동물 피부 질환 (561)\n")
+    a("> ⚠️ 이 파일은 `src/scan.py` 가 실행할 때마다 덮어씁니다. 손으로 고치지 마세요.")
+    a("> 손으로 정리한 내용은 [`DATASET_CARD.md`](DATASET_CARD.md) 에 있습니다.")
     a(f"> 생성 시각: `{rep.scanned_at}`  |  스캔 경로: `{rep.root}`\n")
 
     a("## 규모\n")

@@ -26,6 +26,17 @@ from src.config import CLASS_KO
 # ──────────────────────────────────────────────────────────────
 # 지표
 # ──────────────────────────────────────────────────────────────
+def pad_ko(s: str, width: int) -> str:
+    """한글은 터미널에서 두 칸을 차지해서 f-string 의 :<26 이 어긋납니다.
+
+    표시 폭 기준으로 채워 클래스별 표가 삐뚤어지지 않게 합니다.
+    """
+    import unicodedata
+
+    w = sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+    return s + " " * max(width - w, 0)
+
+
 def softmax_np(logits: torch.Tensor | np.ndarray) -> np.ndarray:
     x = logits.numpy() if isinstance(logits, torch.Tensor) else np.asarray(logits)
     x = x - x.max(axis=1, keepdims=True)
@@ -111,11 +122,11 @@ class EvalReport:
             print(f"  macro AUROC       : {m['macro_auroc']:.4f}")
 
         print("\n  클래스별 (recall 이 낮은 클래스 = 놓치는 병변)")
-        print(f"  {'클래스':<26}{'precision':>10}{'recall':>9}{'f1':>8}{'n':>8}")
+        print(f"  {pad_ko('클래스', 30)}{'precision':>10}{'recall':>9}{'f1':>8}{'n':>8}")
         pc = m["per_class"]
         for i, c in enumerate(self.classes):
-            name = f"{c} {CLASS_KO.get(c, '')}"
-            print(f"  {name:<26}{pc['precision'][i]:>10.3f}{pc['recall'][i]:>9.3f}"
+            name = pad_ko(f"{c} {CLASS_KO.get(c, '')}", 30)
+            print(f"  {name}{pc['precision'][i]:>10.3f}{pc['recall'][i]:>9.3f}"
                   f"{pc['f1'][i]:>8.3f}{pc['support'][i]:>8,}")
 
         # 검증셋에 한 장도 없는 클래스는 recall 0 으로 나오므로 최저 판정에서 제외합니다.
