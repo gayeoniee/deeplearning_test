@@ -71,8 +71,8 @@ def _run(args: list[str], apikey: str, timeout: int | None = None,
          cwd: Path | None = None, stream: bool = False) -> subprocess.CompletedProcess:
     """aihubshell 실행. 키는 인자로만 넘기고 로그에는 남기지 않습니다."""
     cmd = [str(shell_path()), *args, "-aihubapikey", apikey]
-    safe = " ".join(cmd[:-1]) + " -aihubapikey ****"
-    print(f"[aihub] $ {safe}")
+    # 로그에 키가 남지 않도록 마지막 인자(키)만 가립니다.
+    print("[aihub] $ " + " ".join(cmd[:-1] + ["****"]))
     if stream:
         # 다운로드처럼 오래 걸리는 작업은 출력을 흘려보냅니다.
         proc = subprocess.Popen(
@@ -159,15 +159,33 @@ def parse_listing(text: str) -> list[RemoteFile]:
 
 
 def list_files(apikey: str, dataset_key: str = AIHUB_DATASET_KEY,
-               show: bool = True) -> list[RemoteFile]:
+               show: bool = True, detail: bool = True) -> list[RemoteFile]:
     text = raw_listing(apikey, dataset_key)
     files = parse_listing(text)
-    if show:
-        if not files:
-            print("⚠️ 파싱 결과가 0건입니다. 아래 원본 출력을 확인하고 filekey 를 직접 지정하세요.\n")
-            print(text[:4000])
-        else:
-            print(f"[aihub] 총 {len(files)}개 파일, 합계 약 {sum(f.size_gb for f in files):.1f} GB")
+    if not show:
+        return files
+
+    if not files:
+        print("⚠️ 파싱 결과가 0건입니다. 아래 원본 출력을 확인하고 filekey 를 직접 지정하세요.\n")
+        print(text[:4000])
+        return files
+
+    total = sum(f.size_gb for f in files)
+    print(f"[aihub] 총 {len(files)}개 파일, 합계 약 {total:.1f} GB")
+    if detail:
+        print(f"[aihub] 여유 디스크 {env.free_disk_gb()} GB\n")
+        print(f"  {'filekey':>9}  {'용량':>10}   경로/파일명")
+        print("  " + "-" * 76)
+        for f in files:
+            print(f"  {f.filekey:>9}  {f.size:>10}   {f.full[:60]}")
+        # 파일이 몇 개 안 되면 통짜 묶음일 가능성이 큽니다 → 선별 다운로드가 불가능
+        if len(files) <= 10 and total > 100:
+            print(
+                "\n  ⚠️ 파일이 소수의 대용량 묶음으로만 나뉘어 있습니다.\n"
+                "     '반려견+일반카메라만 골라 받기'가 파일 단위로는 불가능할 수 있습니다.\n"
+                "     아래로 원본 목록을 확인해 하위 항목이 더 있는지 보세요:\n"
+                "        print(aihub.raw_listing(APIKEY))"
+            )
     return files
 
 
