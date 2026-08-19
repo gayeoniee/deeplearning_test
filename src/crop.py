@@ -618,6 +618,91 @@ def audit(df: pd.DataFrame, n_sample: int = 400, seed: int = 0,
     return out
 
 
+def full_crop_loss(df: pd.DataFrame, tag: str = "full", cfg: CFG | None = None,
+                   verbose: bool = True) -> dict:
+    """`full` 크롭으로 바꿀 때 **병변이 화면에서 잘려 나가는 비율**.
+
+    `full` 은 이미지 중앙 정사각형만 씁니다 (1920×1080 → 가운데 1080×1080).
+    배율 지름길을 없애는 대신, 병변이 좌우 끝에 있으면 아예 안 보입니다.
+    그럼 그 사진은 "이상" 인데 정상처럼 보입니다 — **1단계 recall 의 천장이
+    데이터 때문에 낮아집니다.**
+
+    그 천장을 미리 알아야 "1단계를 full 로 간다" 는 결정을 할 수 있습니다.
+    이미지를 열지 않고 좌표만으로 계산하므로 즉시 끝납니다.
+    """
+    import numpy as np
+
+    from src.config import CLASS_KO, NORMAL_LABEL
+
+    cfg = cfg or CFG()
+    sub = df[df["bbox"].notna()]
+    if not len(sub):
+        print("bbox 가 있는 행이 없습니다.")
+        return {}
+
+    recs = []
+    for _, r in sub.iterrows():
+        b = _as_list(r.get("bbox"))
+        win = crop_window(r, tag=tag, cfg=cfg)
+        if not b or win is None:
+            continue
+        ix1, iy1 = max(b[0], win[0]), max(b[1], win[1])
+        ix2, iy2 = min(b[2], win[2]), min(b[3], win[3])
+        inter = max(ix2 - ix1, 0) * max(iy2 - iy1, 0)
+        area = max((b[2] - b[0]) * (b[3] - b[1]), 1e-9)
+        recs.append((str(r.get("label")), inter / area))
+
+    if not recs:
+        return {}
+    labels = np.array([x[0] for x in recs])
+    vis = np.array([x[1] for x in recs])
+
+    out = {
+        "tag": tag,
+        "n": len(vis),
+        "fully_visible": float((vis >= 0.9).mean()),
+        "partial": float(((vis > 0.1) & (vis < 0.9)).mean()),
+        "mostly_gone": float((vis <= 0.1).mean()),
+        "median_visible": float(np.median(vis)),
+    }
+    les = labels != NORMAL_LABEL
+    out["lesion_mostly_gone"] = float((vis[les] <= 0.1).mean()) if les.any() else 0.0
+    out["stage1_recall_ceiling"] = 1.0 - out["lesion_mostly_gone"]
+
+    if verbose:
+        print("=" * 68)
+        print(f" '{tag}' 크롭으로 갈 때의 손실 — 병변이 화면 밖으로 나가는 비율")
+        print("=" * 68)
+        print(f"  전부 보임(≥90%)   {out['fully_visible']:.1%}")
+        print(f"  일부 잘림         {out['partial']:.1%}")
+        print(f"  거의 사라짐(≤10%) {out['mostly_gone']:.1%}")
+        print(f"\n  병변 중 사라진 비율      {out['lesion_mostly_gone']:.1%}")
+        print(f"  ★ 1단계 recall 천장     {out['stage1_recall_ceiling']:.3f}   (목표 0.95)")
+
+        rows = []
+        for lab in sorted(set(labels)):
+            m = labels == lab
+            rows.append({"label": f"{lab} {CLASS_KO.get(lab, '')}"[:22],
+                         "n": int(m.sum()),
+                         "사라짐": f"{(vis[m] <= 0.1).mean():.1%}",
+                         "중앙값보임": f"{np.median(vis[m]):.0%}"})
+        print()
+        print(pd.DataFrame(rows).to_string(index=False))
+
+        ceil = out["stage1_recall_ceiling"]
+        if ceil < 0.95:
+            print(f"\n  🚨 천장 {ceil:.3f} < 0.95 — '{tag}' 로는 목표 recall 을 못 채웁니다.")
+            print("     배율 지름길은 막지만 병변을 잃습니다. 대안:")
+            print("       · 고정 픽셀 창을 넉넉하게 (예: --margins -512 → f512)")
+            print("       · 1단계도 f320 을 쓰기 (배율은 일정하고 병변은 항상 포함)")
+        elif ceil < 0.98:
+            print(f"\n  ⚠️ 천장 {ceil:.3f} — 여유가 거의 없습니다. 다른 손실이 겹치면 위험합니다.")
+        else:
+            print(f"\n  ✅ 천장 {ceil:.3f} — '{tag}' 를 써도 병변 손실은 무시할 수준입니다.")
+        print("=" * 68 + "\n")
+    return out
+
+
 def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
                       verbose: bool = True) -> dict:
     """★ 사진을 **안 보고** 라벨을 맞혀봅니다.

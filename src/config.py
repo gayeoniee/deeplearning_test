@@ -211,6 +211,64 @@ def _infer_scale(model_name: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
+# 증강 프리셋
+#
+# 기본값은 의도적으로 약합니다 — 피부 병변은 색과 질감이 곧 라벨이라
+# 강한 색상 증강은 A3(과다색소침착)를 A1 처럼 만들어 버립니다.
+#
+# 그런데 **배율**은 사정이 다릅니다. 크롭이 병변 박스에 맞춰 잘리기 때문에
+# 배율이 클래스마다 다르고(실측 A1 0.47% ~ A6 3.08%, 6.5배), 모델이 그걸
+# 단서로 쓸 수 있습니다. 실사용에서 배율은 무작위이므로 그건 무너집니다.
+#
+# ⚠️ 기본 rrc_scale=(0.7, 1.0) 은 면적 1.43배 범위(선형 1.2배)입니다.
+#    막아야 할 격차가 선형 2.5배인데 이건 아무 효과가 없습니다.
+#
+# ⚠️ 넓은 배율 증강에는 **여유가 있는 크롭**이 필요합니다.
+#    m1.5 처럼 딱 붙은 크롭에 0.15 를 걸면 병변이 화면에서 잘려 나가
+#    라벨이 깨집니다. m2.5 나 f512 같은 넉넉한 크롭을 base 로 쓰세요.
+#    효과 판정은 src/robust.py 의 scale_stress() 로 합니다.
+# ──────────────────────────────────────────────────────────────
+AUG_PRESETS: dict[str, dict] = {
+    # 지금까지 쓰던 기본값 (비교 기준)
+    "default": {},
+
+    # 배율/위치에 견고하게. m2.5 또는 f512 크롭과 함께 쓰세요.
+    # RandomResizedCrop 은 위치도 무작위로 잡으므로 위치 증강이 함께 걸립니다.
+    "scale_robust": {
+        "rrc_scale": (0.35, 1.0),      # 면적 2.9배 = 선형 1.7배
+        "rotate_deg": 20,
+        "random_erasing": 0.25,
+    },
+
+    # 더 공격적. 크롭에 여유가 충분할 때만 (f512 등).
+    "scale_robust_hard": {
+        "rrc_scale": (0.18, 1.0),      # 면적 5.6배 = 선형 2.4배
+        "rotate_deg": 25,
+        "random_erasing": 0.3,
+    },
+}
+
+
+def aug_preset(name: str) -> dict:
+    """프리셋 이름 → CFG 오버라이드 사전.
+
+        cfg = CFG(**{**CFG(model_name="resnet50").to_dict(), **aug_preset("scale_robust")})
+    """
+    if name not in AUG_PRESETS:
+        raise KeyError(f"모르는 프리셋: {name}. 가능: {sorted(AUG_PRESETS)}")
+    return dict(AUG_PRESETS[name])
+
+
+def with_aug(cfg: "CFG", name: str) -> "CFG":
+    """cfg 에 증강 프리셋을 얹은 새 CFG. 실험 이름에 프리셋을 붙여 둡니다."""
+    over = aug_preset(name)
+    d = {**cfg.to_dict(), **over}
+    if name != "default":
+        d["exp_name"] = f"{cfg.exp_name}_{name}"
+    return CFG.from_dict(d)
+
+
+# ──────────────────────────────────────────────────────────────
 # 모델 라인업 — STEP 4 에서 순서대로 돌립니다.
 #
 # timm 모델명은 버전마다 바뀝니다. src/models.py 가 실행 시점에
