@@ -116,17 +116,35 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
     if aihub.download(key, [info["filekey"]], dest=raw, chunk=1):
         _die("다운로드 실패. 한국에서 실행 중인지, 활용신청이 승인됐는지 확인하세요.")
 
-    archives = sorted(raw.rglob("*.zip"))
+    # 실패한 시도가 남긴 download_*.tar 백업 정리 (21GB 씩 쌓입니다)
+    aihub.cleanup_backups(raw)
 
-    if mode == "zip" and archives:
+    archives = aihub.find_archives(raw)
+    zips = [a for a in archives if a.suffix.lower() == ".zip"]
+    tars = [a for a in archives if a.suffix.lower() != ".zip"]
+
+    # aihubshell 은 download.tar 로 받습니다. 보통 스스로 풀지만 남아 있으면 먼저 풉니다.
+    if tars:
+        print(f"\n[해제] tar {len(tars)}개를 먼저 풉니다 (aihubshell 이 남긴 것)")
+        for t in tars:
+            try:
+                shutil.unpack_archive(str(t), str(raw))
+                t.unlink()
+                print(f"  {t.name} 해제 완료")
+            except Exception as exc:
+                print(f"  ✗ {t.name}: {exc}")
+        zips = [a for a in aihub.find_archives(raw) if a.suffix.lower() == ".zip"]
+
+    if mode == "zip" and zips:
         # 2) 압축을 풀지 않고 zip 안에서 직접 읽습니다
-        print(f"\n[매니페스트] zip 직접 읽기 — 압축 해제 안 함")
-        dfs = [labels.build_from_zip(a, save=False) for a in archives]
+        print("\n[매니페스트] zip 직접 읽기 — 압축 해제 안 함")
+        dfs = [labels.build_from_zip(a, save=False) for a in zips]
         import pandas as pd
         df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
     else:
         # 2') 선택 해제 후 디스크에서 처리
-        for a in archives:
+        #     (zip 이 없다 = aihubshell 이 이미 다 풀어놨다는 뜻일 수 있음)
+        for a in zips:
             aihub.extract_selective(a, dest=raw, remove_archive=True)
         aihub.peek(raw)
         print("\n[매니페스트]")

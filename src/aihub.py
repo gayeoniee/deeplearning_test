@@ -620,6 +620,50 @@ def tqdm_or_range(seq, verbose: bool = True):
         return seq
 
 
+ARCHIVE_EXT = (".zip", ".tar", ".tgz", ".gz")
+
+
+def find_archives(root: Path) -> list[Path]:
+    """받은 폴더에서 압축 파일을 찾습니다.
+
+    ⚠️ aihubshell 은 `download.tar` 로 받아옵니다 (zip 이 아닙니다).
+       보통은 스스로 병합→해제→삭제까지 하지만, 중간에 끊기면 tar 가 남습니다.
+       zip 만 찾으면 그걸 놓쳐서 "파일이 없다" 는 엉뚱한 결과가 나옵니다.
+
+    실패한 시도가 남긴 `download_YYYYMMDD_HHMMSS.tar` 백업은 제외합니다.
+    """
+    out: list[Path] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in ARCHIVE_EXT:
+            continue
+        if re.match(r"download_\d{8}_\d{6}\.tar$", p.name):
+            print(f"[aihub] 이전 시도의 백업으로 보여 건너뜁니다: {p.name}")
+            continue
+        out.append(p)
+    return out
+
+
+def cleanup_backups(root: Path | None = None, dry_run: bool = False) -> float:
+    """실패한 시도가 남긴 download_*.tar 백업을 지웁니다.
+
+    aihubshell 은 기존 download.tar 가 있으면 지우지 않고 타임스탬프를 붙여
+    백업해둡니다. 21GB 짜리가 쌓이면 디스크를 금방 잡아먹습니다.
+    """
+    root = root or env.data_root()
+    freed = 0.0
+    for p in sorted(root.rglob("download_*.tar")):
+        gb = p.stat().st_size / 1024**3
+        print(f"  {'[dry-run] ' if dry_run else ''}삭제: {p} ({gb:.2f}GB)")
+        if not dry_run:
+            p.unlink()
+        freed += gb
+    if freed == 0:
+        print("[aihub] 지울 백업이 없습니다.")
+    else:
+        print(f"[aihub] {freed:.2f}GB 확보 (여유 {env.free_disk_gb(root):.1f}GB)")
+    return freed
+
+
 def unpack_all(root: Path | None = None, remove_archives: bool = True) -> int:
     """aihubshell 이 자동 해제하지 못한 zip/tar 를 마저 풉니다."""
     root = root or env.data_root()
