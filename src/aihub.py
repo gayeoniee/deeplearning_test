@@ -68,21 +68,35 @@ def install(force: bool = False) -> Path:
     p = shell_path()
     if p.exists() and not force:
         print(f"[aihub] 이미 설치됨: {p}")
-        return p
-    p.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[aihub] 내려받는 중: {AIHUBSHELL_URL}")
-    r = subprocess.run(
-        ["curl", "-sSL", "-o", str(p), AIHUBSHELL_URL],
-        capture_output=True, text=True,
-    )
-    if r.returncode != 0 or not p.exists() or p.stat().st_size < 100:
-        raise RuntimeError(
-            "aihubshell 다운로드 실패.\n"
-            f"  stderr: {r.stderr[:500]}\n"
-            "  네트워크가 막혀 있거나 AI Hub 점검 중일 수 있습니다."
-        )
-    p.chmod(0o755)
-    print(f"[aihub] 설치 완료: {p} ({p.stat().st_size} bytes)")
+    else:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[aihub] 내려받는 중: {AIHUBSHELL_URL}")
+        try:
+            # curl 은 Windows 10 이상에 기본 포함되지만, 없어도 되도록 urllib 로 대체
+            import urllib.request
+
+            with urllib.request.urlopen(AIHUBSHELL_URL, timeout=60) as r:
+                p.write_bytes(r.read())
+        except Exception as exc:
+            raise RuntimeError(
+                f"aihubshell 다운로드 실패: {exc}\n"
+                "  네트워크가 막혀 있거나 AI Hub 점검 중일 수 있습니다."
+            ) from exc
+        if p.stat().st_size < 100:
+            raise RuntimeError("aihubshell 이 비어 있습니다. AI Hub 상태를 확인하세요.")
+        try:
+            p.chmod(0o755)
+        except OSError:
+            pass          # Windows 는 실행 권한 개념이 달라 실패해도 무방
+        print(f"[aihub] 설치 완료: {p} ({p.stat().st_size:,} bytes)")
+
+    if os.name == "nt":
+        bash = find_bash()
+        if bash:
+            print(f"[aihub] Windows — bash 발견: {bash}")
+        else:
+            print("[aihub] ⚠️ Windows 에 bash 가 없습니다. aihubshell 은 bash 스크립트라 실행이 안 됩니다.")
+            print("        Git for Windows 설치를 권합니다 → https://git-scm.com/download/win")
     return p
 
 
@@ -106,10 +120,60 @@ def _detect_error(output: str) -> str | None:
     return None
 
 
+def find_bash() -> str | None:
+    """Windows 에서 aihubshell(=bash 스크립트)을 돌릴 셸을 찾습니다.
+
+    aihubshell 은 bash 스크립트라 cmd/PowerShell 에서 직접 실행되지 않습니다.
+    Git for Windows 를 설치했다면 Git Bash 가 함께 깔려 있어 그걸 쓰면 됩니다
+    (리포를 git clone 했다면 거의 확실히 있습니다).
+    """
+    if os.name != "nt":
+        return None
+
+    cands = [
+        shutil.which("bash"),
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
+        shutil.which("wsl"),
+    ]
+    for c in cands:
+        if c and Path(c).exists():
+            return c
+    return None
+
+
+def _to_bash_path(p: str | Path) -> str:
+    """C:\\foo\\bar → /c/foo/bar (Git Bash 형식)."""
+    p = Path(p).resolve()
+    s = str(p).replace("\\", "/")
+    if len(s) > 1 and s[1] == ":":
+        s = f"/{s[0].lower()}{s[2:]}"
+    return s
+
+
 def _run(args: list[str], apikey: str, timeout: int | None = None,
          cwd: Path | None = None, stream: bool = False) -> subprocess.CompletedProcess:
     """aihubshell 실행. 키는 인자로만 넘기고 로그에는 남기지 않습니다."""
-    cmd = [str(shell_path()), *args, "-aihubapikey", apikey]
+    script = str(shell_path())
+    cmd = [script, *args, "-aihubapikey", apikey]
+
+    if os.name == "nt":
+        bash = find_bash()
+        if bash is None:
+            raise RuntimeError(
+                "aihubshell 은 bash 스크립트라 Windows cmd/PowerShell 에서 직접 실행되지 않습니다.\n"
+                "  해결 방법 (하나만 하면 됩니다):\n"
+                "   ① Git for Windows 설치 → https://git-scm.com/download/win\n"
+                "      설치하면 Git Bash 가 함께 깔리고, 이 코드가 자동으로 찾아 씁니다.\n"
+                "      (리포를 git clone 했다면 이미 설치돼 있을 수 있습니다)\n"
+                "   ② WSL 설치 → PowerShell 관리자 권한에서  wsl --install\n"
+                "  설치 후 이 명령을 다시 실행하세요."
+            )
+        if bash.lower().endswith("wsl.exe"):
+            cmd = [bash, "bash", _to_bash_path(script), *args, "-aihubapikey", apikey]
+        else:
+            cmd = [bash, _to_bash_path(script), *args, "-aihubapikey", apikey]
     # 로그에 키가 남지 않도록 마지막 인자(키)만 가립니다.
     print("[aihub] $ " + " ".join(cmd[:-1] + ["****"]))
     if stream:

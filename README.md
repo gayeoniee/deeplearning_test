@@ -27,10 +27,24 @@ AI Hub 「반려동물 피부 질환 데이터」(dataSetSn=561)로 **반려견 
 ```bash
 # 내 컴퓨터(한국)에서. GPU 불필요, CPU 만 있으면 됩니다
 git clone https://github.com/gayeoniee/deeplearning_test.git
-cd deeplearning_test && pip install -r requirements.txt
+cd deeplearning_test
+pip install -r requirements.txt
 export AIHUB_API_KEY="발급받은키"
 python prepare_local.py --all
 ```
+
+<details><summary><b>Windows 는 명령이 조금 다릅니다</b> (클릭)</summary>
+
+```cmd
+py -m pip install -r requirements.txt
+set AIHUB_API_KEY=발급받은키
+py prepare_local.py --all
+```
+
+`aihubshell` 은 bash 스크립트라 **Git for Windows(Git Bash)** 가 필요합니다.
+설치돼 있으면 자동으로 찾아 씁니다. → [`docs/cautions/07`](docs/cautions/07_Windows_로컬_환경_설정.md)
+
+</details>
 
 데이터를 더 쓰고 싶으면 청크를 이어붙일 수 있습니다 (받고→정제→원본삭제 반복):
 
@@ -138,10 +152,11 @@ JSON 키를 추측해 박아두면 거의 확실히 틀립니다.
 
 ### ⚠️ 주의사항
 
-[`docs/cautions/`](docs/cautions/) — 6편.
+[`docs/cautions/`](docs/cautions/) — 7편.
 
 `01` 라이선스·재배포 · **`02` 데이터 누수** · `03` 의료AI 안전설계 ·
-`04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성 · **`06` 해외IP 다운로드 차단**
+`04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성 ·
+**`06` 해외IP 다운로드 차단** · `07` Windows 로컬 환경 설정
 
 ### 🗺️ 전체 진행표
 
