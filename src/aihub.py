@@ -176,23 +176,30 @@ def _run(args: list[str], apikey: str, timeout: int | None = None,
             cmd = [bash, _to_bash_path(script), *args, "-aihubapikey", apikey]
     # 로그에 키가 남지 않도록 마지막 인자(키)만 가립니다.
     print("[aihub] $ " + " ".join(cmd[:-1] + ["****"]))
+    # ⚠️ encoding 을 명시하지 않으면 Python 이 시스템 로케일(한국어 Windows = cp949)로
+    #    디코딩합니다. aihubshell 은 UTF-8 로 한글 메시지를 내보내므로
+    #    "UnicodeDecodeError: 'cp949' codec can't decode byte 0xec" 로 죽습니다.
+    #    errors="replace" 는 예상 못 한 바이트가 와도 죽지 않게 하는 보험입니다.
+    dec = dict(encoding="utf-8", errors="replace")
+
     if stream:
         # 다운로드처럼 오래 걸리는 작업은 출력을 흘려보냅니다.
         proc = subprocess.Popen(
             cmd, cwd=str(cwd) if cwd else None,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, bufsize=1,
+            text=True, bufsize=1, **dec,
         )
         lines: list[str] = []
         assert proc.stdout is not None
         for line in proc.stdout:
             lines.append(line)
             sys.stdout.write(line)
+            sys.stdout.flush()
         proc.wait(timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, "".join(lines), "")
     return subprocess.run(
         cmd, cwd=str(cwd) if cwd else None,
-        capture_output=True, text=True, timeout=timeout,
+        capture_output=True, text=True, timeout=timeout, **dec,
     )
 
 

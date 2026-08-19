@@ -182,6 +182,20 @@ chcp 65001
 set PYTHONUTF8=1
 ```
 
+**`UnicodeDecodeError: 'cp949' codec can't decode byte 0xec` — 다운로드 시작 직후**
+
+`aihubshell` 이 UTF-8 로 한글 메시지를 내보내는데, Python 이 그 출력을
+로케일(cp949)로 디코딩하려다 죽는 경우입니다.
+
+→ 고쳤습니다. `git pull` 후 다시 실행하세요.
+   (`subprocess` 호출에 `encoding="utf-8", errors="replace"` 를 명시)
+
+> 💡 인코딩 문제가 세 번 반복돼서 회귀 테스트를 넣어뒀습니다:
+> ```cmd
+> py tests\test_windows_encoding.py
+> ```
+> 뭔가 이상하면 이걸 먼저 돌려보세요. 전부 PASS 여야 정상입니다.
+
 **torch 설치가 너무 오래 걸림**
 → 전처리만 할 거면 torch 는 필요 없습니다. 최소 설치로 충분합니다:
 ```cmd
