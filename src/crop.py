@@ -356,6 +356,217 @@ def preview(df: pd.DataFrame, n: int = 8, by_class: bool = True, seed: int = 0) 
     plt.show()
 
 
+def _blur_score(pil) -> float:
+    """초점이 맞았는지 숫자로. 라플라시안 분산 — 클수록 선명합니다.
+
+    "이 사진이 병변인가"는 수의사만 알지만, "이 사진이 흐린가"는 숫자가 압니다.
+    사람에게 의학 판단을 요구하지 않고 데이터 품질을 재는 방법입니다.
+    """
+    import numpy as np
+
+    g = np.asarray(pil.convert("L"), dtype=np.float32)
+    if g.size < 9:
+        return 0.0
+    # 3x3 라플라시안을 직접 적용 (cv2 없이)
+    lap = (4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:])
+    return float(lap.var())
+
+
+def audit(df: pd.DataFrame, n_sample: int = 400, seed: int = 0,
+          cfg: CFG | None = None, blur_threshold: float = 100.0) -> dict:
+    """크롭 품질을 **숫자로** 점검합니다. 의학 지식이 필요 없습니다.
+
+    "이게 병변인지 눈으로 보세요" 는 비전문가에게 할 수 없는 요구입니다.
+    대신 코드가 확인할 수 있는 것들을 확인합니다:
+
+      1. 정상(A7)과 병변의 **크롭 배율이 다른가**  ← 가장 위험
+      2. 크롭 원본 창이 너무 작아 확대되고 있는가
+      3. 초점이 안 맞은 사진이 얼마나 되는가
+      4. 같은 사진이 여러 라벨을 갖고 있는가
+      5. 박스가 이미지 밖을 가리키는가
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.config import CLASS_KO, NORMAL_LABEL
+
+    cfg = cfg or CFG()
+    out: dict = {}
+    print("=" * 68)
+    print(" 크롭 감사 — 숫자로 확인 (의학 지식 불필요)")
+    print("=" * 68)
+
+    # ── 1. 라벨별 병변 면적 비율: 크롭 배율이 라벨을 흘리는지 ────────
+    print("\n[1] 라벨별 bbox 면적 비율 — ★ 가장 중요한 점검")
+    print("    정상과 병변의 배율이 다르면 모델이 피부가 아니라 '확대 정도'를 학습합니다.")
+    has_box = df["bbox"].notna()
+    out["bbox_coverage"] = {}
+    rows = []
+    for lab, g in df.groupby("label"):
+        ar = g["area_ratio"].dropna()
+        frac_box = float(g["bbox"].notna().mean())
+        out["bbox_coverage"][lab] = frac_box
+        rows.append({
+            "label": f"{lab} {CLASS_KO.get(lab, '')}"[:22],
+            "n": len(g),
+            "bbox있음": f"{frac_box:.1%}",
+            "면적_중앙값": f"{ar.median():.2%}" if len(ar) else "-",
+            "면적_25%": f"{ar.quantile(.25):.2%}" if len(ar) else "-",
+            "면적_75%": f"{ar.quantile(.75):.2%}" if len(ar) else "-",
+        })
+    print(pd.DataFrame(rows).to_string(index=False))
+
+    med = df.groupby("label")["area_ratio"].median()
+    if NORMAL_LABEL in med.index and len(med) > 1:
+        m_norm = med[NORMAL_LABEL]
+        m_les = med.drop(NORMAL_LABEL).median()
+        out["area_median_normal"] = float(m_norm)
+        out["area_median_lesion"] = float(m_les)
+        ratio = m_norm / max(m_les, 1e-9)
+        out["area_ratio_normal_over_lesion"] = float(ratio)
+        print(f"\n    정상 중앙값 {m_norm:.2%}  vs  병변 중앙값 {m_les:.2%}  →  {ratio:.2f}배")
+        if ratio > 1.5 or ratio < 0.67:
+            print("    🚨 배율이 크게 다릅니다. 크롭만 봐도 정상/병변이 티가 납니다.")
+            print("       → 1단계가 피부가 아니라 '확대 정도'로 맞힐 수 있습니다.")
+            print("       → 대응: 1단계는 'full' 크롭으로 학습하세요 (배율 정보를 없앰).")
+        else:
+            print("    ✅ 배율이 비슷합니다. 이 경로의 지름길은 없어 보입니다.")
+
+    # ── 2. 크롭 원본 창 크기 ──────────────────────────────────────
+    print(f"\n[2] 크롭 창 크기 — 학습 입력은 {cfg.img_size}px 입니다")
+    sub = df[has_box].sample(min(n_sample * 4, int(has_box.sum())), random_state=seed)
+    sides = []
+    for _, r in sub.iterrows():
+        w = crop_window(r, cfg=cfg)
+        if w:
+            sides.append(min(w[2] - w[0], w[3] - w[1]))
+    if sides:
+        s = np.array(sides)
+        upscaled = float((s < cfg.img_size).mean())
+        out["crop_side_median"] = float(np.median(s))
+        out["frac_upscaled"] = upscaled
+        print(f"    짧은 변 중앙값 {np.median(s):.0f}px  "
+              f"(25% {np.quantile(s, .25):.0f} / 75% {np.quantile(s, .75):.0f})")
+        print(f"    {cfg.img_size}px 미만 = 확대해서 씀: {upscaled:.1%}")
+        if upscaled > 0.5:
+            print("    ⚠️ 절반 이상이 확대됩니다 — 없는 디테일을 만들어내는 셈입니다.")
+            print("       흐릿하게 보이는 게 정상입니다. margin 을 키우거나 img_size 를 낮추세요.")
+
+    # ── 3. 초점 ─────────────────────────────────────────────────
+    print("\n[3] 초점 (라플라시안 분산, 클수록 선명)")
+    picks = df.dropna(subset=["crop_path"]).sample(min(n_sample, len(df)), random_state=seed)
+    scores: dict[str, list[float]] = {}
+    for _, r in picks.iterrows():
+        try:
+            with Image.open(r["crop_path"]) as im:
+                scores.setdefault(str(r.get("label")), []).append(_blur_score(im))
+        except Exception:
+            continue
+    allv = np.array([v for vs in scores.values() for v in vs])
+    if len(allv):
+        out["blur_median"] = float(np.median(allv))
+        out["frac_blurry"] = float((allv < blur_threshold).mean())
+        print(f"    전체 중앙값 {np.median(allv):.0f}  |  "
+              f"{blur_threshold:.0f} 미만(흐림) {out['frac_blurry']:.1%}  (n={len(allv)})")
+        bl = pd.DataFrame([{"label": k, "n": len(v), "중앙값": f"{np.median(v):.0f}",
+                            "흐림비율": f"{(np.array(v) < blur_threshold).mean():.1%}"}
+                           for k, v in sorted(scores.items())])
+        print(bl.to_string(index=False))
+        bym = {k: float(np.median(v)) for k, v in scores.items()}
+        if NORMAL_LABEL in bym and len(bym) > 1:
+            others = np.median([v for k, v in bym.items() if k != NORMAL_LABEL])
+            r_blur = bym[NORMAL_LABEL] / max(others, 1e-9)
+            out["blur_ratio_normal_over_lesion"] = float(r_blur)
+            if r_blur > 1.6 or r_blur < 0.62:
+                print(f"    🚨 선명도가 계통적으로 다릅니다 — "
+                      f"정상 {bym[NORMAL_LABEL]:.0f} vs 병변 {others:.0f}")
+                print("       모델이 피부가 아니라 '사진 화질'로 맞힐 수 있습니다.")
+        if out["frac_blurry"] > 0.3:
+            print("    ⚠️ 흐린 사진이 많습니다. 실사용에서는 흐린 사진을 거절하는 게 맞습니다")
+            print("       (노트북 05 의 거절 임계값 + '다시 찍어주세요' 문구가 그 역할).")
+
+    # ── 4. 라벨 충돌 ────────────────────────────────────────────
+    print("\n[4] 같은 사진에 여러 라벨")
+    if "image_name" in df.columns:
+        per = df.groupby("image_name")["label"].nunique()
+        n_conf = int((per > 1).sum())
+        out["conflicting_images"] = n_conf
+        print(f"    라벨이 2개 이상인 파일명: {n_conf:,}건 " + ("✅" if n_conf == 0 else "🚨"))
+        if n_conf:
+            print("    → 파일명이 Training/Validation 에서 재사용된 것일 수 있습니다.")
+            print(f"       예: {list(per[per > 1].index[:3])}")
+
+    # ── 5. 박스가 이미지 밖 ─────────────────────────────────────
+    print("\n[5] 박스가 이미지 경계를 벗어남")
+    bad = 0
+    for _, r in df[has_box].iterrows():
+        b = _as_list(r.get("bbox"))
+        w, h = r.get("img_w"), r.get("img_h")
+        if not b or not w or not h:
+            continue
+        if b[0] < -1 or b[1] < -1 or b[2] > w + 1 or b[3] > h + 1 or b[2] <= b[0] or b[3] <= b[1]:
+            bad += 1
+    out["boxes_out_of_bounds"] = bad
+    print(f"    경계 이탈/역전 박스: {bad:,}건 " + ("✅" if bad == 0 else "🚨 좌표 해석 오류 의심"))
+
+    print("\n" + "=" * 68)
+    return out
+
+
+def contact_sheet(df: pd.DataFrame, per_class: int = 6, seed: int = 0,
+                  path_col: str = "crop_path") -> None:
+    """클래스별로 한 줄씩 나란히 놓습니다.
+
+    여기서 판단할 것은 **"이게 병변인가"가 아닙니다.** 그건 수의사의 일입니다.
+    비전문가가 할 수 있고, 해야 하는 판단은 이것뿐입니다:
+
+      · 줄마다 **서로 달라 보이는가** — 다 똑같아 보이면 모델도 구분 못 합니다
+      · 한 줄 안에서는 **비슷해 보이는가** — 제각각이면 라벨이 섞였을 수 있습니다
+      · 개 피부/털이 맞는가 — 사람 손, 바닥, 진료대만 보이면 크롭이 어긋난 것
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from PIL import Image
+
+    from src.config import CLASS_KO
+
+    labs = sorted(df["label"].dropna().unique())
+    if not labs:
+        print("라벨이 없습니다.")
+        return
+
+    fig, axes = plt.subplots(len(labs), per_class,
+                             figsize=(2.1 * per_class, 2.3 * len(labs)),
+                             squeeze=False)
+    axes = np.asarray(axes)
+
+    for i, lab in enumerate(labs):
+        g = df[(df["label"] == lab) & df[path_col].notna()]
+        picks = g.sample(min(per_class, len(g)), random_state=seed)
+        for j in range(per_class):
+            ax = axes[i][j]
+            ax.axis("off")
+            if j >= len(picks):
+                continue
+            try:
+                with Image.open(picks.iloc[j][path_col]) as im:
+                    ax.imshow(im.convert("RGB"))
+            except Exception:
+                ax.text(0.5, 0.5, "열기 실패", ha="center", fontsize=7)
+        axes[i][0].set_ylabel(lab)
+        axes[i][0].axis("on")
+        axes[i][0].set_xticks([]); axes[i][0].set_yticks([])
+        axes[i][0].set_ylabel(f"{lab}\n{CLASS_KO.get(lab, '')}", fontsize=7, rotation=0,
+                              ha="right", va="center", labelpad=34)
+
+    plt.tight_layout()
+    plt.show()
+    print("여기서 볼 것 (의학 지식 불필요):")
+    print("  1. 줄마다 서로 달라 보입니까?  전부 똑같아 보이면 → 모델도 구분 못 합니다")
+    print("  2. 한 줄 안에서는 비슷합니까?  제각각이면 → 라벨이 섞였을 수 있습니다")
+    print("  3. 개 피부/털이 맞습니까?      사람 손·바닥만 보이면 → 크롭이 어긋난 것")
+
+
 def preview_with_box(df: pd.DataFrame, n: int = 4, seed: int = 0,
                      frame: str = "auto", cfg: CFG | None = None) -> None:
     """bbox/polygon 을 이미지 위에 그려 좌표계가 맞는지 확인합니다.

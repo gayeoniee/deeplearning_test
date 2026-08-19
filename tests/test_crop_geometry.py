@@ -165,6 +165,97 @@ def test_crop_rel_survives_windows_to_linux():
                 os.environ["DOG_SKIN_WORK"] = old
 
 
+def _audit_frame(normal_side=200, lesion_side=200, normal_noise=40, lesion_noise=40,
+                 tmpdir=None, n_each=12):
+    """감사용 합성 데이터. 정상/병변의 박스 크기와 화질을 따로 조절합니다."""
+    import numpy as np
+    import pandas as pd
+    from PIL import Image
+
+    from src.config import CLASSES, NORMAL_LABEL
+
+    rng = np.random.default_rng(0)
+    root = Path(tmpdir)
+    rows = []
+    labs = [NORMAL_LABEL] * (n_each * 2) + [c for c in CLASSES for _ in range(n_each)]
+    for i, lab in enumerate(labs):
+        cp = root / "crops" / "m1.5" / f"{i}.jpg"
+        cp.parent.mkdir(parents=True, exist_ok=True)
+        noise = normal_noise if lab == NORMAL_LABEL else lesion_noise
+        arr = rng.normal(128, noise, (128, 128, 3)).clip(0, 255).astype("uint8")
+        Image.fromarray(arr).save(cp)
+        side = normal_side if lab == NORMAL_LABEL else lesion_side
+        rows.append({"image_name": f"{i}.jpg", "label": lab, "crop_path": str(cp),
+                     "crop_tag": "m1.5", "image_path": f"/absent/{i}.jpg",
+                     "img_w": 1920, "img_h": 1080,
+                     "bbox": [700, 300, 700 + side, 300 + side],
+                     "area_ratio": side * side / (1920 * 1080)})
+    return pd.DataFrame(rows)
+
+
+def test_audit_flags_scale_shortcut():
+    """★ 정상 박스가 병변 박스보다 훨씬 크면 크롭 배율이 정답을 흘립니다."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        df = _audit_frame(normal_side=520, lesion_side=200, tmpdir=td)
+        r = crop.audit(df, n_sample=40)
+    gap = r["area_ratio_normal_over_lesion"]
+    assert gap > 1.5, f"배율 격차 {gap:.2f} — 지름길을 못 잡았습니다"
+    # 노트북 03 이 이 값으로 1단계 크롭을 정합니다
+    assert ("full" if (gap > 1.5 or gap < 0.67) else "m1.5") == "full"
+
+
+def test_audit_passes_when_scales_match():
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        df = _audit_frame(normal_side=210, lesion_side=200, tmpdir=td)
+        r = crop.audit(df, n_sample=40)
+    gap = r["area_ratio_normal_over_lesion"]
+    assert 0.67 <= gap <= 1.5, f"배율이 같은데 격차 {gap:.2f} 로 보고됨 (거짓 경보)"
+
+
+def test_audit_flags_sharpness_shortcut():
+    """정상만 흐리면 모델이 '화질' 로 맞힐 수 있습니다."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        df = _audit_frame(normal_noise=2, lesion_noise=45, tmpdir=td)
+        r = crop.audit(df, n_sample=80)
+    assert "blur_ratio_normal_over_lesion" in r
+    assert r["blur_ratio_normal_over_lesion"] < 0.62, \
+        "정상만 흐린데 화질 지름길을 못 잡았습니다"
+
+
+def test_audit_detects_label_conflict_and_bad_boxes():
+    import tempfile
+
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as td:
+        df = _audit_frame(tmpdir=td)
+        # 같은 파일명에 다른 라벨 + 경계를 벗어난 박스
+        bad = df.iloc[[0]].copy()
+        bad["label"] = "A5"
+        bad["bbox"] = [[1900, 1000, 2400, 1500]]
+        df = pd.concat([df, bad], ignore_index=True)
+        r = crop.audit(df, n_sample=30)
+    assert r["conflicting_images"] >= 1, "라벨 충돌을 못 잡았습니다"
+    assert r["boxes_out_of_bounds"] >= 1, "경계 이탈 박스를 못 잡았습니다"
+
+
+def test_blur_score_orders_sharp_above_flat():
+    import numpy as np
+    from PIL import Image
+
+    flat = Image.fromarray(np.full((64, 64, 3), 128, "uint8"))
+    noisy = Image.fromarray(
+        np.random.default_rng(0).integers(0, 255, (64, 64, 3), dtype=np.uint8))
+    assert crop._blur_score(flat) < crop._blur_score(noisy)
+    assert crop._blur_score(flat) < 1.0     # 완전히 균일한 면은 0 에 가까움
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     fails = 0
