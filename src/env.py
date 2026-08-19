@@ -168,8 +168,9 @@ class Device:
     kind: str  # "cuda" | "mps" | "cpu"
     name: str = "CPU"
     vram_gb: float = 0.0
-    bf16: bool = False
+    bf16: bool = False       # 네이티브 bf16 (Ampere 8.0+). 에뮬레이션은 False 로 둡니다.
     count: int = 0
+    capability: str = ""
 
     @property
     def amp_dtype(self) -> str:
@@ -187,12 +188,17 @@ def device_info() -> Device:
 
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
+        # ⚠️ torch.cuda.is_bf16_supported() 는 소프트웨어 에뮬레이션까지 True 로 칩니다.
+        #    T4(Turing, 7.5)에서 True 가 나오는데, 실제로 bf16 을 쓰면 fp16 보다 훨씬 느립니다.
+        #    네이티브 bf16 은 Ampere(8.0) 이상에만 있으므로 compute capability 로 판정합니다.
+        real_bf16 = props.major >= 8
         return Device(
             kind="cuda",
             name=props.name,
             vram_gb=round(props.total_memory / 1024**3, 1),
-            bf16=torch.cuda.is_bf16_supported(),
+            bf16=real_bf16,
             count=torch.cuda.device_count(),
+            capability=f"{props.major}.{props.minor}",
         )
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
         return Device(kind="mps", name="Apple MPS")
@@ -265,7 +271,9 @@ def describe(verbose: bool = True) -> EnvSummary:
         print(f" 실행 환경   : {s.env}")
         print(f" Python      : {s.python}   |  torch {s.torch}")
         if d.kind == "cuda":
-            print(f" GPU         : {d.name}  {d.vram_gb}GB  x{d.count}  (bf16={d.bf16})")
+            amp = "bf16" if d.bf16 else "fp16 + GradScaler"
+            print(f" GPU         : {d.name}  {d.vram_gb}GB  x{d.count}  "
+                  f"(sm_{d.capability}, AMP={amp})")
         else:
             print(f" GPU         : 없음 ({d.kind}) — 학습은 매우 느립니다")
         print(f" 여유 디스크 : {s.free_disk_gb} GB")
