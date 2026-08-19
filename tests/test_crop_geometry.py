@@ -230,6 +230,86 @@ def test_window_is_single_source_of_truth():
     assert "expand_box(" not in src_crop_one, "_crop_one 이 창을 직접 계산합니다"
 
 
+def test_shortcut_baseline_feature_sets():
+    """★ 하한선은 **크롭에 보이는 특징만** 써야 합니다.
+
+    실제로 당한 문제: 종횡비·병변 개수·원본 해상도까지 넣었더니 하한선이 부풀려졌고,
+    CNN 이 넘어야 할 선을 실제보다 높게 잡을 뻔했습니다. 크롭은 정사각형이라
+    종횡비가 사라지고, 박스 하나만 자르니 병변 개수도 화면에 없습니다.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from src import split
+    from src.config import CFG, CLASSES, NORMAL_LABEL
+
+    assert set(crop.FEATURE_SETS) == {"scale_only", "all"}
+    scale = crop.FEATURE_SETS["scale_only"]
+    for hidden in ("aspect", "n_lesion", "img_w", "img_h"):
+        assert hidden not in scale, f"'{hidden}' 은 크롭에 안 보이는데 scale_only 에 있습니다"
+    assert "area_ratio" in scale and "win_side" in scale
+    assert set(scale) < set(crop.FEATURE_SETS["all"])
+
+    # 두 집합 모두 실제로 돌아가야 합니다
+    rng = np.random.default_rng(0)
+    rows = []
+    for i, lab in enumerate(([NORMAL_LABEL] * 60) + [c for c in CLASSES for _ in range(30)]):
+        side = 120 + 40 * CLASSES.index(lab) if lab in CLASSES else 150
+        rows.append({"label": lab, "animal_id": f"G{i // 6}", "phash": str(i),
+                     "img_w": 1920, "img_h": 1080, "crop_tag": "m1.5",
+                     "bbox": [600, 300, 600 + side, 300 + side],
+                     "n_lesion": int(rng.integers(1, 4)), "synthetic": False,
+                     "crop_path": f"/x/{i}.jpg", "image_path": f"/x/{i}.jpg"})
+    df = split.assign(pd.DataFrame(rows), CFG(), verbose=False)
+
+    for fs in ("scale_only", "all"):
+        out = crop.shortcut_baseline(df, cfg=CFG(img_size=224), features=fs, verbose=False)
+        assert "stage1_auroc_metadata_only" in out
+        assert 0.0 <= out["stage2_macro_f1_metadata_only"] <= 1.0
+
+    try:
+        crop.shortcut_baseline(df, features="없는집합", verbose=False)
+    except KeyError as e:
+        assert "모르는 특징 집합" in str(e)
+    else:
+        raise AssertionError("모르는 특징 집합을 통과시켰습니다")
+
+
+def test_audit_bounds_verdict_uses_rate_not_absolute_px():
+    """★ 경계 이탈 판정은 절대 px 이 아니라 건수 비율로.
+
+    실측에서 4/45,885건이 최대 135px 벗어났는데, 절대 px 기준(50px)으로는
+    🚨 좌표 오류로 오판했습니다. 좌표 해석이 틀렸으면 수천 건이 어긋납니다.
+    """
+    import tempfile
+
+    import pandas as pd
+
+    with tempfile.TemporaryDirectory() as td:
+        df = _audit_frame(tmpdir=td, n_each=40)          # 정상 행 다수
+        bad = df.iloc[[0]].copy()
+        bad["bbox"] = [[846, 975, 1131, 1215]]           # 아래로 135px 초과
+        bad["img_w"], bad["img_h"] = 1920, 1080
+        df.loc[:, "img_w"], df.loc[:, "img_h"] = 1920, 1080
+        r = crop.audit(pd.concat([df, bad], ignore_index=True), n_sample=30)
+
+    assert r["boxes_out_of_bounds"] == 1
+    # 라벨러 오차로 판정되어야 하는 조건: 드물고(1% 미만) 이탈량도 작음(30% 미만)
+    assert r["boxes_out_of_bounds_frac"] < 0.01, "드문 이탈인데 비율이 높게 계산됨"
+    assert r["box_overflow_max_rel"] < 0.3, "이미지 높이 대비 이탈 비율이 잘못 계산됨"
+
+    # 반대 경우: 계통적으로 어긋나면 좌표 오류로 판정해야 합니다
+    import tempfile as _tf
+
+    with _tf.TemporaryDirectory() as td2:
+        df2 = _audit_frame(tmpdir=td2, n_each=4)          # 작은 데이터
+        df2.loc[:, "img_w"], df2.loc[:, "img_h"] = 1920, 1080
+        df2["bbox"] = [[100, 100, 3000, 2500]] * len(df2)  # 전부 이미지 밖
+        r2 = crop.audit(df2, n_sample=10)
+    assert r2["boxes_out_of_bounds_frac"] > 0.5, "계통적 이탈을 못 잡았습니다"
+    assert r2["box_overflow_max_rel"] > 0.3
+
+
 def test_audit_flags_within_lesion_spread():
     """정상/병변 배율은 같아도 병변끼리 다르면 2단계 지름길입니다."""
     import tempfile

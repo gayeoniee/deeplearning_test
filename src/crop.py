@@ -601,13 +601,21 @@ def audit(df: pd.DataFrame, n_sample: int = 400, seed: int = 0,
         for idx, lab, b, w, h, over in bad_rows[:5]:
             bb = [round(v, 1) for v in b]
             print(f"      {lab}  bbox={bb}  이미지={w}x{h}  이탈 {over:.0f}px")
-        if worst < 50:
-            print("    → 이탈량이 작습니다. 좌표 해석 오류가 아니라 **라벨러의 오차**로 보입니다.")
-            print("       (해석이 틀렸다면 수백~수천 px 단위로 어긋납니다)")
-            print(f"       {len(bad_rows)}/{int(has_box.sum()):,}건이므로 학습에 영향은 없습니다.")
-            print("       crop.expand_box 가 어차피 이미지 안으로 잘라 넣습니다.")
+        # 판정은 절대 px 이 아니라 **건수 + 상대 비율**로 합니다.
+        # 좌표 해석이 틀렸으면 수천 건이, 이미지 크기에 맞먹는 규모로 어긋납니다.
+        frac_rows = len(bad_rows) / max(int(has_box.sum()), 1)
+        rel = worst / max(float(df["img_h"].median() or 1), 1.0)
+        out["boxes_out_of_bounds_frac"] = frac_rows
+        out["box_overflow_max_rel"] = rel
+        print(f"    전체 대비 {frac_rows:.3%},  최대 이탈량은 이미지 높이의 {rel:.1%}")
+        # 라벨러 오차: 드물고(1% 미만) 이탈량도 이미지 크기에 비해 작을 때
+        # 좌표 해석 오류: 계통적으로 많거나(1% 이상) 이미지 규모로 어긋날 때
+        if frac_rows < 0.01 and rel < 0.3:
+            print("    → **라벨러의 오차**로 보입니다. 좌표 해석 오류가 아닙니다.")
+            print("       (해석이 틀렸다면 수천 건이, 이미지 크기에 맞먹게 어긋납니다)")
+            print("       crop 이 어차피 이미지 안으로 잘라 넣으므로 학습에 영향 없습니다.")
         else:
-            print("    🚨 이탈량이 큽니다. 좌표 해석 오류를 의심하세요 (x/y 교환, 스케일 불일치).")
+            print("    🚨 좌표 해석 오류를 의심하세요 (x/y 교환, 스케일 불일치).")
             print("       crop.preview_with_box() 로 그 행들을 직접 보세요.")
         out["boxes_out_of_bounds_examples"] = [
             {"label": lab, "bbox": b, "img": [w, h], "overflow_px": over}
@@ -703,17 +711,39 @@ def full_crop_loss(df: pd.DataFrame, tag: str = "full", cfg: CFG | None = None,
     return out
 
 
+# 어떤 메타데이터가 **크롭 이미지에 실제로 보이는가**.
+#
+# 이 구분이 중요합니다. 크롭에 안 보이는 특징까지 넣으면 하한선이 부풀려지고,
+# CNN 이 넘어야 할 선을 실제보다 높게 잡게 됩니다.
+#
+#   보임    박스 면적, 크롭 창 크기 → 확대 배율로 나타남 (질감의 굵기)
+#   안 보임 종횡비   → expand_box(square=True) 라 크롭은 항상 정사각형
+#           병변 개수 → 박스 하나만 잘라내므로 나머지는 화면 밖
+#           원본 해상도 → 크롭 후 리사이즈되어 흔적이 거의 없음
+FEATURE_SETS: dict[str, list[str]] = {
+    # 크롭 배율이 흘리는 양만. **f320 도입 여부는 이걸로 판단하세요.**
+    "scale_only": ["area_ratio", "log_area", "win_side", "win_over_input"],
+    # 메타데이터 전체. 데이터셋에 상관이 얼마나 있는지 보는 참고용 (상한).
+    "all": ["area_ratio", "log_area", "aspect", "win_side", "win_over_input",
+            "img_w", "img_h", "n_lesion", "synthetic"],
+}
+
+
 def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
-                      verbose: bool = True) -> dict:
+                      features: str = "scale_only", verbose: bool = True) -> dict:
     """★ 사진을 **안 보고** 라벨을 맞혀봅니다.
 
-    쓰는 정보는 박스 크기·모양·이미지 해상도뿐입니다. 픽셀은 한 장도 안 봅니다.
-    그런데도 점수가 잘 나오면, 그 점수는 **크롭 방식이 정답을 흘린 양**입니다.
+    픽셀은 한 장도 안 봅니다. 그런데도 점수가 잘 나오면, 그 점수는
+    **크롭 방식이 정답을 흘린 양**입니다. CNN 이 넘어야 하는 **하한선**이죠.
 
-    이 값이 CNN 이 넘어야 하는 **하한선**입니다:
+        CNN macro-F1 0.45  vs  하한선 0.40   →  피부에서 얻은 건 0.05 뿐
+        CNN macro-F1 0.45  vs  하한선 0.18   →  대부분 피부에서 얻음 ✅
 
-        CNN macro-F1 0.45  vs  메타데이터만 0.40   →  피부에서 얻은 건 0.05 뿐
-        CNN macro-F1 0.45  vs  메타데이터만 0.18   →  대부분 피부에서 얻음 ✅
+    features:
+      "scale_only" (기본) — 크롭 배율로 **이미지에 실제로 보이는** 것만.
+                            f320 재크롭 여부는 이 숫자로 판단하세요.
+      "all"               — 메타데이터 전체. 종횡비·병변 개수·해상도까지 포함하는데
+                            그건 크롭에 안 보이므로 하한선이 부풀려집니다. 참고용.
 
     분할은 `fold` 컬럼을 그대로 씁니다 — 그래야 CNN 점수와 같은 조건입니다.
     """
@@ -724,6 +754,10 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
     from src.config import CLASS_KO, CLASSES, NORMAL_LABEL
 
     cfg = cfg or CFG()
+    if features not in FEATURE_SETS:
+        raise KeyError(f"모르는 특징 집합: {features}. 가능: {sorted(FEATURE_SETS)}")
+    cols = FEATURE_SETS[features]
+
     need = {"fold", "is_holdout", "label", "bbox", "img_w", "img_h"}
     miss = need - set(df.columns)
     if miss:
@@ -738,16 +772,17 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
             bw, bh = max(b[2] - b[0], 0.0), max(b[3] - b[1], 0.0)
             win = crop_window(r, cfg=cfg)
             ws = float(min(win[2] - win[0], win[3] - win[1])) if win else 0.0
-            rows.append([
-                bw * bh / max(w * h, 1),                  # 면적 비율
-                np.log1p(bw * bh),                        # 절대 면적
-                bw / max(bh, 1e-6),                       # 종횡비
-                ws,                                       # 크롭 창 크기 (= 확대 배율)
-                ws / max(cfg.img_size, 1),                # 확대/축소 여부
-                w, h,                                      # 원본 해상도
-                float(r.get("n_lesion") or 0),
-                float(bool(r.get("synthetic"))),
-            ])
+            f = {
+                "area_ratio": bw * bh / max(w * h, 1),
+                "log_area": np.log1p(bw * bh),
+                "aspect": bw / max(bh, 1e-6),
+                "win_side": ws,                            # 크롭 창 = 확대 배율
+                "win_over_input": ws / max(cfg.img_size, 1),
+                "img_w": w, "img_h": h,
+                "n_lesion": float(r.get("n_lesion") or 0),
+                "synthetic": float(bool(r.get("synthetic"))),
+            }
+            rows.append([f[c] for c in cols])
         return np.asarray(rows, dtype=np.float32)
 
     dev = df[~df["is_holdout"]]
@@ -759,7 +794,10 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
         print("=" * 68)
         print(" 지름길 하한선 — 사진을 보지 않고 메타데이터만으로 분류")
         print("=" * 68)
-        print(f"  사용 특징: 박스 면적·종횡비·크롭 창 크기·원본 해상도 (픽셀 미사용)")
+        note = ("크롭 배율로 이미지에 실제로 보이는 것만"
+                if features == "scale_only" else "메타데이터 전체 (크롭에 안 보이는 것 포함)")
+        print(f"  특징 집합: {features} — {note}")
+        print(f"  사용 컬럼: {', '.join(cols)}   (픽셀 미사용)")
         print(f"  train {len(tr):,} / val {len(va):,}  (CNN 과 같은 fold {fold})")
 
     # ── 1단계: 정상 vs 이상 ──────────────────────────────────────
@@ -787,8 +825,11 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
         c2i = {c: i for i, c in enumerate(CLASSES)}
         y2tr = tr.loc[m_tr, "label"].map(c2i).to_numpy()
         y2va = va.loc[m_va, "label"].map(c2i).to_numpy()
-        clf2 = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(
-            Xtr[m_tr], y2tr)
+        # ⚠️ 클래스 가중치를 안 주면 큰 클래스(A2/A3)만 찍고 작은 클래스는 전멸합니다.
+        #    그럼 macro-F1 이 '배율 지름길' 이 아니라 '클래스 빈도' 를 재게 됩니다.
+        #    CNN 쪽은 class_weight 를 쓰므로 조건을 맞춰야 비교가 성립합니다.
+        clf2 = HistGradientBoostingClassifier(
+            max_iter=200, random_state=0, class_weight="balanced").fit(Xtr[m_tr], y2tr)
         p2 = clf2.predict(Xva[m_va])
         f1 = float(f1_score(y2va, p2, average="macro", zero_division=0))
         out["stage2_macro_f1_metadata_only"] = f1
@@ -804,6 +845,8 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
                 mark = "  ← 배율로 맞힘" if rec[i] > 0.5 else ""
                 name = pad_ko(f"{c} {CLASS_KO.get(c, '')}", 30)
                 print(f"  {name}{rec[i]:>9.3f}{sup[i]:>8,}{mark}")
+            print("\n  (클래스 가중치를 준 상태입니다 — 안 주면 큰 클래스만 찍어서"
+                  " 배율 지름길과 클래스 빈도를 구분할 수 없습니다)")
             if f1 > random_f1 * 2:
                 print(f"\n  🚨 무작위의 {f1 / random_f1:.1f}배입니다. 크롭 배율이 병변 종류까지 흘립니다.")
                 print("     → CNN 이 이 숫자를 크게 넘지 못하면, 피부를 안 보고 있는 겁니다.")
