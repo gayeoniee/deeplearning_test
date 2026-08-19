@@ -833,6 +833,14 @@ def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
         p2 = clf2.predict(Xva[m_va])
         f1 = float(f1_score(y2va, p2, average="macro", zero_division=0))
         out["stage2_macro_f1_metadata_only"] = f1
+
+        # ★ 클래스별로 저장합니다. 지름길은 평균에 고르게 퍼지지 않고
+        #    박스 크기가 극단인 클래스(가장 작은 것, 가장 큰 것)에 몰립니다.
+        #    macro 평균만 보면 그게 안 보입니다.
+        _, _rec, _, _ = precision_recall_fscore_support(
+            y2va, p2, labels=list(range(len(CLASSES))), zero_division=0)
+        out["stage2_recall_metadata_only"] = {c: float(_rec[i])
+                                              for i, c in enumerate(CLASSES)}
         random_f1 = 1.0 / len(CLASSES)
         if verbose:
             print(f"\n[2단계] 병변 6종 macro-F1 = {f1:.4f}   "
