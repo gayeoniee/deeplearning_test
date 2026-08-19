@@ -188,6 +188,36 @@ def run(
     return out
 
 
+def available_tags() -> list[str]:
+    """만들어져 있는 크롭 태그 목록 (예: ['full', 'm1.5', 'm2.5'])."""
+    d = env.work_root() / "crops"
+    return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
+
+
+def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True) -> pd.DataFrame:
+    """같은 매니페스트를 다른 크롭 버전으로 갈아 끼웁니다.
+
+    크롭 파일명은 원본 경로의 해시로 정해지므로, 태그만 바꿔 경로를 다시 계산하면
+    됩니다. 크롭 방식(margin 1.5 vs 2.5 vs full)을 비교 실험할 때 씁니다.
+    매니페스트를 태그별로 여러 벌 들고 다닐 필요가 없습니다.
+    """
+    out_dir = env.work_root() / "crops"
+    out = df.copy()
+    out["crop_path"] = out["image_path"].apply(lambda p: str(_out_path(p, out_dir, tag)))
+    out["crop_rel"] = out["crop_path"].apply(lambda p: str(Path(p).relative_to(out_dir)))
+    out["crop_tag"] = tag
+
+    exists = out["crop_path"].apply(lambda p: Path(p).exists())
+    if verbose:
+        print(f"[crop] 태그 '{tag}' 로 전환 — {exists.sum():,}/{len(out):,}장 존재")
+    if not exists.all():
+        miss = int((~exists).sum())
+        print(f"⚠️ {miss:,}장이 없습니다. 이 태그의 크롭이 안 만들어졌을 수 있습니다.")
+        print(f"   사용 가능한 태그: {available_tags()}")
+        out = out[exists].reset_index(drop=True)
+    return out
+
+
 def preview(df: pd.DataFrame, n: int = 8, by_class: bool = True, seed: int = 0) -> None:
     """크롭 결과를 눈으로 확인합니다.
 

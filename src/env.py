@@ -287,6 +287,70 @@ def describe(verbose: bool = True) -> EnvSummary:
     return s
 
 
+def load_prepared(
+    zip_path: str | Path | None = None,
+    dest: Path | None = None,
+    force: bool = False,
+) -> Path:
+    """로컬에서 만든 `dogskin_prepared.zip` 을 클라우드 작업 폴더로 풉니다.
+
+    한국 PC 에서 `prepare_local.py` 로 전처리한 결과를 Drive/Kaggle 에 올린 뒤,
+    학습 노트북 첫 부분에서 이걸 부르면 됩니다.
+
+    zip_path 를 생략하면 흔한 위치를 자동으로 뒤집니다.
+
+    ⚠️ 반드시 **로컬 디스크**로 풉니다. Drive 에 마운트된 채로 이미지를 읽으면
+       네트워크 왕복 때문에 학습이 10배 가까이 느려집니다.
+    """
+    import zipfile
+
+    dest = Path(dest) if dest else work_root()
+
+    if zip_path is None:
+        cands: list[Path] = []
+        for base in (Path("/content/drive/MyDrive"), Path("/kaggle/input"),
+                     Path("/content"), Path.cwd()):
+            if base.exists():
+                cands += sorted(base.rglob("dogskin_prepared*.zip"))[:5]
+        if not cands:
+            raise FileNotFoundError(
+                "dogskin_prepared.zip 을 찾지 못했습니다.\n"
+                "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
+                "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
+                "  · 경로를 직접 주려면 env.load_prepared('/경로/dogskin_prepared.zip')"
+            )
+        zip_path = cands[0]
+        print(f"[env] 자동 탐색: {zip_path}")
+
+    zip_path = Path(zip_path)
+    marker = dest / ".prepared_from"
+    if marker.exists() and marker.read_text().strip() == str(zip_path) and not force:
+        print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
+    else:
+        dest.mkdir(parents=True, exist_ok=True)
+        size = zip_path.stat().st_size / 1024**3
+        print(f"[env] 압축 해제 {zip_path.name} ({size:.2f}GB) → {dest}")
+        print("      (Drive 에서 직접 읽지 않고 로컬 디스크로 풉니다 — 학습 속도 때문)")
+        with zipfile.ZipFile(zip_path) as z:
+            z.extractall(dest)
+        marker.write_text(str(zip_path))
+
+    crops = dest / "crops"
+    mans = sorted((dest / "manifests").glob("*.parquet")) if (dest / "manifests").exists() else []
+    n_crop = sum(1 for _ in crops.rglob("*.jpg")) if crops.exists() else 0
+    tags = sorted(p.name for p in crops.iterdir() if p.is_dir()) if crops.exists() else []
+
+    print(f"[env] 크롭 {n_crop:,}장, 크롭 태그 {tags}")
+    print(f"[env] 매니페스트 {[m.name for m in mans]}")
+    if n_crop == 0:
+        print("⚠️ 크롭이 하나도 없습니다. zip 내용을 확인하세요.")
+    if not any("final" in m.name for m in mans):
+        print("⚠️ manifest_final.parquet 이 없습니다.")
+        print("   로컬에서 `python prepare_local.py --finalize` 를 돌렸는지 확인하세요.")
+        print("   이게 없으면 개체 단위 분할(fold/holdout)이 안 되어 있습니다.")
+    return dest
+
+
 def set_seed(seed: int = 42, deterministic: bool = False) -> None:
     """재현성을 위한 시드 고정.
 
