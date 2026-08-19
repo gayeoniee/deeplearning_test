@@ -1,163 +1,59 @@
-# 데이터셋 카드 — AI Hub 반려동물 피부 질환 (561)
+# 데이터셋 카드 — (아직 생성 전)
 
-> ⚠️ 이 파일은 `src/scan.py` 가 실물 데이터를 훑어 자동 생성합니다. 손으로 고치지 마세요.
-> 생성 시각: `2026-08-19T03:52:33+00:00`  |  스캔 경로: `/tmp/claude-0/-home-user-deeplearning-test/a4adefca-fa0a-5067-890b-cec6b2351c8d/scratchpad/fakedata`
+이 파일은 **`src/scan.py` 가 실물 데이터를 훑어 자동으로 덮어씁니다.**
+손으로 채우지 마세요.
 
-## 규모
+## 생성 방법
 
-| 항목 | 값 |
-|---|---|
-| 이미지 | 419 장 |
-| 라벨 JSON | 419 개 |
-| 용량 | 0.0 GB |
-| 무증상(정상) 데이터 | 없음 |
+```python
+from src import scan
+rep = scan.run()              # STEP 1(다운로드) 이후 실행
+scan.write_dataset_card(rep)  # 이 파일을 덮어씀
+```
 
-## 클래스 분포
+`notebooks/01_데이터_스캔_EDA.ipynb` 를 그냥 돌리면 위 두 줄이 실행됩니다.
 
-| 클래스 | 이미지 수 | 비율 |
-|---|---:|---:|
-| A2 | 96 | 22.9% |
-| A5 | 67 | 16.0% |
-| A6 | 64 | 15.3% |
-| A4 | 64 | 15.3% |
-| A1 | 64 | 15.3% |
-| A3 | 64 | 15.3% |
+## 여기에 채워질 내용
 
-불균형 비(최다/최소): **1.5배**
+- 이미지/라벨 수, 용량
+- 클래스별 분포와 불균형 비
+- 폴더 축 (반려견/반려묘, 일반카메라/더모스코프, 유증상/**무증상 존재 여부**)
+- JSON 키 경로 전체와 역할별 추정 (`label`, `polygon`, `bbox`, `animal_id` …)
+- 병변 면적 비율 분포 — ROI 크롭이 필요한지 판단하는 근거
+- 중복률과 **클래스 간 중복 그룹 수**
+- 개체ID 후보 — 데이터 누수를 막는 그룹 분할의 기준
 
-## 폴더 축
+## 아직 확인되지 않은 것들
 
-- **species**: {'반려견': 774, '반려묘': 64}
-- **camera**: {'일반카메라': 614, '더모스코프': 224}
-- **symptom**: {'유증상': 838}
-- **split**: {'Training': 422, 'Validation': 416, 'TS': 211, 'TL': 211, 'VS': 208, 'VL': 208}
-- **class**: {'A2': 192, 'A5': 134, 'A6': 128, 'A4': 128, 'A1': 128, 'A3': 128}
+계획 수립 시점에는 `aihub.or.kr` 접근이 불가능해서, 아래는 이 데이터를 사용한
+공개 프로젝트들에서 교차 확인한 **추정치**입니다. 스캔 결과로 반드시 검증하세요.
 
-## JSON 스키마 추정
+| 항목 | 추정 | 검증 방법 |
+|---|---|---|
+| 반려견 병변 클래스 | A1~A6 6종 | `rep.class_counts` |
+| 무증상(정상) 데이터 | 초기엔 없었고 이후 추가되었다는 보고가 있음 | `rep.has_normal` |
+| 전체 규모 | 반려동물 1만 마리 / 50만 장 이상 | `rep.n_images` |
+| 병변 면적 | 93% 가 이미지의 5% 미만 | `rep.lesion_area["under_5pct"]` |
+| 중복 오염 | 같은 이미지가 여러 클래스에 존재 | `rep.dup_estimate["cross_class_groups"]` |
 
-| 역할 | 추정 키 |
+추정이 틀리면 계획을 바꾸면 됩니다. **스캔 결과가 항상 이깁니다.**
+
+---
+
+## 참고: 파이프라인 검증에 쓴 합성 데이터
+
+실물 데이터가 없는 상태에서 코드를 검증하기 위해, AI Hub 구조를 흉내낸
+합성 데이터로 전 구간을 돌려봤습니다. 그때 스캐너가 추론해낸 스키마 예시입니다
+(**실물이 아니라 합성 데이터 기준**이니 참고만 하세요):
+
+| 역할 | 추론된 키 |
 |---|---|
 | label | `labelingInfo[].label.label_disease_lv_3` |
-| polygon | `labelingInfo[].polygon.location[].x` |
-| bbox | `labelingInfo[].box.location[].x` |
+| polygon | `labelingInfo[].polygon.location[]` |
+| bbox | `labelingInfo[].box.location[]` (x/y/width/height 형식) |
 | image_name | `images.file_name` |
 | animal_id | `metadata.pet_id` |
-| breed | `metadata.breed` |
-| age | `metadata.age` |
-| camera | `metadata.camera` |
-| width | `images.width` |
-| height | `images.height` |
+| width / height | `images.width` / `images.height` |
 
-<details><summary>키 경로 전체 (상위 60)</summary>
-
-| 출현율 | 키 | 타입 | 예시 |
-|---:|---|---|---|
-| 100% | `images.file_name` | ['str'] | ['IMG_견_DA2001_A2_02.jpg'] |
-| 100% | `images.width` | ['int'] | ['640'] |
-| 100% | `images.height` | ['int'] | ['480'] |
-| 100% | `metadata.pet_id` | ['str'] | ['DA2001'] |
-| 100% | `metadata.breed` | ['str'] | ['말티즈'] |
-| 100% | `metadata.age` | ['int'] | ['3'] |
-| 100% | `metadata.camera` | ['str'] | ['일반카메라'] |
-| 100% | `labelingInfo[].label.label_disease_lv_3` | ['str'] | ['A2'] |
-| 100% | `labelingInfo[].label.label_disease_nm` | ['str'] | ['테스트'] |
-| 100% | `labelingInfo[].polygon.location[].x` | ['int'] | ['99'] |
-| 100% | `labelingInfo[].polygon.location[].y` | ['int'] | ['35'] |
-| 100% | `labelingInfo[].box.location[].x` | ['int'] | ['99'] |
-| 100% | `labelingInfo[].box.location[].y` | ['int'] | ['35'] |
-| 100% | `labelingInfo[].box.location[].width` | ['int'] | ['99'] |
-| 100% | `labelingInfo[].box.location[].height` | ['int'] | ['99'] |
-
-</details>
-
-## 병변 면적 비율
-
-- 중앙값 **2.08%**, p90 3.59%
-- 이미지의 5% 미만인 비율: **100.0%**
-- 1% 미만: 11.9%
-
-> **→ ROI 크롭 필수.** 전체 이미지를 그대로 넣으면 모델이 배경을 학습합니다.
-
-## 중복
-
-- 샘플 419장 기준 중복률 **16.23%**
-- 서로 다른 클래스에 걸친 중복 그룹: **45건**
-
-## 해상도 (샘플)
-
-- 640x480: 400
-
-## 파일명 패턴 (숫자→`#`, 영문→`L`)
-
-- `L_견_L#_L#_#` × 387
-- `L_묘_L#_L#_#` × 32
-
-## 개체ID 후보
-
-데이터 누수를 막으려면 **개체 단위**로 train/val 을 나눠야 합니다.
-
-| 토큰 위치 | 고유값 | 그룹당 평균 장수 | 예시 |
-|---:|---:|---:|---|
-| #2 | 38 | 11.0 | ['DA1000', 'DA5001', 'DA5000'] |
-
-JSON 필드 후보: `metadata.pet_id`
-
-## ⚠️ 경고
-
-- ⚠️ 서로 다른 클래스에 동일 이미지가 45건 발견됨 (샘플 419장 기준). 선행 프로젝트가 실패한 원인입니다 — dedup.py 로 반드시 제거하세요.
-
-## 샘플 JSON
-
-```json
-{
-  "images": {
-    "file_name": "IMG_견_DA2001_A2_02.jpg",
-    "width": 640,
-    "height": 480
-  },
-  "metadata": {
-    "pet_id": "DA2001",
-    "breed": "말티즈",
-    "age": 3,
-    "camera": "일반카메라"
-  },
-  "labelingInfo": [
-    {
-      "label": {
-        "label_disease_lv_3": "A2",
-        "label_disease_nm": "테스트"
-      },
-      "polygon": {
-        "location": [
-          {
-            "x": 99,
-            "y": 35
-          },
-          {
-            "x": 198,
-            "y": 35
-          },
-          {
-            "x": 198,
-            "y": 134
-          },
-          {
-            "x": 99,
-            "y": 134
-          }
-        ]
-      },
-      "box": {
-        "location": [
-          {
-            "x": 99,
-            "y": 35,
-            "width": 99,
-            "height": 99
-          }
-        ]
-      }
-    }
-  ]
-}
-```
+실물 AI Hub JSON 이 이와 다르더라도 `scan.py` 가 알아서 찾아냅니다.
+못 찾으면 `rep.json_keys` 를 직접 보고 `labels.py` 의 추출 함수를 조정하면 됩니다.
