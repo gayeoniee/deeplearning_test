@@ -64,8 +64,12 @@ def _die(msg: str) -> None:
 
 # ──────────────────────────────────────────────────────────────
 def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
-               selective: bool = True) -> None:
-    """청크 하나: 다운로드 → 선택 해제 → 매니페스트 → 크롭 → 원본 삭제."""
+               mode: str = "zip") -> None:
+    """청크 하나: 다운로드 → 매니페스트 → 크롭 → 원본 삭제.
+
+    mode="zip"     : zip 을 **풀지 않고** 안에서 바로 읽습니다. 디스크를 가장 적게 씁니다.
+    mode="extract" : 반려묘·더모스코프를 뺀 선택 해제 후 처리 (디스크 여유가 있을 때)
+    """
     from src import aihub, crop, env, labels, scan
     from src.config import CFG
 
@@ -75,14 +79,18 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
     cfg = CFG()
 
     print("\n" + "=" * 68)
-    print(f" 청크 {name} — {info['desc']} ({info['gb']}GB)")
+    print(f" 청크 {name} — {info['desc']} ({info['gb']}GB), 방식: {mode}")
     print("=" * 68)
 
     free = env.free_disk_gb()
-    need = info["gb"] * (1.6 if selective else 2.2)
+    # zip 방식은 zip 자체 + 크롭본만 필요. extract 방식은 해제본까지.
+    need = info["gb"] * (1.15 if mode == "zip" else 1.7)
     print(f" 여유 디스크 {free:.0f}GB / 필요 약 {need:.0f}GB")
     if free < need:
-        print(f" ⚠️ 공간이 빠듯합니다. 그래도 진행하려면 Enter, 중단하려면 Ctrl+C")
+        print(" ⚠️ 공간이 부족합니다.")
+        if mode != "zip":
+            print("    --mode zip 을 쓰면 압축 해제 없이 처리해 훨씬 적게 듭니다.")
+        print("    그래도 진행하려면 Enter, 중단하려면 Ctrl+C")
         input()
 
     # 1) 다운로드
@@ -90,25 +98,27 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
     aihub.install()
     raw = env.data_root() / name
     raw.mkdir(parents=True, exist_ok=True)
-    failed = aihub.download(key, [info["filekey"]], dest=raw, chunk=1)
-    if failed:
+    if aihub.download(key, [info["filekey"]], dest=raw, chunk=1):
         _die("다운로드 실패. 한국에서 실행 중인지, 활용신청이 승인됐는지 확인하세요.")
 
-    # 2) 압축 해제 — 반려묘/더모스코프를 빼면 디스크를 크게 아낍니다
-    archives = list(raw.rglob("*.zip"))
-    if selective and archives:
+    archives = sorted(raw.rglob("*.zip"))
+
+    if mode == "zip" and archives:
+        # 2) 압축을 풀지 않고 zip 안에서 직접 읽습니다
+        print(f"\n[매니페스트] zip 직접 읽기 — 압축 해제 안 함")
+        dfs = [labels.build_from_zip(a, save=False) for a in archives]
+        import pandas as pd
+        df = pd.concat(dfs, ignore_index=True) if len(dfs) > 1 else dfs[0]
+    else:
+        # 2') 선택 해제 후 디스크에서 처리
         for a in archives:
             aihub.extract_selective(a, dest=raw, remove_archive=True)
-    else:
-        aihub.unpack_all(raw)
-    aihub.peek(raw)
+        aihub.peek(raw)
+        print("\n[매니페스트]")
+        rep = scan.run(raw, quick=True)
+        df = labels.build(root=raw, report=rep, save=False)
 
-    # 3) 매니페스트 (이 청크만)
-    print("\n[매니페스트]")
-    rep = scan.run(raw, quick=True)
-    df = labels.build(root=raw, report=rep, save=False)
-
-    # 4) 크롭
+    # 3) 크롭
     print("\n[크롭]")
     for m in margins:
         tag = f"m{m:g}" if m > 0 else "full"
@@ -117,7 +127,7 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
             df = d          # 첫 margin 결과를 대표 매니페스트로 저장
     labels.save(df, f"chunk_{name}.parquet")
 
-    # 5) 원본 삭제 — 다음 청크를 위해 공간 확보
+    # 4) 원본 삭제 — 다음 청크를 위해 공간 확보
     if not keep_raw:
         print(f"\n[정리] 원본 삭제: {raw}")
         shutil.rmtree(raw, ignore_errors=True)
@@ -230,8 +240,9 @@ def main() -> None:
     p.add_argument("--margins", default="1.5,2.5,0",
                    help="크롭 margin. 0 은 크롭 없이 중앙 정사각")
     p.add_argument("--keep-raw", action="store_true", help="원본을 지우지 않음")
-    p.add_argument("--no-selective", action="store_true",
-                   help="zip 을 통째로 해제 (반려묘·더모스코프 포함, 디스크 2배 필요)")
+    p.add_argument("--mode", choices=["zip", "extract"], default="zip",
+                   help="zip: 압축을 풀지 않고 바로 읽음 (디스크 최소, 기본값) / "
+                        "extract: 선택 해제 후 처리 (디스크 여유가 있을 때)")
     p.add_argument("--out", default="dogskin_prepared.zip")
     a = p.parse_args()
 
@@ -251,7 +262,7 @@ def main() -> None:
     margins = [float(x) for x in a.margins.split(",")]
 
     if a.all:
-        step_chunk("VL01", margins, a.keep_raw, not a.no_selective)
+        step_chunk("VL01", margins, a.keep_raw, a.mode)
         step_finalize(margins)
         step_package(Path(a.out))
     else:
@@ -260,7 +271,7 @@ def main() -> None:
         if a.scan:
             step_scan()
         if a.chunk:
-            step_chunk(a.chunk, margins, a.keep_raw, not a.no_selective)
+            step_chunk(a.chunk, margins, a.keep_raw, a.mode)
         if a.finalize:
             step_finalize(margins)
         if a.package:

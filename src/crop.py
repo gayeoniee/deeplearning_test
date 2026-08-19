@@ -72,6 +72,32 @@ def _out_path(src: str, out_dir: Path, tag: str) -> Path:
     return out_dir / tag / h[:2] / f"{Path(src).stem}_{h}.jpg"
 
 
+_ZIP_CACHE: dict = {}
+
+
+def _open_source(row):
+    """이미지를 엽니다. zip 안에 있으면 풀지 않고 바로 읽습니다.
+
+    zip 핸들은 스레드마다 따로 열어 캐시합니다 (ZipFile 은 스레드 안전하지 않음).
+    """
+    import io
+    import threading
+    import zipfile
+
+    from PIL import Image
+
+    member = row.get("zip_member")
+    if not isinstance(member, str) or not member:
+        return Image.open(row["image_path"])
+
+    key = (threading.get_ident(), row["zip_path"])
+    zf = _ZIP_CACHE.get(key)
+    if zf is None:
+        zf = zipfile.ZipFile(row["zip_path"])
+        _ZIP_CACHE[key] = zf
+    return Image.open(io.BytesIO(zf.read(member)))
+
+
 def _crop_one(args) -> tuple[int, str | None]:
     i, row, out_dir, tag, cfg = args
     from PIL import Image
@@ -82,7 +108,7 @@ def _crop_one(args) -> tuple[int, str | None]:
         return i, str(dst)
 
     try:
-        with Image.open(row["image_path"]) as im:
+        with _open_source(row) as im:
             im = im.convert("RGB")
             W, H = im.size
             bbox = row.get("bbox")

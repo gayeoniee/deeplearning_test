@@ -25,33 +25,54 @@ from src import env
 from src.config import CFG
 
 
-def compute_hashes(paths: list[str], hash_size: int = 16, workers: int = 4) -> dict[str, str]:
-    """이미지 경로 → phash 16진 문자열."""
+def compute_hashes(rows, hash_size: int = 16, workers: int = 4,
+                   path_col: str = "image_path") -> dict[str, str]:
+    """이미지 → phash 16진 문자열. 키는 `path_col` 값입니다.
+
+    rows 는 DataFrame 이거나 경로 문자열 리스트일 수 있습니다.
+    DataFrame 이면 `zip_member` 를 보고 **zip 안에서 직접** 읽습니다
+    (압축을 풀지 않는 모드에서도 중복 제거가 동작해야 하므로).
+    """
     import imagehash
     from PIL import Image
 
-    Image.MAX_IMAGE_PIXELS = None  # 큰 이미지 경고 억제
+    from src.crop import _open_source
 
-    def one(p: str) -> tuple[str, str | None]:
+    Image.MAX_IMAGE_PIXELS = None
+
+    if isinstance(rows, pd.DataFrame):
+        items = rows.drop_duplicates(subset=[path_col]).to_dict("records")
+    else:
+        items = [{path_col: p} for p in rows]
+
+    def one(rec: dict) -> tuple[str, str | None]:
+        key = rec[path_col]
         try:
-            with Image.open(p) as im:
-                return p, str(imagehash.phash(im.convert("RGB"), hash_size=hash_size))
+            with _open_source({**rec, "image_path": key}) as im:
+                return key, str(imagehash.phash(im.convert("RGB"), hash_size=hash_size))
         except Exception:
-            return p, None
+            return key, None
 
     out: dict[str, str] = {}
     if workers > 1:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
-            for p, h in tqdm(ex.map(one, paths), total=len(paths), desc="phash"):
+            for p, h in tqdm(ex.map(one, items), total=len(items), desc="phash"):
                 if h:
                     out[p] = h
     else:
-        for p in tqdm(paths, desc="phash"):
-            _, h = one(p)
+        for rec in tqdm(items, desc="phash"):
+            p, h = one(rec)
             if h:
                 out[p] = h
+
+    if not out:
+        raise RuntimeError(
+            f"이미지를 한 장도 읽지 못했습니다 (기준 컬럼: {path_col}).\n"
+            "  · zip 모드라면 zip_path/zip_member 컬럼이 살아있는지 확인하세요.\n"
+            "  · 크롭본으로 중복을 잡으려면 path_col='crop_path' 를 쓰세요."
+        )
     return out
 
 
@@ -117,6 +138,7 @@ def run(
     keep: str = "first",
     drop_cross_class: bool = True,
     workers: int = 4,
+    path_col: str | None = None,
     verbose: bool = True,
 ) -> tuple[pd.DataFrame, dict]:
     """매니페스트에서 중복을 제거하고 `dup_cluster` 컬럼을 붙입니다.
@@ -125,22 +147,32 @@ def run(
     **전부 버립니다**. 어느 쪽이 맞는지 알 수 없는 오염 데이터이기 때문입니다.
     """
     cfg = cfg or CFG()
-    paths = df["image_path"].unique().tolist()
+    # 기본은 **원본 이미지** 기준입니다.
+    #   잡으려는 문제가 "같은 사진이 여러 클래스 폴더에 존재"이므로 원본을 봐야 맞습니다.
+    #   크롭본으로 해시하면 서로 다른 사진인데 병변 부위만 비슷한 경우까지 묶여
+    #   멀쩡한 데이터가 버려집니다 (합성 데이터 실험에서 291→197 로 과하게 줄었습니다).
+    #   zip 모드에서도 _open_source 가 zip 안에서 원본을 읽으므로 문제없습니다.
+    if path_col is None:
+        path_col = "image_path"
+    n_uniq = df[path_col].nunique()
     if verbose:
-        print(f"[dedup] {len(paths):,}장 해시 계산 (hash_size={cfg.phash_size})")
+        print(f"[dedup] {n_uniq:,}장 해시 계산 (기준 {path_col}, hash_size={cfg.phash_size})")
 
-    hashes = compute_hashes(paths, hash_size=cfg.phash_size, workers=workers)
+    hashes = compute_hashes(df, hash_size=cfg.phash_size, workers=workers, path_col=path_col)
     clusters = cluster(hashes, max_hamming=cfg.dedup_hamming)
 
     out = df.copy()
-    out["phash"] = out["image_path"].map(hashes)
-    out["dup_cluster"] = out["image_path"].map(clusters)
+    out["phash"] = out[path_col].map(hashes)
+    out["dup_cluster"] = out[path_col].map(clusters)
 
-    # 해시 실패분은 자기 자신을 클러스터로
+    # 해시 실패분은 자기 자신을 클러스터로 (전부 실패해도 죽지 않도록 방어)
     miss = out["dup_cluster"].isna()
     if miss.any():
-        base = int(out["dup_cluster"].max() or 0) + 1
+        mx = out["dup_cluster"].max()
+        base = 0 if pd.isna(mx) else int(mx) + 1
         out.loc[miss, "dup_cluster"] = range(base, base + int(miss.sum()))
+        if verbose:
+            print(f"[dedup] ⚠️ {int(miss.sum()):,}장은 해시 실패 — 중복 판정에서 제외됩니다")
     out["dup_cluster"] = out["dup_cluster"].astype(int)
 
     info: dict = {"n_before": len(out), "n_hashed": len(hashes)}

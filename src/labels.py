@@ -213,6 +213,116 @@ def _closest(cands: list[Path], json_path: Path) -> Path:
 # ──────────────────────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────────────────────
+def build_from_zip(
+    zip_path: Path | str,
+    animal_token_index: int | None = None,
+    dogs_only: bool = True,
+    normal_camera_only: bool = True,
+    save: bool = True,
+    verbose: bool = True,
+) -> pd.DataFrame:
+    """zip 을 **풀지 않고** 그 안의 JSON 을 직접 읽어 매니페스트를 만듭니다.
+
+    왜: 90GB zip 을 풀면 추가로 50GB 가 필요해서 디스크가 부족한 경우가 많습니다.
+        zip 은 중앙 디렉터리가 있어 멤버 단위 임의 접근이 싸므로,
+        압축을 풀지 않고 바로 읽는 편이 디스크를 아끼면서도 충분히 빠릅니다.
+
+    image_path 대신 `zip_member` 컬럼에 zip 내부 경로를 담습니다.
+    crop.run() 이 이 컬럼을 보고 zip 에서 직접 이미지를 읽습니다.
+    """
+    import zipfile
+
+    zip_path = Path(zip_path)
+    rows: list[dict] = []
+
+    with zipfile.ZipFile(zip_path) as z:
+        names = z.namelist()
+        jsons = [n for n in names if n.lower().endswith(".json")]
+        # ⚠️ AI Hub 는 Training 과 Validation 에 같은 파일명을 재사용합니다.
+        #    파일명 하나에 이미지 하나만 기억하면 Validation 라벨이 Training 이미지에
+        #    잘못 붙어서, split 이 전부 train 으로 뭉개집니다.
+        #    → 후보를 전부 모아두고 경로가 가장 비슷한 것을 고릅니다.
+        img_by_stem: dict[str, list[str]] = defaultdict(list)
+        for n in names:
+            if Path(n).suffix.lower() in IMG_EXT:
+                img_by_stem[Path(n).name].append(n)
+                img_by_stem[Path(n).stem].append(n)
+
+        if verbose:
+            print(f"[labels] {zip_path.name}: JSON {len(jsons):,}개 / "
+                  f"이미지 {sum(1 for n in names if Path(n).suffix.lower() in IMG_EXT):,}장")
+
+        unmatched = 0
+        for jn in tqdm_maybe(jsons, verbose):
+            try:
+                data = json.loads(z.read(jn).decode("utf-8-sig"))
+            except Exception:
+                continue
+            axes = path_axes(Path(jn))
+
+            for rec in (data if isinstance(data, list) else [data]):
+                if not isinstance(rec, dict):
+                    continue
+                iname = extract_image_name(rec) or Path(jn).stem
+                cands = img_by_stem.get(iname) or img_by_stem.get(Path(iname).stem) or []
+                if not cands:
+                    unmatched += 1
+                    continue
+                # 라벨 JSON 과 경로 구성요소가 가장 많이 겹치는 이미지를 고릅니다
+                # (.../2.라벨링데이터/TL01/... ↔ .../1.원천데이터/TS01/... 를 맞춰줌)
+                jparts = set(Path(jn).parts)
+                member = max(cands, key=lambda c: len(jparts & set(Path(c).parts)))
+
+                iaxes = path_axes(Path(member))
+                merged = {k: (iaxes[k] or axes[k]) for k in axes}
+                label = extract_label(rec, member)
+                if label is None and merged["symptom"] == "무증상":
+                    label = "A0"
+                w, h = extract_wh(rec)
+                bbox, polygon = extract_geometry(rec)
+                area = None
+                if bbox and w and h:
+                    area = min(max(0.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])) / (w * h), 1.0)
+
+                rows.append({
+                    "image_path": f"{zip_path}!{member}",   # 사람이 읽기 위한 표기
+                    "zip_path": str(zip_path),
+                    "zip_member": member,
+                    "json_path": f"{zip_path}!{jn}",
+                    "image_name": Path(member).name,
+                    "label": label,
+                    "animal_id": extract_animal_id(rec, Path(member).name, animal_token_index),
+                    "bbox": bbox, "polygon": polygon,
+                    "img_w": w, "img_h": h, "area_ratio": area,
+                    **merged,
+                })
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        raise RuntimeError(f"{zip_path} 에서 매니페스트를 만들지 못했습니다.")
+    if verbose:
+        print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건)")
+
+    df = _filter_scope(df, dogs_only, normal_camera_only, verbose)
+    df = _finalize_animal_id(df, verbose)
+    if save:
+        _save(df, env.ensure_dirs()["manifests"] / f"raw_{zip_path.stem}.parquet")
+    if verbose:
+        report_manifest(df)
+    return df
+
+
+def tqdm_maybe(seq, verbose: bool = True):
+    if not verbose:
+        return seq
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(seq, desc="json")
+    except ImportError:
+        return seq
+
+
 def build(
     root: Path | None = None,
     report: scan.ScanReport | None = None,
