@@ -37,3 +37,23 @@ scan.write_dataset_card(rep)  # 이 파일을 덮어씀
 | 중복 오염 | 같은 이미지가 여러 클래스에 존재 | `rep.dup_estimate["cross_class_groups"]` |
 
 추정이 틀리면 계획을 바꾸면 됩니다. **스캔 결과가 항상 이깁니다.**
+
+---
+
+## 참고: 파이프라인 검증에 쓴 합성 데이터
+
+실물 데이터가 없는 상태에서 코드를 검증하기 위해, AI Hub 구조를 흉내낸
+합성 데이터로 전 구간을 돌려봤습니다. 그때 스캐너가 추론해낸 스키마 예시입니다
+(**실물이 아니라 합성 데이터 기준**이니 참고만 하세요):
+
+| 역할 | 추론된 키 |
+|---|---|
+| label | `labelingInfo[].label.label_disease_lv_3` |
+| polygon | `labelingInfo[].polygon.location[]` |
+| bbox | `labelingInfo[].box.location[]` (x/y/width/height 형식) |
+| image_name | `images.file_name` |
+| animal_id | `metadata.pet_id` |
+| width / height | `images.width` / `images.height` |
+
+실물 AI Hub JSON 이 이와 다르더라도 `scan.py` 가 알아서 찾아냅니다.
+못 찾으면 `rep.json_keys` 를 직접 보고 `labels.py` 의 추출 함수를 조정하면 됩니다.
