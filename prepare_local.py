@@ -78,7 +78,7 @@ def _die(msg: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
+def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa: C901
                mode: str = "zip") -> None:
     """청크 하나: 다운로드 → 매니페스트 → 크롭 → 원본 삭제.
 
@@ -153,11 +153,18 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,
 
     # 3) 크롭
     print("\n[크롭]")
+    first = True
     for m in margins:
-        tag = f"m{m:g}" if m > 0 else "full"
-        d = crop.run(df, cfg, margin=m, tag=tag)
-        if m == margins[0]:
-            df = d          # 첫 margin 결과를 대표 매니페스트로 저장
+        # 음수는 "고정 픽셀 창" 을 뜻합니다: -320 → f320
+        # margin 크롭은 병변 크기에 따라 확대 배율이 달라져 그 배율이 정답을 흘립니다.
+        # 고정 창은 피부 1mm 가 항상 같은 픽셀 수라 그 경로를 막습니다.
+        if m < 0:
+            d = crop.run(df, cfg, fixed_px=int(-m))
+        else:
+            d = crop.run(df, cfg, margin=m, tag=f"m{m:g}" if m > 0 else "full")
+        if first:
+            df = d          # 첫 항목 결과를 대표 매니페스트로 저장
+            first = False
     labels.save(df, f"chunk_{name}.parquet")
 
     # 4) 원본 삭제 — 다음 청크를 위해 공간 확보
@@ -270,8 +277,9 @@ def main() -> None:
     p.add_argument("--download", action="store_true", help="(단독) 다운로드만")
     p.add_argument("--scan", action="store_true", help="(단독) 스캔만")
     p.add_argument("--filekey", default="517022")
-    p.add_argument("--margins", default="1.5,2.5,0",
-                   help="크롭 margin. 0 은 크롭 없이 중앙 정사각")
+    p.add_argument("--margins", default="1.5,2.5,0,-320",
+                   help="크롭 방식 목록. 양수=margin 배율(m1.5), 0=중앙 정사각(full), "
+                        "음수=고정 픽셀 창(-320 → f320, 배율이 일정해 지름길 차단)")
     p.add_argument("--keep-raw", action="store_true", help="원본을 지우지 않음")
     p.add_argument("--mode", choices=["zip", "extract"], default="zip",
                    help="zip: 압축을 풀지 않고 바로 읽음 (디스크 최소, 기본값) / "

@@ -91,6 +91,10 @@ class CFG:
     img_size: int = 288
     crop_margin: float = 1.5          # ROI 크롭 여유 배율. 1.0=박스 딱 맞게, 2.0=주변 2배
     crop_min_px: int = 64             # 이보다 작은 병변 박스는 버림 (노이즈)
+    # >0 이면 margin 대신 **고정 픽셀 창**으로 자릅니다 (병변 중심, 항상 같은 크기).
+    # margin 크롭은 병변 크기에 따라 확대 배율이 달라져 그 배율이 정답을 흘립니다.
+    # → src/crop.py 의 fixed_box() 설명, docs/cautions/08 참고
+    crop_fixed_px: int = 0
     save_crop_size: int = 512         # 디스크에 저장할 크롭 해상도 (학습 시 img_size 로 리사이즈)
     save_crop_quality: int = 92
 

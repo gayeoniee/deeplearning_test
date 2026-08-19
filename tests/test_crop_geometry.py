@@ -165,6 +165,108 @@ def test_crop_rel_survives_windows_to_linux():
                 os.environ["DOG_SKIN_WORK"] = old
 
 
+def test_fixed_box_is_scale_invariant():
+    """★ 고정 픽셀 창의 핵심 성질: 병변 크기가 달라도 창 크기가 같습니다.
+
+    실측 문제: A1 박스 0.47% vs A6 3.08% (6.5배). margin 크롭은 그 비율을 그대로
+    확대 배율 차이로 바꿔서, 모델이 피부 대신 배율을 세게 만듭니다.
+    """
+    small = [900, 500, 940, 540]        # 40px 병변
+    large = [900, 500, 1160, 760]       # 260px 병변
+    W, H, SIDE = 1920, 1080, 320
+
+    ws = crop.fixed_box(small, W, H, SIDE)
+    wl = crop.fixed_box(large, W, H, SIDE)
+    for w in (ws, wl):
+        assert (w[2] - w[0]) == SIDE and (w[3] - w[1]) == SIDE, f"창 크기가 {SIDE} 가 아님: {w}"
+
+    # margin 크롭은 반대로 크게 달라야 합니다 (그게 문제의 원인)
+    ms = crop.expand_box(small, W, H, margin=1.5, min_px=64)
+    ml = crop.expand_box(large, W, H, margin=1.5, min_px=64)
+    assert (ml[2] - ml[0]) > 3 * (ms[2] - ms[0]), "margin 크롭의 배율 차이가 재현되지 않음"
+
+
+def test_fixed_box_centers_on_lesion_and_stays_in_bounds():
+    W, H, SIDE = 1920, 1080, 320
+    b = [900, 500, 1000, 600]
+    x1, y1, x2, y2 = crop.fixed_box(b, W, H, SIDE)
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    assert abs(cx - 950) <= 1 and abs(cy - 550) <= 1, "병변 중심에서 벗어남"
+
+    # 모서리 병변: 크기를 줄이지 않고 창을 안쪽으로 밀어야 합니다
+    for corner in ([0, 0, 40, 40], [W - 40, H - 40, W, H]):
+        w = crop.fixed_box(corner, W, H, SIDE)
+        assert w[0] >= 0 and w[1] >= 0 and w[2] <= W and w[3] <= H, f"경계 이탈: {w}"
+        assert (w[2] - w[0]) == SIDE and (w[3] - w[1]) == SIDE, f"모서리에서 창이 줄어듦: {w}"
+
+
+def test_fixed_box_clamps_to_image_when_side_too_big():
+    """창이 이미지보다 크면 이미지 크기로 줄입니다 (정사각 유지)."""
+    w = crop.fixed_box([900, 500, 1000, 600], 1920, 1080, 4000)
+    assert (w[2] - w[0]) == (w[3] - w[1]) == 1080
+
+
+def test_crop_window_understands_fixed_tag():
+    """'f320' 태그로 저장된 크롭도 좌표 복원이 되어야 합니다 (CAM 게이트용)."""
+    row = {"bbox": [900, 500, 1000, 600], "img_w": 1920, "img_h": 1080, "crop_tag": "f320"}
+    w = crop.crop_window(row)
+    assert (w[2] - w[0]) == 320
+    rel = crop.bbox_in_crop(row)
+    assert rel is not None
+    # 100px 병변 / 320px 창 → 폭의 약 31%, 중앙에
+    assert abs((rel[2] - rel[0]) - 100 / 320) < 0.01
+    assert abs((rel[0] + rel[2]) / 2 - 0.5) < 0.01
+
+
+def test_window_is_single_source_of_truth():
+    """_crop_one 과 crop_window 가 같은 함수를 쓰는지 (갈라지면 게이트가 거짓말)."""
+    import inspect
+
+    src_crop_one = inspect.getsource(crop._crop_one)
+    src_window_fn = inspect.getsource(crop.crop_window)
+    assert "_window(" in src_crop_one, "_crop_one 이 _window 를 쓰지 않습니다"
+    assert "_window(" in src_window_fn, "crop_window 가 _window 를 쓰지 않습니다"
+    # 창 계산을 직접 하고 있으면 안 됩니다
+    assert "expand_box(" not in src_crop_one, "_crop_one 이 창을 직접 계산합니다"
+
+
+def test_audit_flags_within_lesion_spread():
+    """정상/병변 배율은 같아도 병변끼리 다르면 2단계 지름길입니다."""
+    import tempfile
+
+    import numpy as np
+    import pandas as pd
+    from PIL import Image
+
+    from src.config import CLASSES, NORMAL_LABEL
+
+    rng = np.random.default_rng(0)
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        rows = []
+        # A1 은 작고 A6 은 크게, 정상은 그 중간 → (a) 통과 / (b) 걸림
+        sides = {c: 200 for c in CLASSES}
+        sides["A1"] = 120
+        sides["A6"] = 620
+        sides[NORMAL_LABEL] = 205
+        for i, lab in enumerate([NORMAL_LABEL] * 24 + [c for c in CLASSES for _ in range(12)]):
+            cp = root / "crops" / "m1.5" / f"{i}.jpg"
+            cp.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(
+                rng.normal(128, 40, (96, 96, 3)).clip(0, 255).astype("uint8")).save(cp)
+            s = sides[lab]
+            rows.append({"image_name": f"{i}.jpg", "label": lab, "crop_path": str(cp),
+                         "crop_tag": "m1.5", "image_path": f"/absent/{i}.jpg",
+                         "img_w": 1920, "img_h": 1080,
+                         "bbox": [600, 300, 600 + s, 300 + s],
+                         "area_ratio": s * s / (1920 * 1080)})
+        r = crop.audit(pd.DataFrame(rows), n_sample=40)
+
+    assert 0.67 <= r["area_ratio_normal_over_lesion"] <= 1.5, "정상/병변은 같아야 하는 설정"
+    assert r["area_spread_within_lesions"] > 2.0, "병변 간 배율 격차를 못 잡았습니다"
+    assert r["area_largest_class"] == "A6" and r["area_smallest_class"] == "A1"
+
+
 def _audit_frame(normal_side=200, lesion_side=200, normal_noise=40, lesion_noise=40,
                  tmpdir=None, n_each=12):
     """감사용 합성 데이터. 정상/병변의 박스 크기와 화질을 따로 조절합니다."""

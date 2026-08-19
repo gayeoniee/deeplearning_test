@@ -64,6 +64,58 @@ def expand_box(
             min(int(round(nx2)), img_w), min(int(round(ny2)), img_h))
 
 
+def fixed_box(bbox, img_w: int, img_h: int, side: int) -> tuple[int, int, int, int]:
+    """병변 중심에서 **항상 같은 픽셀 크기**의 정사각형을 잘라냅니다.
+
+    왜 필요한가 — margin 배율 크롭의 치명적 결함:
+      margin 1.5 크롭은 병변이 클수록 넓게, 작을수록 좁게 자릅니다.
+      그걸 다 같은 224px 로 리사이즈하면 **작은 병변은 크게 확대**됩니다.
+      실측: A1 박스 중앙값 0.47% vs A6 3.08% → 6.5배 차이.
+      그러면 모델은 피부 대신 "확대 배율"을 세서 클래스를 맞힐 수 있습니다.
+
+      고정 픽셀 창은 그 경로를 막습니다. 피부 1mm 가 항상 같은 픽셀 수입니다.
+      대신 큰 병변은 창을 넘어 잘립니다 — 그건 감수하는 대가입니다.
+    """
+    if bbox and len(bbox) == 4:
+        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    else:
+        cx, cy = img_w / 2, img_h / 2
+
+    side = min(side, img_w, img_h)          # 이미지보다 클 수는 없습니다
+    half = side / 2
+    x1, y1, x2, y2 = cx - half, cy - half, cx + half, cy + half
+
+    # 경계를 벗어나면 크기를 줄이는 대신 중심을 밀어 넣습니다 (배율 유지가 목적)
+    if x1 < 0:
+        x2 -= x1; x1 = 0
+    if y1 < 0:
+        y2 -= y1; y1 = 0
+    if x2 > img_w:
+        x1 -= x2 - img_w; x2 = img_w
+    if y2 > img_h:
+        y1 -= y2 - img_h; y2 = img_h
+
+    return (max(int(x1), 0), max(int(y1), 0),
+            min(int(round(x2)), img_w), min(int(round(y2)), img_h))
+
+
+def _window(bbox, img_w: int, img_h: int, margin: float = 0.0,
+            fixed_px: int = 0, min_px: int = 64) -> tuple[int, int, int, int]:
+    """크롭 창을 정하는 **단 하나의** 함수.
+
+    `_crop_one`(크롭 생성)과 `crop_window`(사후 좌표 복원)가 모두 이걸 씁니다.
+    두 곳에 같은 로직을 두면 갈라지고, 갈라지면 Grad-CAM 게이트가 거짓말합니다.
+    """
+    if fixed_px > 0:
+        return fixed_box(bbox, img_w, img_h, fixed_px)
+    if bbox and len(bbox) == 4 and margin > 0:
+        return expand_box(bbox, img_w, img_h, margin=margin, min_px=min_px)
+    # 박스가 없거나 margin 이 없으면 중앙 정사각 (전체이미지 실험군)
+    s = min(img_w, img_h)
+    x1, y1 = (img_w - s) // 2, (img_h - s) // 2
+    return (x1, y1, x1 + s, y1 + s)
+
+
 def _out_path(src: str, out_dir: Path, tag: str) -> Path:
     """원본 경로를 해시해 충돌 없는 출력 파일명을 만듭니다."""
     import hashlib
@@ -115,17 +167,11 @@ def _crop_one(args) -> tuple[int, str | None]:
             if isinstance(bbox, str):
                 bbox = json.loads(bbox)
 
-            if bbox and cfg.crop_margin > 0:
-                x1, y1, x2, y2 = expand_box(
-                    bbox, W, H, margin=cfg.crop_margin, min_px=cfg.crop_min_px
-                )
-                if x2 - x1 < 8 or y2 - y1 < 8:
-                    return i, None
-                im = im.crop((x1, y1, x2, y2))
-            else:
-                # 박스가 없으면 중앙 정사각 크롭 (전체이미지 실험군)
-                s = min(W, H)
-                im = im.crop(((W - s) // 2, (H - s) // 2, (W + s) // 2, (H + s) // 2))
+            x1, y1, x2, y2 = _window(bbox, W, H, margin=cfg.crop_margin,
+                                     fixed_px=cfg.crop_fixed_px, min_px=cfg.crop_min_px)
+            if x2 - x1 < 8 or y2 - y1 < 8:
+                return i, None
+            im = im.crop((x1, y1, x2, y2))
 
             s = cfg.save_crop_size
             if max(im.size) > s:
@@ -141,23 +187,42 @@ def run(
     df: pd.DataFrame,
     cfg: CFG | None = None,
     margin: float | None = None,
+    fixed_px: int | None = None,
     tag: str | None = None,
     workers: int = 8,
     verbose: bool = True,
 ) -> pd.DataFrame:
     """크롭을 만들고 `crop_path` 컬럼을 붙입니다.
 
-    margin 을 바꿔가며 여러 번 부르면 tag 별로 따로 저장되어
-    STEP 4 에서 "어느 크롭이 제일 좋은가"를 실험할 수 있습니다.
+    두 가지 방식이 있습니다:
+      margin=1.5    병변 박스의 1.5배를 잘라냄. 병변 크기에 따라 **배율이 달라짐**
+      fixed_px=320  병변 중심에서 항상 320px. **배율이 일정** (지름길 차단)
+      margin=0      중앙 정사각 (박스를 안 씀. 'full')
+
+    여러 번 불러 tag 별로 저장해 두면 STEP 4 에서 비교할 수 있습니다.
     """
     cfg = cfg or CFG()
+    over: dict = {}
     if margin is not None:
-        cfg = CFG(**{**cfg.to_dict(), "crop_margin": margin})
-    tag = tag or (f"m{cfg.crop_margin:g}" if cfg.crop_margin > 0 else "full")
+        over["crop_margin"] = margin
+    if fixed_px is not None:
+        over["crop_fixed_px"] = fixed_px
+    if over:
+        cfg = CFG(**{**cfg.to_dict(), **over})
+
+    if tag is None:
+        if cfg.crop_fixed_px > 0:
+            tag = f"f{cfg.crop_fixed_px}"
+        elif cfg.crop_margin > 0:
+            tag = f"m{cfg.crop_margin:g}"
+        else:
+            tag = "full"
 
     out_dir = env.ensure_dirs()["crops"]
     if verbose:
-        print(f"[crop] margin={cfg.crop_margin} tag={tag} → {out_dir / tag}")
+        how = (f"고정 {cfg.crop_fixed_px}px" if cfg.crop_fixed_px > 0
+               else (f"margin {cfg.crop_margin}" if cfg.crop_margin > 0 else "중앙 정사각"))
+        print(f"[crop] {how}  tag={tag} → {out_dir / tag}")
         n_box = df["bbox"].notna().sum()
         print(f"[crop] bbox 있는 행 {n_box:,}/{len(df):,} "
               f"({n_box / max(len(df), 1):.1%}) — 없는 행은 중앙 크롭")
@@ -191,13 +256,20 @@ def run(
 
 
 def margin_of_tag(tag: str) -> float:
-    """크롭 태그에서 margin 을 되돌립니다. 'm1.5' → 1.5, 'full' → 0."""
+    """크롭 태그에서 margin 을 되돌립니다. 'm1.5' → 1.5, 'full'/'f320' → 0."""
     if not isinstance(tag, str) or not tag.startswith("m"):
         return 0.0
     try:
         return float(tag[1:])
     except ValueError:
         return 0.0
+
+
+def fixed_of_tag(tag: str) -> int:
+    """고정 픽셀 태그에서 창 크기를 되돌립니다. 'f320' → 320, 그 외 0."""
+    if not isinstance(tag, str) or len(tag) < 2 or tag[0] != "f" or not tag[1:].isdigit():
+        return 0
+    return int(tag[1:])
 
 
 def _as_list(v):
@@ -225,14 +297,9 @@ def crop_window(row, tag: str | None = None, cfg: CFG | None = None):
     if W <= 0 or H <= 0:
         return None
 
-    margin = margin_of_tag(tag or row.get("crop_tag") or "")
-    if margin > 0 and bbox and len(bbox) == 4:
-        return expand_box(bbox, W, H, margin=margin, min_px=cfg.crop_min_px)
-
-    # margin 이 없거나 bbox 가 없으면 중앙 정사각 크롭이었습니다 (_crop_one 의 else 분기)
-    s = min(W, H)
-    x1, y1 = (W - s) // 2, (H - s) // 2
-    return (x1, y1, x1 + s, y1 + s)
+    t = tag or row.get("crop_tag") or ""
+    return _window(bbox, W, H, margin=margin_of_tag(t),
+                   fixed_px=fixed_of_tag(t), min_px=cfg.crop_min_px)
 
 
 def geometry_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> dict:
@@ -424,13 +491,31 @@ def audit(df: pd.DataFrame, n_sample: int = 400, seed: int = 0,
         out["area_median_lesion"] = float(m_les)
         ratio = m_norm / max(m_les, 1e-9)
         out["area_ratio_normal_over_lesion"] = float(ratio)
-        print(f"\n    정상 중앙값 {m_norm:.2%}  vs  병변 중앙값 {m_les:.2%}  →  {ratio:.2f}배")
+        print(f"\n    (a) 정상 vs 병변:  {m_norm:.2%}  vs  {m_les:.2%}  →  {ratio:.2f}배")
         if ratio > 1.5 or ratio < 0.67:
-            print("    🚨 배율이 크게 다릅니다. 크롭만 봐도 정상/병변이 티가 납니다.")
-            print("       → 1단계가 피부가 아니라 '확대 정도'로 맞힐 수 있습니다.")
-            print("       → 대응: 1단계는 'full' 크롭으로 학습하세요 (배율 정보를 없앰).")
+            print("        🚨 크롭만 봐도 정상/병변이 티가 납니다.")
+            print("           → 1단계가 피부가 아니라 '확대 정도'로 맞힐 수 있습니다.")
+            print("           → 대응: 1단계를 'full' 크롭으로 (노트북 03 이 자동 전환)")
         else:
-            print("    ✅ 배율이 비슷합니다. 이 경로의 지름길은 없어 보입니다.")
+            print("        ✅ 배율이 비슷합니다.")
+
+    # 병변 6종 **사이**의 배율 차이 — 2단계의 지름길
+    les = med.drop(NORMAL_LABEL, errors="ignore").dropna()
+    if len(les) > 1:
+        spread = float(les.max() / max(les.min(), 1e-9))
+        out["area_spread_within_lesions"] = spread
+        out["area_largest_class"] = str(les.idxmax())
+        out["area_smallest_class"] = str(les.idxmin())
+        print(f"\n    (b) 병변 6종 사이:  {les.idxmin()} {les.min():.2%}  ~  "
+              f"{les.idxmax()} {les.max():.2%}  →  {spread:.1f}배")
+        if spread > 2.0:
+            print("        🚨 병변 종류끼리도 배율이 크게 다릅니다.")
+            print(f"           → 2단계가 '박스 크면 {les.idxmax()}' 로 맞힐 수 있습니다.")
+            print("           → 대응: 고정 픽셀 크롭(f320)을 만들어 배율을 통일하세요.")
+            print("              로컬에서: py prepare_local.py --chunk VL01 --margins -320")
+            print("           → 먼저 crop.shortcut_baseline() 으로 실제 피해량을 재세요.")
+        else:
+            print("        ✅ 병변 종류 간 배율은 비슷합니다.")
 
     # ── 2. 크롭 원본 창 크기 ──────────────────────────────────────
     print(f"\n[2] 크롭 창 크기 — 학습 입력은 {cfg.img_size}px 입니다")
@@ -498,18 +583,152 @@ def audit(df: pd.DataFrame, n_sample: int = 400, seed: int = 0,
 
     # ── 5. 박스가 이미지 밖 ─────────────────────────────────────
     print("\n[5] 박스가 이미지 경계를 벗어남")
-    bad = 0
-    for _, r in df[has_box].iterrows():
+    bad_rows = []
+    for idx, r in df[has_box].iterrows():
         b = _as_list(r.get("bbox"))
         w, h = r.get("img_w"), r.get("img_h")
         if not b or not w or not h:
             continue
-        if b[0] < -1 or b[1] < -1 or b[2] > w + 1 or b[3] > h + 1 or b[2] <= b[0] or b[3] <= b[1]:
-            bad += 1
-    out["boxes_out_of_bounds"] = bad
-    print(f"    경계 이탈/역전 박스: {bad:,}건 " + ("✅" if bad == 0 else "🚨 좌표 해석 오류 의심"))
+        over = max(-b[0], -b[1], b[2] - w, b[3] - h)          # 얼마나 벗어났나 (px)
+        if over > 1 or b[2] <= b[0] or b[3] <= b[1]:
+            bad_rows.append((idx, r.get("label"), b, int(w), int(h), float(over)))
+    out["boxes_out_of_bounds"] = len(bad_rows)
+    print(f"    경계 이탈/역전 박스: {len(bad_rows):,}건 " + ("✅" if not bad_rows else "⚠️"))
+    if bad_rows:
+        worst = max(x[5] for x in bad_rows)
+        out["box_overflow_max_px"] = worst
+        print(f"    최대 이탈량: {worst:.0f}px")
+        for idx, lab, b, w, h, over in bad_rows[:5]:
+            bb = [round(v, 1) for v in b]
+            print(f"      {lab}  bbox={bb}  이미지={w}x{h}  이탈 {over:.0f}px")
+        if worst < 50:
+            print("    → 이탈량이 작습니다. 좌표 해석 오류가 아니라 **라벨러의 오차**로 보입니다.")
+            print("       (해석이 틀렸다면 수백~수천 px 단위로 어긋납니다)")
+            print(f"       {len(bad_rows)}/{int(has_box.sum()):,}건이므로 학습에 영향은 없습니다.")
+            print("       crop.expand_box 가 어차피 이미지 안으로 잘라 넣습니다.")
+        else:
+            print("    🚨 이탈량이 큽니다. 좌표 해석 오류를 의심하세요 (x/y 교환, 스케일 불일치).")
+            print("       crop.preview_with_box() 로 그 행들을 직접 보세요.")
+        out["boxes_out_of_bounds_examples"] = [
+            {"label": lab, "bbox": b, "img": [w, h], "overflow_px": over}
+            for _, lab, b, w, h, over in bad_rows[:20]
+        ]
 
     print("\n" + "=" * 68)
+    return out
+
+
+def shortcut_baseline(df: pd.DataFrame, cfg: CFG | None = None, fold: int = 0,
+                      verbose: bool = True) -> dict:
+    """★ 사진을 **안 보고** 라벨을 맞혀봅니다.
+
+    쓰는 정보는 박스 크기·모양·이미지 해상도뿐입니다. 픽셀은 한 장도 안 봅니다.
+    그런데도 점수가 잘 나오면, 그 점수는 **크롭 방식이 정답을 흘린 양**입니다.
+
+    이 값이 CNN 이 넘어야 하는 **하한선**입니다:
+
+        CNN macro-F1 0.45  vs  메타데이터만 0.40   →  피부에서 얻은 건 0.05 뿐
+        CNN macro-F1 0.45  vs  메타데이터만 0.18   →  대부분 피부에서 얻음 ✅
+
+    분할은 `fold` 컬럼을 그대로 씁니다 — 그래야 CNN 점수와 같은 조건입니다.
+    """
+    import numpy as np
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.metrics import f1_score, precision_recall_fscore_support, roc_auc_score
+
+    from src.config import CLASS_KO, CLASSES, NORMAL_LABEL
+
+    cfg = cfg or CFG()
+    need = {"fold", "is_holdout", "label", "bbox", "img_w", "img_h"}
+    miss = need - set(df.columns)
+    if miss:
+        print(f"필요한 컬럼이 없습니다: {sorted(miss)}")
+        return {}
+
+    def feats(sub: pd.DataFrame) -> np.ndarray:
+        rows = []
+        for _, r in sub.iterrows():
+            b = _as_list(r.get("bbox")) or [0, 0, 0, 0]
+            w, h = float(r.get("img_w") or 1), float(r.get("img_h") or 1)
+            bw, bh = max(b[2] - b[0], 0.0), max(b[3] - b[1], 0.0)
+            win = crop_window(r, cfg=cfg)
+            ws = float(min(win[2] - win[0], win[3] - win[1])) if win else 0.0
+            rows.append([
+                bw * bh / max(w * h, 1),                  # 면적 비율
+                np.log1p(bw * bh),                        # 절대 면적
+                bw / max(bh, 1e-6),                       # 종횡비
+                ws,                                       # 크롭 창 크기 (= 확대 배율)
+                ws / max(cfg.img_size, 1),                # 확대/축소 여부
+                w, h,                                      # 원본 해상도
+                float(r.get("n_lesion") or 0),
+                float(bool(r.get("synthetic"))),
+            ])
+        return np.asarray(rows, dtype=np.float32)
+
+    dev = df[~df["is_holdout"]]
+    tr, va = dev[dev["fold"] != fold], dev[dev["fold"] == fold]
+    Xtr, Xva = feats(tr), feats(va)
+    out: dict = {}
+
+    if verbose:
+        print("=" * 68)
+        print(" 지름길 하한선 — 사진을 보지 않고 메타데이터만으로 분류")
+        print("=" * 68)
+        print(f"  사용 특징: 박스 면적·종횡비·크롭 창 크기·원본 해상도 (픽셀 미사용)")
+        print(f"  train {len(tr):,} / val {len(va):,}  (CNN 과 같은 fold {fold})")
+
+    # ── 1단계: 정상 vs 이상 ──────────────────────────────────────
+    ytr = (tr["label"] != NORMAL_LABEL).astype(int).to_numpy()
+    yva = (va["label"] != NORMAL_LABEL).astype(int).to_numpy()
+    if len(np.unique(ytr)) > 1 and len(np.unique(yva)) > 1:
+        clf = HistGradientBoostingClassifier(max_iter=150, random_state=0).fit(Xtr, ytr)
+        sc = clf.predict_proba(Xva)[:, 1]
+        auroc = float(roc_auc_score(yva, sc))
+        out["stage1_auroc_metadata_only"] = auroc
+        if verbose:
+            print(f"\n[1단계] 정상/이상 AUROC = {auroc:.4f}   (0.5 = 동전 던지기)")
+            if auroc > 0.75:
+                print("  🚨 사진을 안 봐도 이 정도 맞힙니다. 크롭 배율이 정답을 크게 흘립니다.")
+                print("     → 1단계는 반드시 'full' 크롭으로 가세요.")
+            elif auroc > 0.6:
+                print("  ⚠️ 약한 지름길이 있습니다. CNN 점수에서 이만큼은 할인해서 보세요.")
+            else:
+                print("  ✅ 메타데이터로는 거의 못 맞힙니다. 배율 지름길이 약합니다.")
+
+    # ── 2단계: 병변 6종 ─────────────────────────────────────────
+    m_tr = tr["label"].isin(CLASSES).to_numpy()
+    m_va = va["label"].isin(CLASSES).to_numpy()
+    if m_tr.sum() > 50 and m_va.sum() > 20:
+        c2i = {c: i for i, c in enumerate(CLASSES)}
+        y2tr = tr.loc[m_tr, "label"].map(c2i).to_numpy()
+        y2va = va.loc[m_va, "label"].map(c2i).to_numpy()
+        clf2 = HistGradientBoostingClassifier(max_iter=200, random_state=0).fit(
+            Xtr[m_tr], y2tr)
+        p2 = clf2.predict(Xva[m_va])
+        f1 = float(f1_score(y2va, p2, average="macro", zero_division=0))
+        out["stage2_macro_f1_metadata_only"] = f1
+        random_f1 = 1.0 / len(CLASSES)
+        if verbose:
+            print(f"\n[2단계] 병변 6종 macro-F1 = {f1:.4f}   "
+                  f"(무작위 ≈ {random_f1:.3f})")
+            _, rec, _, sup = precision_recall_fscore_support(
+                y2va, p2, labels=list(range(len(CLASSES))), zero_division=0)
+            from src.evaluate import pad_ko
+            print(f"  {pad_ko('클래스', 30)}{'recall':>9}{'n':>8}")
+            for i, c in enumerate(CLASSES):
+                mark = "  ← 배율로 맞힘" if rec[i] > 0.5 else ""
+                name = pad_ko(f"{c} {CLASS_KO.get(c, '')}", 30)
+                print(f"  {name}{rec[i]:>9.3f}{sup[i]:>8,}{mark}")
+            if f1 > random_f1 * 2:
+                print(f"\n  🚨 무작위의 {f1 / random_f1:.1f}배입니다. 크롭 배율이 병변 종류까지 흘립니다.")
+                print("     → CNN 이 이 숫자를 크게 넘지 못하면, 피부를 안 보고 있는 겁니다.")
+            else:
+                print("\n  ✅ 메타데이터만으로는 종류를 잘 못 맞힙니다.")
+
+    if verbose:
+        print("\n" + "=" * 68)
+        print(" 이 숫자를 적어두세요. 4번에서 CNN 점수와 비교합니다.")
+        print("=" * 68)
     return out
 
 
