@@ -19,6 +19,13 @@ AI Hub 「반려동물 피부 질환 데이터」(dataSetSn=561)로 **반려견 
 
 ### 2. Colab 에서 실행
 
+> 💡 **리포를 다운로드하거나 드라이브에 올릴 필요 없습니다.**
+> 아래 버튼으로 열면 노트북 첫 셀이 코랩 안에서 알아서 `git clone` 합니다.
+
+[![Colab 에서 열기](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/gayeoniee/deeplearning_test/blob/main/notebooks/00_데이터_다운로드.ipynb)
+
+또는 Colab → **파일 → 노트북 열기 → GitHub 탭** → `gayeoniee/deeplearning_test` 검색.
+
 | 노트북 | 내용 |
 |---|---|
 | [`00_데이터_다운로드`](notebooks/00_데이터_다운로드.ipynb) | aihubshell 로 반려견+일반카메라만 부분 다운로드 |
