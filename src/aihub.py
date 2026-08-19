@@ -484,6 +484,16 @@ def download(
             print(f"[aihub] 이미 받은 {len(already)}개는 건너뜁니다.")
 
     todo = [k for k in keys if k not in already]
+
+    # 이전 실행이 데이터는 받아놓고 기록만 못 남긴 경우 (크래시·오판정 등)
+    # 21GB 를 다시 받게 하지 않습니다.
+    if todo and skip_existing and has_usable_data(dest):
+        print(f"[aihub] {dest} 에 이미 데이터가 있습니다 — 다시 받지 않습니다.")
+        print(f"        ({_dir_size_gb(dest):.1f}GB) 강제로 다시 받으려면 skip_existing=False")
+        already.update(todo)
+        done_marker.write_text("\n".join(sorted(already)), encoding="utf-8")
+        return []
+
     failed: list[str] = []
 
     # 다운로드 전 용량 점검: zip 을 받은 뒤 압축을 풀므로 잠깐 2배가 필요합니다.
@@ -507,24 +517,32 @@ def download(
             break
 
         print(f"\n[aihub] ({i + len(batch)}/{len(todo)}) filekey={','.join(batch)}  여유 {free}GB")
-        before = _dir_size_gb(dest)
         r = _run(
             ["-mode", "d", "-datasetkey", dataset_key, "-filekey", ",".join(batch)],
             apikey, cwd=dest, stream=True, timeout=None,
         )
-        # ⚠️ aihubshell 은 실패해도 rc=0 을 돌려줍니다.
-        #    종료 코드만 믿으면 실패를 성공이라고 보고하게 됩니다.
-        err = _detect_error(r.stdout or "")
-        gained = _dir_size_gb(dest) - before
+        out = r.stdout or ""
 
-        if r.returncode != 0 or err or gained < 0.01:
-            reason = err or (f"rc={r.returncode}" if r.returncode else
-                             f"받아진 데이터가 없음 ({gained:.2f}GB)")
+        # ⚠️ aihubshell 은 실패해도 rc=0 을 돌려주므로 출력 본문을 봐야 합니다.
+        err = _detect_error(out)
+
+        # ⚠️ "폴더 용량이 늘었는지"로 성공을 판정하면 안 됩니다.
+        #    aihubshell 은 받은 조각을 병합한 뒤 중간 파일을 지우고, 이전 시도가
+        #    남긴 download.tar 도 백업/정리합니다. 그래서 다운로드가 성공해도
+        #    용량 증가분이 음수가 나올 수 있습니다 (실제로 -21GB 가 관측됐습니다).
+        #    실제로 쓸 수 있는 데이터가 생겼는지를 직접 확인합니다.
+        have = has_usable_data(dest)
+        merged = "병합이 완료" in out or "Merging" in out
+
+        if err or (r.returncode != 0 and not have) or not have:
+            reason = err or (f"rc={r.returncode}" if r.returncode
+                             else "받은 데이터를 찾지 못했습니다")
             print(f"\n  ✗ 실패 — {reason}")
             failed.extend(batch)
             continue
 
-        print(f"  ✓ {gained:.1f}GB 확보")
+        size = _dir_size_gb(dest)
+        print(f"  ✓ 확보 — {dest} 에 {size:.1f}GB" + ("  (병합 완료)" if merged else ""))
         already.update(batch)
         done_marker.write_text("\n".join(sorted(already)), encoding="utf-8")
 
@@ -534,6 +552,32 @@ def download(
     else:
         print(f"\n✅ 다운로드 완료 — {_dir_size_gb(dest):.1f}GB @ {dest}")
     return failed
+
+
+def has_usable_data(root: Path, min_files: int = 1) -> bool:
+    """이 폴더에 실제로 쓸 수 있는 데이터가 있는지 확인합니다.
+
+    성공 판정의 기준입니다. 용량 변화가 아니라 **결과물의 존재**로 판단해야
+    합니다 — aihubshell 이 중간 파일을 지우면서 용량은 줄어들 수도 있습니다.
+
+    쓸 수 있는 것 = 아카이브(zip/tar) 또는 이미 풀린 이미지/JSON.
+    실패한 시도가 남긴 download_*.tar 백업은 세지 않습니다.
+    """
+    n = 0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        s = p.suffix.lower()
+        if s in IMG_EXT_A or s == ".json":
+            n += 1
+        elif s in ARCHIVE_EXT and not re.match(r"download_\d{8}_\d{6}\.tar$", p.name):
+            n += 1
+        if n >= min_files:
+            return True
+    return False
+
+
+IMG_EXT_A = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
 def _dir_size_gb(path: Path) -> float:
