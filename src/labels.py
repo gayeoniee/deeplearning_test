@@ -419,8 +419,8 @@ def _save(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
-def load(path: Path | None = None) -> pd.DataFrame:
-    """저장된 매니페스트를 되읽습니다 (list 컬럼 복원 포함)."""
+def load(path: Path | None = None, rebase: bool = True) -> pd.DataFrame:
+    """저장된 매니페스트를 되읽습니다 (list 컬럼 복원 + 경로 재조정 포함)."""
     p = Path(path) if path else env.work_root() / "manifests" / "manifest_raw.parquet"
     if not p.exists() and p.with_suffix(".csv").exists():
         p = p.with_suffix(".csv")
@@ -430,7 +430,67 @@ def load(path: Path | None = None) -> pd.DataFrame:
             df[c] = df[c].apply(
                 lambda v: json.loads(v) if isinstance(v, str) and v.startswith("[") else None
             )
+    return rebase_paths(df) if rebase else df
+
+
+def rebase_paths(df: pd.DataFrame) -> pd.DataFrame:
+    """다른 기기에서 만든 매니페스트의 크롭 경로를 현재 환경에 맞춥니다.
+
+    로컬 PC 에서 전처리 → Drive/Kaggle 업로드 → Colab 학습 흐름에서
+    절대경로가 전부 깨지므로, 상대경로(crop_rel)로 다시 조립합니다.
+    """
+    if "crop_rel" not in df.columns:
+        return df
+    root = env.work_root() / "crops"
+    df = df.copy()
+    df["crop_path"] = df["crop_rel"].apply(
+        lambda r: str(root / r) if isinstance(r, str) else None
+    )
+    missing = df["crop_path"].apply(lambda p: p is not None and not Path(p).exists())
+    if missing.any():
+        print(f"⚠️ 크롭 파일 {missing.sum():,}/{len(df):,}개를 찾을 수 없습니다.")
+        print(f"   찾는 위치: {root}")
+        print("   압축을 이 경로로 풀었는지, DOG_SKIN_WORK 환경변수가 맞는지 확인하세요.")
     return df
+
+
+def combine(paths: list[Path] | None = None, pattern: str = "chunk_*.parquet",
+            verbose: bool = True) -> pd.DataFrame:
+    """청크별 매니페스트를 하나로 합칩니다.
+
+    ⚠️ 왜 필요한가: 90GB zip 을 나눠 받아 청크마다 따로 전처리하면,
+       **같은 강아지가 여러 청크에 흩어져** 있을 수 있습니다.
+       청크별로 분할하면 개체가 train/val 에 걸쳐 데이터 누수가 생깁니다.
+       그래서 크롭까지만 청크별로 하고, **중복제거·개체분할은 전부 합친 뒤 한 번에** 합니다.
+    """
+    mdir = env.work_root() / "manifests"
+    files = [Path(p) for p in paths] if paths else sorted(mdir.glob(pattern))
+    if not files:
+        raise FileNotFoundError(f"합칠 매니페스트가 없습니다: {mdir}/{pattern}")
+
+    dfs = []
+    for f in files:
+        d = load(f, rebase=False)
+        d["chunk"] = f.stem
+        dfs.append(d)
+        if verbose:
+            print(f"  {f.name}: {len(d):,}행")
+
+    df = pd.concat(dfs, ignore_index=True)
+    before = len(df)
+    # 같은 청크를 두 번 돌린 경우만 걸러냅니다.
+    # ⚠️ image_name 만으로 지우면 안 됩니다 — AI Hub 는 Training 과 Validation 에
+    #    같은 파일명을 재사용해서, 실제로는 다른 이미지가 통째로 날아갑니다.
+    #    내용이 같은 진짜 중복은 뒤의 phash dedup 이 잡습니다.
+    key = [c for c in ("image_name", "src_split", "label", "animal_id", "img_w", "img_h")
+           if c in df.columns]
+    df = df.drop_duplicates(subset=key, keep="first").reset_index(drop=True)
+    if verbose:
+        print(f"\n[labels] 합계 {before:,} → 재실행분 제거 후 {len(df):,}행 (기준: {key})")
+        if "chunk" in df.columns:
+            print(f"[labels] 청크별: {df['chunk'].value_counts().to_dict()}")
+        print(f"[labels] 개체 {df['animal_id'].nunique():,}마리")
+    return rebase_paths(df)
 
 
 def save(df: pd.DataFrame, name: str) -> Path:

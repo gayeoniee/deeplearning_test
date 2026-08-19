@@ -145,6 +145,11 @@ def run(
     out = df.copy()
     out["crop_path"] = out.index.map(results)
     out["crop_tag"] = tag
+    # ⚠️ 절대경로는 다른 기기(로컬 → Drive → Colab)로 옮기면 전부 깨집니다.
+    #    크롭 루트 기준 상대경로를 함께 저장하고, 로드할 때 현재 경로로 다시 붙입니다.
+    out["crop_rel"] = out["crop_path"].apply(
+        lambda p: str(Path(p).relative_to(out_dir)) if isinstance(p, str) else None
+    )
 
     failed = out["crop_path"].isna().sum()
     if verbose:

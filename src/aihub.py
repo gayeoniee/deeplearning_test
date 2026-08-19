@@ -477,6 +477,78 @@ def _dir_size_gb(path: Path) -> float:
     return total / 1024**3
 
 
+def extract_selective(
+    archive: Path,
+    dest: Path | None = None,
+    include: list[str] | None = None,
+    exclude: list[str] | None = None,
+    remove_archive: bool = True,
+    verbose: bool = True,
+) -> int:
+    """zip 에서 **필요한 항목만** 골라 풉니다.
+
+    90GB zip 을 통째로 풀면 로컬 디스크가 180GB 필요합니다.
+    반려묘·더모스코프를 빼고 풀면 절반 이하로 줄어듭니다.
+
+    zipfile 은 멤버 단위 추출을 지원하므로 전체를 풀지 않아도 됩니다.
+    """
+    import zipfile
+
+    archive = Path(archive)
+    dest = Path(dest) if dest else archive.parent
+    inc = include if include is not None else INCLUDE_SPECIES + INCLUDE_CAMERA
+    exc = exclude if exclude is not None else EXCLUDE_SPECIES + EXCLUDE_CAMERA
+
+    with zipfile.ZipFile(archive) as z:
+        members = z.infolist()
+        total_all = sum(m.file_size for m in members)
+
+        def keep(m: zipfile.ZipInfo) -> bool:
+            if m.is_dir():
+                return False
+            n = m.filename
+            if any(x in n for x in exc):
+                return False
+            # 포함 키워드가 경로에 아예 안 나타나면 판단 불가로 보고 남깁니다
+            if inc and not any(x in n for x in inc):
+                return not any(x in n for x in inc + exc)
+            return True
+
+        picked = [m for m in members if keep(m)]
+        total_pick = sum(m.file_size for m in picked)
+
+        if verbose:
+            print(f"[aihub] {archive.name}")
+            print(f"  전체 {len(members):,}개 / {total_all / 1024**3:.1f}GB")
+            print(f"  선택 {len(picked):,}개 / {total_pick / 1024**3:.1f}GB "
+                  f"({total_pick / max(total_all, 1):.0%})")
+            print(f"  제외 키워드: {exc}")
+            free = env.free_disk_gb(dest)
+            print(f"  여유 디스크 {free:.1f}GB")
+            if total_pick / 1024**3 > free * 0.9:
+                print("  ⚠️ 공간이 부족합니다. exclude 를 늘리거나 나눠서 처리하세요.")
+
+        for i, m in enumerate(tqdm_or_range(picked, verbose)):
+            z.extract(m, dest)
+
+    if remove_archive:
+        archive.unlink()
+        if verbose:
+            print(f"  원본 zip 삭제 — {env.free_disk_gb(dest):.1f}GB 확보")
+    return len(picked)
+
+
+def tqdm_or_range(seq, verbose: bool = True):
+    if not verbose:
+        return seq
+    try:
+        from tqdm.auto import tqdm
+
+        return tqdm(seq, desc="extract")
+    except ImportError:
+        return seq
+
+
 def unpack_all(root: Path | None = None, remove_archives: bool = True) -> int:
     """aihubshell 이 자동 해제하지 못한 zip/tar 를 마저 풉니다."""
     root = root or env.data_root()
