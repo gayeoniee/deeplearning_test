@@ -1,0 +1,66 @@
+# ─────────────────────────────────────────────────────────────
+# 데이터 (AI Hub 데이터는 재배포 금지! 절대 커밋하지 말 것)
+#   docs/cautions/01_데이터_라이선스와_재배포_금지.md 참고
+# ─────────────────────────────────────────────────────────────
+# 앞의 '/' 가 중요합니다 — 없으면 docs/data/ 까지 무시됩니다.
+/data/
+/datasets/
+*.zip
+*.tar
+*.tar.gz
+*.part*
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.bmp
+*.JPG
+*.JPEG
+*.PNG
+
+# 라벨/매니페스트 산출물
+*.parquet
+*.feather
+manifest*.csv
+scan_report*.json
+
+# 모델 가중치
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.tflite
+checkpoints/
+runs/
+wandb/
+lightning_logs/
+
+# 자격증명 — API 키는 Colab/Kaggle Secrets에만!
+.env
+.env.*
+*apikey*
+*api_key*
+aihubshell
+!.env.example
+
+# 파이썬
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 문서 이미지는 예외적으로 허용 (병변 사진 아님, 도식만)
+!docs/assets/*.png
+!docs/assets/*.svg

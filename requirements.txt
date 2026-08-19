@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────
+# 반려견 피부질환 스크리닝 보조 모델 — 의존성
+#
+# Colab / Kaggle 에는 torch, numpy, pandas, sklearn 이 이미 깔려 있습니다.
+# 노트북에서는 아래 "노트북 최소 설치" 묶음만 설치하면 됩니다.
+#
+#   !pip install -q timm imagehash pyarrow grad-cam
+#
+# 로컬에서 전체를 재현하려면: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────
+
+# --- 핵심 딥러닝 ---
+torch>=2.2
+torchvision>=0.17
+timm>=1.0.9              # 백본 팩토리 (ConvNeXt-V2 / EVA-02 / SigLIP / DINOv3 등)
+
+# --- 데이터 처리 ---
+numpy>=1.26
+pandas>=2.1
+pyarrow>=15.0            # parquet 매니페스트
+Pillow>=10.2
+opencv-python-headless>=4.9
+imagehash>=4.3           # 중복 이미지 탐지 (phash)
+
+# --- 평가 / 통계 ---
+scikit-learn>=1.4        # StratifiedGroupKFold, 지표
+scipy>=1.11
+
+# --- 시각화 ---
+matplotlib>=3.8
+seaborn>=0.13
+
+# --- 설명가능성 ---
+grad-cam>=1.5            # Grad-CAM / Score-CAM
+
+# --- 진행률 / 유틸 ---
+tqdm>=4.66
+PyYAML>=6.0
+
+# --- 선택: 실험 추적 (없어도 CSV 로깅으로 동작) ---
+# wandb>=0.16
