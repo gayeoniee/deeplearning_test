@@ -458,6 +458,7 @@ def build_from_zip(
             print(f"[labels] 합성 이미지: {int(df['synthetic'].sum()):,}건")
 
     df = _filter_scope(df, dogs_only, normal_camera_only, verbose)
+    df = drop_unlabeled(df, verbose)
     df = _finalize_animal_id(df, verbose)
     if save:
         _save(df, env.ensure_dirs()["manifests"] / f"raw_{zip_path.stem}.parquet")
@@ -566,6 +567,7 @@ def build(
         print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건)")
 
     df = _filter_scope(df, dogs_only, normal_camera_only, verbose)
+    df = drop_unlabeled(df, verbose)
     df = _fill_missing_wh(df, verbose)
     df = _finalize_animal_id(df, verbose)
 
@@ -575,6 +577,29 @@ def build(
     if verbose:
         report_manifest(df)
     return df
+
+
+def drop_unlabeled(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    """라벨이 없는 행을 버립니다.
+
+    ⚠️ 이걸 안 하면 label=NaN 행이 fold 에 'NA' 라는 가짜 클래스로 들어가
+       학습·평가 지표를 오염시킵니다 (실측: 598행이 fold 마다 99행씩 배분됨).
+       라벨이 없으면 학습에 쓸 수 없으니 조용히 섞이게 두면 안 됩니다.
+    """
+    bad = df["label"].isna() | (df["label"].astype(str).str.strip() == "")
+    if not bad.any():
+        return df
+    if verbose:
+        print(f"[labels] 라벨 없는 {int(bad.sum()):,}행 제외")
+        cols = [c for c in ("camera", "symptom", "species_code", "zip_member")
+                if c in df.columns]
+        if cols:
+            ex = df[bad][cols].head(3)
+            for _, r in ex.iterrows():
+                vals = ", ".join(f"{c}={r[c]}" for c in cols if c != "zip_member")
+                mem = str(r.get("zip_member", ""))[:70]
+                print(f"         {vals}  {mem}")
+    return df[~bad].reset_index(drop=True)
 
 
 def _filter_scope(df: pd.DataFrame, dogs_only: bool, normal_camera_only: bool,
@@ -759,8 +784,9 @@ def combine(paths: list[Path] | None = None, pattern: str = "chunk_*.parquet",
     key = [c for c in ("image_name", "src_split", "label", "animal_id", "img_w", "img_h")
            if c in df.columns]
     df = df.drop_duplicates(subset=key, keep="first").reset_index(drop=True)
+    df = drop_unlabeled(df, verbose)
     if verbose:
-        print(f"\n[labels] 합계 {before:,} → 재실행분 제거 후 {len(df):,}행 (기준: {key})")
+        print(f"\n[labels] 합계 {before:,} → 정리 후 {len(df):,}행 (중복 기준: {key})")
         if "chunk" in df.columns:
             print(f"[labels] 청크별: {df['chunk'].value_counts().to_dict()}")
         print(f"[labels] 개체 {df['animal_id'].nunique():,}마리")
