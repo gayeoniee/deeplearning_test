@@ -355,7 +355,11 @@ def available_tags() -> list[str]:
     return sorted(p.name for p in d.iterdir() if p.is_dir()) if d.exists() else []
 
 
-def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True) -> pd.DataFrame:
+MIN_CROP_COVERAGE = 0.95   # 이 아래면 부분 데이터 학습을 막습니다
+
+
+def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True,
+               allow_missing: bool = False) -> pd.DataFrame:
     """같은 매니페스트를 다른 크롭 버전으로 갈아 끼웁니다.
 
     크롭 파일명은 원본 경로의 해시로 정해지므로, 태그만 바꿔 경로를 다시 계산하면
@@ -370,12 +374,31 @@ def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True) -> pd.DataFrame
     out["crop_tag"] = tag
 
     exists = out["crop_path"].apply(lambda p: Path(p).exists())
+    cover = float(exists.mean())
     if verbose:
-        print(f"[crop] 태그 '{tag}' 로 전환 — {exists.sum():,}/{len(out):,}장 존재")
+        print(f"[crop] 태그 '{tag}' 로 전환 — {exists.sum():,}/{len(out):,}장 존재 "
+              f"({cover:.1%})")
     if not exists.all():
         miss = int((~exists).sum())
-        print(f"⚠️ {miss:,}장이 없습니다. 이 태그의 크롭이 안 만들어졌을 수 있습니다.")
+        print(f"⚠️ {miss:,}장이 없습니다. 이 태그의 크롭이 안 만들어졌거나 "
+              f"업로드가 덜 끝났을 수 있습니다.")
         print(f"   사용 가능한 태그: {available_tags()}")
+        # ⚠️ 경고만 하고 넘어가면 **부분 데이터로 몇 시간을 학습**하게 됩니다.
+        #    실제로 겪은 일: full 크롭이 30% 만 업로드됐는데 경고 한 줄만 찍히고
+        #    1단계가 13,783장(전체의 30%)으로 학습됐습니다. 로그에 묻혀 안 보였고,
+        #    그 숫자를 이전 실행과 비교할 뻔했습니다.
+        if cover < MIN_CROP_COVERAGE and not allow_missing:
+            raise FileNotFoundError(
+                f"\n크롭 '{tag}' 가 {cover:.1%} 밖에 없습니다 "
+                f"(기준 {MIN_CROP_COVERAGE:.0%}).\n"
+                f"  이대로 학습하면 전체의 {cover:.0%} 만 쓰게 되고, 나온 숫자는\n"
+                f"  다른 실행과 비교할 수 없습니다.\n\n"
+                f"확인할 것:\n"
+                f"  · 업로드한 데이터셋의 파일 개수 (있어야 할 수: {len(out):,})\n"
+                f"  · 로컬 zip 이 온전한지:\n"
+                f"      py -c \"import zipfile;print(len(zipfile.ZipFile('dogskin_{tag}.zip').namelist()))\"\n\n"
+                f"그래도 진행하려면: crop.switch_tag(df, '{tag}', allow_missing=True)"
+            )
         out = out[exists].reset_index(drop=True)
     return out
 

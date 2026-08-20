@@ -740,7 +740,17 @@ def load_prepared(
     tags = sorted(p.name for p in crops.iterdir() if p.is_dir()) if crops.exists() else []
     n_crop = sum(sum(1 for _ in (crops / t).rglob("*.jpg")) for t in tags)
 
-    print(f"[env] 크롭 {n_crop:,}장, 크롭 태그 {tags}")
+    # ⚠️ 태그별로 세어 보여줍니다. 하나만 덜 올라간 경우가 실제로 있었습니다
+    #    (full 30% / m1.5 100%) — 합계만 보면 안 보입니다.
+    per_tag = {t: sum(1 for _ in (crops / t).rglob("*.jpg")) for t in tags}
+    print(f"[env] 크롭 {n_crop:,}장, 태그별 {per_tag}")
+    if len(per_tag) > 1:
+        hi = max(per_tag.values())
+        short = {t: n for t, n in per_tag.items() if n < hi * 0.95}
+        if short:
+            print(f"🚨 태그마다 장수가 다릅니다 — {short} (가장 많은 태그: {hi:,}장)")
+            print("   업로드가 덜 끝났을 가능성이 큽니다. 이대로 쓰면 그 태그를 쓰는")
+            print("   단계만 **부분 데이터**로 학습되고, 숫자를 다른 실행과 비교할 수 없습니다.")
     print(f"[env] 매니페스트 {[m.name for m in mans]}")
     if n_crop == 0:
         print("⚠️ 크롭이 하나도 없습니다. 데이터셋 내용을 확인하세요.")
