@@ -389,19 +389,25 @@ def describe(verbose: bool = True) -> EnvSummary:
             amp = "bf16" if d.bf16 else "fp16 + GradScaler"
             print(f" GPU         : {d.name}  {d.vram_gb}GB  x{d.count}  "
                   f"(sm_{d.capability}, AMP={amp})")
-        else:
+        elif s.env in ("colab", "kaggle"):
             print(f" GPU         : 🚨 없음 ({d.kind})")
             print(" " * 15 + "학습·추론이 20~30배 느려집니다. 지금 멈추세요.")
-            print(" " * 15 + "Colab: 런타임 → 런타임 유형 변경 → T4 GPU")
-            print(" " * 15 + "(이미 GPU 인데도 이러면 무료 한도 소진입니다)")
+            print(" " * 15 + "(런타임 유형이 이미 GPU 인데도 이러면 무료 한도 소진입니다)")
+        else:
+            # 로컬: 전처리·패키징은 CPU 로 하는 게 맞습니다
+            print(f" GPU         : 없음 ({d.kind}) — 전처리·패키징에는 필요 없습니다")
         print(f" 여유 디스크 : {s.free_disk_gb} GB")
         print(f" 원본 데이터 : {s.paths['data_root']}")
         print(f" 작업 폴더   : {s.paths['work_root']}")
         print("─" * 58)
         if s.env == "colab" and s.free_disk_gb < 60:
             print("⚠️  디스크 여유가 적습니다. STEP 1 에서 부분 다운로드를 꼭 쓰세요.")
-        if d.kind == "cpu":
-            print("⚠️  런타임 유형을 GPU 로 바꿔주세요. Colab: 런타임 → 런타임 유형 변경 → T4 GPU")
+        # ⚠️ 로컬 PC 는 GPU 가 없는 게 정상입니다 (다운로드·전처리는 CPU 작업).
+        #    거기서까지 경고하면 진짜 경고까지 같이 무시하게 됩니다.
+        if d.kind == "cpu" and s.env in ("colab", "kaggle"):
+            print("⚠️  GPU 런타임이 아닙니다 — 학습·추론이 20~30배 느립니다.")
+            print("    Colab : 런타임 → 런타임 유형 변경 → T4 GPU")
+            print("    Kaggle: 우측 Settings → Accelerator → GPU T4 x2")
     return s
 
 
