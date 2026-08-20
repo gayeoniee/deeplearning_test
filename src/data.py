@@ -40,6 +40,11 @@ def build_transforms(cfg: CFG, train: bool, mean=IMAGENET_MEAN, std=IMAGENET_STD
         ])
 
     ops = [T.RandomResizedCrop(cfg.img_size, scale=cfg.rrc_scale, ratio=(0.85, 1.18))]
+    # ⚠️ RandomResizedCrop 은 잘라서 **확대**만 합니다 (가장 축소돼도 이미지 전체).
+    #    보호자가 멀리서 찍은 사진 = 병변이 작게 보이는 경우를 배우려면
+    #    이미지를 실제로 **줄이고 여백을 채우는** 변환이 따로 필요합니다.
+    if cfg.affine_scale:
+        ops.append(T.RandomAffine(degrees=0, scale=tuple(cfg.affine_scale)))
     if cfg.hflip:
         ops.append(T.RandomHorizontalFlip(cfg.hflip))
     if cfg.vflip:

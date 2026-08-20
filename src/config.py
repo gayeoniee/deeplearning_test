@@ -134,6 +134,15 @@ class CFG:
     #    강한 색상 증강은 A3(과다색소침착)을 A1 처럼 만들어 라벨을 파괴합니다.
     #    아래 값은 일반 이미지 분류 기본값보다 의도적으로 약하게 잡았습니다.
     rrc_scale: tuple[float, float] = (0.7, 1.0)
+    # ⚠️ RandomResizedCrop 은 **축소를 못 합니다.** 이미지의 일부를 잘라 확대할 뿐이라
+    #    가장 축소된 경우가 "이미지 전체"(검증 대비 약 0.88배)이고, rrc_scale 하한을
+    #    낮추면 **확대 쪽만** 넓어집니다. 실측:
+    #        default(0.70,1.0)      → 0.88x ~ 1.05x
+    #        scale_robust(0.35,1.0) → 0.88x ~ 1.49x
+    #    그런데 배율 교란 검사는 0.5x·0.71x 를 묻습니다. 훈련에서 **한 번도 안 본**
+    #    구간이라, rrc_scale 을 아무리 넓혀도 그 하락은 안 줄어듭니다 (실측 확인).
+    #    축소를 배우려면 이미지를 줄여 여백을 채우는 affine 변환이 필요합니다.
+    affine_scale: tuple[float, float] | None = None   # 예: (0.5, 1.3) — 축소 포함
     hflip: float = 0.5
     vflip: float = 0.0                # 피부 사진은 위아래 뒤집기가 부자연스러움
     rotate_deg: int = 15
@@ -195,6 +204,8 @@ class CFG:
         # tuple 필드 복원 (JSON 은 list 로 저장됨)
         if isinstance(data.get("rrc_scale"), list):
             data["rrc_scale"] = tuple(data["rrc_scale"])
+        if isinstance(data.get("affine_scale"), list):
+            data["affine_scale"] = tuple(data["affine_scale"])
         known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in data.items() if k in known})
 
@@ -242,8 +253,17 @@ AUG_PRESETS: dict[str, dict] = {
 
     # 배율/위치에 견고하게. m2.5 또는 f512 크롭과 함께 쓰세요.
     # RandomResizedCrop 은 위치도 무작위로 잡으므로 위치 증강이 함께 걸립니다.
+    # ⚠️ 확대 쪽만 넓힙니다. 축소(0.5x·0.71x) 하락에는 효과가 없습니다 — 실측으로 확인:
+    #    default 33.2% → scale_robust 31.6% (잡음 수준). 아래 zoom_both 를 쓰세요.
     "scale_robust": {
-        "rrc_scale": (0.35, 1.0),      # 면적 2.9배 = 선형 1.7배
+        "rrc_scale": (0.35, 1.0),      # 검증 대비 0.88x~1.49x (축소 못 함)
+        "rotate_deg": 20,
+        "random_erasing": 0.25,
+    },
+    # 축소까지 학습합니다. affine_scale 이 이미지를 줄이고 여백을 채웁니다.
+    "zoom_both": {
+        "rrc_scale": (0.5, 1.0),
+        "affine_scale": (0.45, 1.25),  # 교란 검사의 0.5x 를 훈련 분포 안에 넣습니다
         "rotate_deg": 20,
         "random_erasing": 0.25,
     },
@@ -337,7 +357,7 @@ def with_aug(cfg: "CFG", name: str) -> "CFG":
 #    다시 import 하기 전까지 그대로입니다. src/ 만 매번 최신이 됩니다.
 #    그래서 셀을 고칠 때마다 이 값을 올리고, 노트북 첫 셀이 자기가 들고 있는
 #    값과 비교해 **낡았으면 바로 알립니다.** (몇 시간 뒤에 알게 되면 늦습니다)
-NOTEBOOK_VERSION = "2026-08-20.3"
+NOTEBOOK_VERSION = "2026-08-20.4"
 
 # ──────────────────────────────────────────────────────────────
 # 모델 라인업 — STEP 4 에서 순서대로 돌립니다.
