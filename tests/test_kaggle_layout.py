@@ -226,6 +226,44 @@ def test_finds_nested_dataset():
         env._search_roots = orig
 
 
+def test_finds_kaggle_deep_layout():
+    """★ 실측한 Kaggle 경로: /kaggle/input/datasets/<사용자>/<데이터셋>/crops
+
+    `/kaggle/input` 기준 4단계입니다. 얕게 훑으면 못 찾습니다.
+    """
+    from src import env
+
+    base = _TMP / "deep_input"
+    make_prepared(base / "datasets" / "gayoniee" / "dogskin-m15")
+    w = fresh_env("deep")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        found = env.find_prepared_all(dest=w)
+        check("Kaggle 의 깊은 경로를 찾는다", len(found) == 1,
+              f"{[str(p) for p, _ in found]}")
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+    tags = sorted(p.name for p in (w / "crops").iterdir() if p.is_dir())
+    check("깊은 경로에서도 크롭이 연결된다", tags == ["full", "m1.5"], f"{tags}")
+
+
+def test_walk_does_not_descend_into_crops():
+    """크롭 폴더(4만 장) 안으로 내려가면 탐색이 하염없이 느려집니다."""
+    from src import env
+
+    base = _TMP / "walkperf"
+    d = base / "ds"
+    make_prepared(d)
+    for i in range(30):                       # 크롭 안의 하위 폴더를 흉내
+        (d / "crops" / "m1.5" / f"sub{i}").mkdir(parents=True, exist_ok=True)
+    visited = env._walk(base)
+    inside = [p for p in visited if "sub" in p.name]
+    check("크롭 내부로는 안 내려간다", not inside, f"{len(inside)}개 들어감")
+    check("전처리 폴더 자체는 방문한다", any(p.name == "ds" for p in visited))
+
+
 def test_finds_zip_inside_dataset_folder():
     """Kaggle 이 zip 을 안 풀었을 때 — 데이터셋 폴더 안의 zip 도 찾아야 합니다."""
     from src import env
@@ -344,7 +382,8 @@ if __name__ == "__main__":
                test_autodetect_prefers_extracted_when_no_zip,
                test_missing_gives_useful_error, test_split_upload_is_merged,
                test_partial_dir_without_manifests_is_accepted,
-               test_finds_nested_dataset, test_finds_zip_inside_dataset_folder,
+               test_finds_nested_dataset, test_finds_kaggle_deep_layout,
+               test_walk_does_not_descend_into_crops, test_finds_zip_inside_dataset_folder,
                test_error_lists_actual_contents,
                test_kaggle_wins_over_colab_signals, test_diagnose_reports_signals,
                test_manifest_rebase_works_through_link]:

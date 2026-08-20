@@ -560,25 +560,43 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
     return out
 
 
-def _walk(base: Path, depth: int = 3) -> list[Path]:
+# 데이터가 들어 있을 리 없는데 크고 느린 폴더들 — 여기로 내려가면 탐색이 오래 걸립니다
+_SKIP_DIRS = {"crops", "manifests", "reports", "checkpoints", ".git",
+              "__pycache__", "node_modules", "site-packages", "lost+found"}
+
+
+def _walk(base: Path, depth: int = 5, max_dirs: int = 3000) -> list[Path]:
     """base 아래를 depth 단계까지. **심볼릭 링크 폴더도 들어갑니다.**
 
     ⚠️ `Path.rglob` 은 심볼릭 링크인 하위 폴더로 들어가지 않습니다.
        Kaggle 의 `/kaggle/input/<데이터셋>` 이 링크면 rglob 으로는 안 보입니다.
        `iterdir()` + `is_dir()` 은 링크를 따라가므로 직접 훑습니다.
+
+    ⚠️ Kaggle 의 데이터셋 경로가 생각보다 깊습니다. 실측:
+           /kaggle/input/datasets/<사용자>/<데이터셋>/crops/...
+       `/kaggle/input` 기준으로 **4단계**입니다. 얕게 보면 못 찾습니다.
+
+    크롭 폴더(4만 장) 안으로는 내려가지 않습니다 — 거기엔 찾을 게 없고 느립니다.
     """
     out = [base]
     frontier = [base]
     for _ in range(depth):
         nxt: list[Path] = []
         for d in frontier:
+            if len(out) >= max_dirs:
+                return out
             try:
                 for p in sorted(d.iterdir()):
-                    if p.is_dir():
-                        out.append(p)
+                    if not p.is_dir() or p.name in _SKIP_DIRS or p.name.startswith("."):
+                        continue
+                    out.append(p)
+                    # 여기가 이미 전처리 폴더면 더 내려갈 이유가 없습니다
+                    if not (_looks_prepared(p) or _looks_partial(p)):
                         nxt.append(p)
             except OSError:
                 continue
+        if not nxt:
+            break
         frontier = nxt
     return out
 
