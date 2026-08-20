@@ -268,6 +268,7 @@ src/
 ├── calibrate.py   온도 스케일링, ECE, coverage-risk
 ├── explain.py     Grad-CAM + 병변 정렬도 수치화
 ├── robust.py      ★ 실사용 견고성 (배율·위치 교란 검사)
+├── bench.py       처리량 진단 (입력 파이프라인 vs GPU 병목 판정)
 └── infer.py       추론 + 안전한 안내 문구 생성
 ```
 
