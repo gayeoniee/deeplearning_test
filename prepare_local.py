@@ -42,6 +42,7 @@ import argparse
 import os
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -266,29 +267,46 @@ def step_package(out: Path, tags: str | None = None) -> None:
             mark = "→ 담음" if (want is None or t in want) else "  제외"
             print(f"    {mark}  {t:<8} {n:>7,}장  {mb:>8,.0f} MB")
 
-    stage = work.parent / "_pkg"
-    if stage.exists():
-        shutil.rmtree(stage)
-    stage.mkdir(parents=True)
-
+    # ⚠️ 예전에는 임시 폴더(_pkg)로 전부 복사한 뒤 압축했습니다. 3.7GB 를 복사했다가
+    #    지우는 셈이라 디스크도 시간도 두 배로 들고, 탐색기로 그 폴더를 열어두면
+    #    삭제될 때 "위치를 사용할 수 없습니다" 가 뜹니다.
+    #    이제 원본에서 zip 으로 **바로** 씁니다.
+    #
+    # ⚠️ JPEG 은 이미 압축돼 있어서 deflate 를 걸어도 1~2% 밖에 안 줄어드는데
+    #    CPU 시간은 몇 배로 씁니다. 이미지는 무압축(STORED)으로 담습니다.
+    files: list[tuple[Path, str]] = []
     for sub in ("crops", "manifests", "reports"):
         s = work / sub
         if not s.exists():
             continue
-        if sub == "crops" and want:
-            (stage / "crops").mkdir(parents=True, exist_ok=True)
-            for t in want:
-                print(f"  담는 중: crops/{t}")
-                shutil.copytree(s / t, stage / "crops" / t)
-        else:
-            print(f"  담는 중: {sub}")
-            shutil.copytree(s, stage / sub)
+        roots = [(s / t, f"crops/{t}") for t in want] if (sub == "crops" and want) \
+            else [(s, sub)]
+        for root, arc_base in roots:
+            for f in sorted(root.rglob("*")):
+                if f.is_file():
+                    files.append((f, f"{arc_base}/{f.relative_to(root).as_posix()}"))
 
-    print("\n  압축 중… (몇 분 걸립니다)")
-    made = shutil.make_archive(str(out.with_suffix("")), "zip", str(stage))
-    shutil.rmtree(stage)
+    total_mb = sum(f.stat().st_size for f, _ in files) / 1024**2
+    print(f"\n  담을 파일 {len(files):,}개 / {total_mb:,.0f} MB")
+    print("  압축 중… (이미지는 무압축으로 담아 빠릅니다)")
 
-    gb = Path(made).stat().st_size / 1024**3
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(".zip.part")      # 중간에 끊겨도 반쪽 zip 을 안 남깁니다
+    done_mb = 0.0
+    step = max(len(files) // 20, 1)
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as z:
+        for i, (f, arc) in enumerate(files):
+            store = f.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".zip")
+            z.write(f, arc, compress_type=zipfile.ZIP_STORED if store else None)
+            done_mb += f.stat().st_size / 1024**2
+            if i % step == 0 or i == len(files) - 1:
+                pct = done_mb / total_mb if total_mb > 0 else 1.0
+                print(f"    {pct:5.0%}  ({done_mb:,.0f} / {total_mb:,.0f} MB)", flush=True)
+    out.unlink(missing_ok=True)
+    tmp.rename(out)
+    made = str(out)
+
+    gb = out.stat().st_size / 1024**3
     print(f"\n✅ 완성: {made}  ({gb:.2f} GB)")
     print("\n올리는 곳")
     print("  · Google Drive — 업로드 후 Colab 에서 마운트")

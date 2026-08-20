@@ -535,10 +535,14 @@ def load_prepared(
     if len(sources) > 1:
         print(f"[env] 입력 {len(sources)}개를 합칩니다: {[s.name for s, _ in sources]}")
 
+    marker = dest / ".prepared_from"
+    seen_before = set(marker.read_text().splitlines()) if marker.exists() else set()
+    now: list[str] = []
+
     for src, kind in sources:
-        marker = dest / ".prepared_from"
-        already = (marker.exists() and marker.read_text().strip() == str(src)
-                   and not force and kind == "zip")
+        # 마커에 **여러 줄**로 적습니다. zip 을 두 개 올린 경우
+        # 한 줄만 쓰면 재실행 때 앞의 zip 을 또 풉니다.
+        already = str(src) in seen_before and not force and kind == "zip"
 
         if kind == "dir":
             # 읽기 전용일 수 있으므로 크롭은 태그별 링크, 매니페스트는 복사
@@ -559,7 +563,9 @@ def load_prepared(
             print("      (Drive 에서 직접 읽지 않고 로컬 디스크로 풉니다 — 학습 속도 때문)")
             with zipfile.ZipFile(src) as z:
                 z.extractall(dest)
-            marker.write_text(str(src))
+        now.append(str(src))
+
+    marker.write_text("\n".join(dict.fromkeys(now)))
 
     crops = dest / "crops"
     mans = sorted((dest / "manifests").glob("*.parquet")) if (dest / "manifests").exists() else []
