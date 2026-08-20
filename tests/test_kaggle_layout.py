@@ -206,6 +206,59 @@ def test_partial_dir_without_manifests_is_accepted():
     check("crops 만 있어도 인식한다", env._looks_partial(d))
 
 
+def test_kaggle_wins_over_colab_signals():
+    """★ Kaggle 이미지에도 google.colab 과 /content 가 있습니다.
+
+    실제로 겪은 것: Kaggle 세션이 colab 으로 판정되어 노트북이 drive.mount() 를
+    부르고 NotImplementedError 로 죽었습니다. Colab 신호가 다 있어도
+    **Kaggle 신호가 있으면 kaggle** 이어야 합니다.
+    """
+    import types
+
+    from src import env
+
+    saved_env = {k: os.environ.get(k) for k in
+                 ("KAGGLE_KERNEL_RUN_TYPE", "KAGGLE_URL_BASE", "COLAB_RELEASE_TAG")}
+    saved_mod = sys.modules.get("google.colab")
+    orig_isdir = env.Path.is_dir
+    try:
+        os.environ["KAGGLE_KERNEL_RUN_TYPE"] = "Interactive"
+        sys.modules["google.colab"] = types.ModuleType("google.colab")   # Colab 패키지 존재
+        check("Kaggle 신호가 Colab 신호를 이긴다", env.detect() == "kaggle",
+              f"{env.detect()}")
+        check("Kaggle 에서는 마운트를 시도하지 않는다", env.can_mount_drive() is False)
+
+        # 반대: Kaggle 신호가 하나도 없고 진짜 Colab 표식만 있으면 colab
+        del os.environ["KAGGLE_KERNEL_RUN_TYPE"]
+        os.environ["COLAB_RELEASE_TAG"] = "release-colab-20260101"
+        if not Path("/kaggle/working").is_dir() and not Path("/kaggle/input").is_dir():
+            check("진짜 Colab 표식이면 colab", env.detect() == "colab", f"{env.detect()}")
+        else:
+            check("진짜 Colab 표식이면 colab", True, "(이 머신에 /kaggle 이 있어 생략)")
+    finally:
+        env.Path.is_dir = orig_isdir
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        if saved_mod is None:
+            sys.modules.pop("google.colab", None)
+        else:
+            sys.modules["google.colab"] = saved_mod
+
+
+def test_diagnose_reports_signals():
+    from src import env
+
+    sig = env.diagnose()
+    for k in ("detect()", "/content 있음", "/var/colab/hostname 있음", "can_mount_drive()"):
+        if k not in sig:
+            check("diagnose 가 판정 근거를 다 찍는다", False, f"'{k}' 없음")
+            return
+    check("diagnose 가 판정 근거를 다 찍는다", True)
+
+
 def test_manifest_rebase_works_through_link():
     """링크를 통해서도 crop_path 가 실제 파일을 가리켜야 합니다."""
     from src import env, labels
@@ -227,6 +280,7 @@ if __name__ == "__main__":
                test_autodetect_prefers_extracted_when_no_zip,
                test_missing_gives_useful_error, test_split_upload_is_merged,
                test_partial_dir_without_manifests_is_accepted,
+               test_kaggle_wins_over_colab_signals, test_diagnose_reports_signals,
                test_manifest_rebase_works_through_link]:
         print(f"\n── {fn.__name__} ──")
         try:

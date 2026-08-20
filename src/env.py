@@ -61,15 +61,72 @@ _VRAM_HINT = {
 # 환경 감지
 # ──────────────────────────────────────────────────────────────
 def detect() -> EnvName:
-    """현재 실행 환경을 반환합니다."""
-    if "google.colab" in sys.modules:
-        return "colab"
-    # Colab 은 import 되기 전일 수도 있으므로 경로로도 한 번 더 확인
-    if Path("/content").is_dir() and os.environ.get("COLAB_RELEASE_TAG"):
-        return "colab"
-    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle/working").is_dir():
+    """현재 실행 환경을 반환합니다.
+
+    ⚠️ **Kaggle 을 먼저 봅니다.** 예전에는 `"google.colab" in sys.modules` 를
+       가장 먼저 봤는데, Kaggle 이미지에도 `google-colab` 패키지와 `/content`
+       가 있어서 **Kaggle 세션이 Colab 으로 오판**됐습니다. 그러면 노트북이
+       `drive.mount()` 를 부르고, Kaggle 에는 실제 Colab VM 이 없으니
+       `NotImplementedError` 로 죽습니다.
+
+       `google.colab` 을 import 할 수 있다는 것과 **Colab VM 위에 있다는 것은
+       다릅니다.** 진짜 Colab VM 의 표식은 `/var/colab/hostname` 입니다 —
+       구글 자신의 `drive.mount()` 도 이걸로 판정합니다.
+    """
+    # 1) Kaggle — 가장 확실한 신호부터
+    if os.environ.get("KAGGLE_KERNEL_RUN_TYPE") or os.environ.get("KAGGLE_URL_BASE"):
         return "kaggle"
+    if Path("/kaggle/working").is_dir() or Path("/kaggle/input").is_dir():
+        return "kaggle"
+
+    # 2) 진짜 Colab VM
+    if Path("/var/colab/hostname").exists() or os.environ.get("COLAB_RELEASE_TAG"):
+        return "colab"
+    # 위 표식이 없는데 google.colab 이 **이미 로드돼 있으면** Colab 계열로 봅니다
+    # (마운트는 못 할 수 있고, mount_drive 가 알아서 넘어갑니다)
+    if "google.colab" in sys.modules and Path("/content").is_dir():
+        return "colab"
+
     return "local"
+
+
+def can_mount_drive() -> bool:
+    """Drive 를 실제로 마운트할 수 있는 환경인가.
+
+    구글의 `drive.mount()` 가 쓰는 표식과 같은 것을 봅니다. 이게 False 인데
+    마운트를 시도하면 NotImplementedError 가 납니다.
+    """
+    return is_colab() and Path("/var/colab/hostname").exists()
+
+
+def diagnose() -> dict:
+    """환경 감지가 이상할 때 근거를 전부 찍습니다.
+
+        env.diagnose()
+
+    "Kaggle 인데 Colab 이라고 나온다" 같은 상황에서 뭘 보고 그렇게 판단했는지
+    확인할 수 있습니다.
+    """
+    sig = {
+        "detect()": detect(),
+        "KAGGLE_KERNEL_RUN_TYPE": os.environ.get("KAGGLE_KERNEL_RUN_TYPE"),
+        "KAGGLE_URL_BASE": os.environ.get("KAGGLE_URL_BASE"),
+        "COLAB_RELEASE_TAG": os.environ.get("COLAB_RELEASE_TAG"),
+        "/kaggle/working 있음": Path("/kaggle/working").is_dir(),
+        "/kaggle/input 있음": Path("/kaggle/input").is_dir(),
+        "/content 있음": Path("/content").is_dir(),
+        "/var/colab/hostname 있음": Path("/var/colab/hostname").exists(),
+        "google.colab 로드됨": "google.colab" in sys.modules,
+        "can_mount_drive()": can_mount_drive(),
+        "workspace()": str(workspace()),
+        "work_root()": str(work_root()),
+        "persist_root()": str(persist_root() or "None"),
+    }
+    print("── 환경 감지 근거 " + "─" * 40)
+    for k, v in sig.items():
+        print(f"  {k:<26} {v}")
+    print("─" * 58)
+    return sig
 
 
 def is_colab() -> bool:
