@@ -206,6 +206,70 @@ def test_partial_dir_without_manifests_is_accepted():
     check("crops 만 있어도 인식한다", env._looks_partial(d))
 
 
+def test_finds_nested_dataset():
+    """Kaggle 데이터셋 안에 폴더가 한 겹 더 있어도 찾아야 합니다.
+
+    zip 을 만들 때 폴더째 담으면 /kaggle/input/<ds>/dogskin_min/crops/ 처럼
+    한 단계 깊어집니다. 한 겹만 보면 못 찾습니다.
+    """
+    from src import env
+
+    base = _TMP / "nested_input"
+    make_prepared(base / "my-dataset" / "dogskin_min")
+    w = fresh_env("nested")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        found = env.find_prepared_all(dest=w)
+        check("한 겹 더 깊어도 찾는다", len(found) == 1, f"{[str(p) for p, _ in found]}")
+    finally:
+        env._search_roots = orig
+
+
+def test_finds_zip_inside_dataset_folder():
+    """Kaggle 이 zip 을 안 풀었을 때 — 데이터셋 폴더 안의 zip 도 찾아야 합니다."""
+    from src import env
+
+    base = _TMP / "zip_in_ds"
+    d = base / "my-dataset"
+    d.mkdir(parents=True)
+    src = make_prepared(_TMP / "zipsrc2")
+    with zipfile.ZipFile(d / "dogskin_m15.zip", "w") as zf:
+        for p in src.rglob("*"):
+            if p.is_file():
+                zf.write(p, p.relative_to(src))
+    w = fresh_env("zipds")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        found = env.find_prepared_all(dest=w)
+        check("데이터셋 폴더 안의 zip 을 찾는다",
+              len(found) == 1 and found[0][1] == "zip", f"{found}")
+    finally:
+        env._search_roots = orig
+
+
+def test_error_lists_actual_contents():
+    """★ '못 찾았다' 만으로는 다음에 뭘 볼지 알 수 없습니다."""
+    from src import env
+
+    base = _TMP / "empty_input"
+    (base / "관계없는-데이터셋").mkdir(parents=True)
+    (base / "관계없는-데이터셋" / "readme.txt").write_text("x", encoding="utf-8")
+    w = fresh_env("err")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        env.find_prepared_all(dest=w)
+        check("없으면 예외", False, "예외가 안 났습니다")
+    except FileNotFoundError as exc:
+        m = str(exc)
+        check("오류가 실제 내용물을 보여준다", "관계없는-데이터셋" in m, m[:300])
+        check("오류가 무엇을 찾는지 알려준다", "crops/" in m and "dogskin*.zip" in m)
+    finally:
+        env._search_roots = orig
+
+
 def test_kaggle_wins_over_colab_signals():
     """★ Kaggle 이미지에도 google.colab 과 /content 가 있습니다.
 
@@ -280,6 +344,8 @@ if __name__ == "__main__":
                test_autodetect_prefers_extracted_when_no_zip,
                test_missing_gives_useful_error, test_split_upload_is_merged,
                test_partial_dir_without_manifests_is_accepted,
+               test_finds_nested_dataset, test_finds_zip_inside_dataset_folder,
+               test_error_lists_actual_contents,
                test_kaggle_wins_over_colab_signals, test_diagnose_reports_signals,
                test_manifest_rebase_works_through_link]:
         print(f"\n── {fn.__name__} ──")

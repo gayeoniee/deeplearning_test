@@ -530,14 +530,13 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
     seen: set[Path] = set()
 
     for base in _search_roots():
-        for z in sorted(base.rglob("dogskin*.zip")):
-            if z.resolve() not in seen:
-                seen.add(z.resolve())
-                zips.append((z, "zip"))
-        cands = [base] + ([p for p in sorted(base.iterdir()) if p.is_dir()]
-                          if base.is_dir() else [])
-        for d in cands:
+        for d in _walk(base, depth=3):
             r = d.resolve()
+            # zip 은 이 폴더 바로 아래만 봅니다 (rglob 은 심볼릭 링크로 안 들어갑니다)
+            for z in sorted(d.glob("dogskin*.zip")):
+                if z.resolve() not in seen:
+                    seen.add(z.resolve())
+                    zips.append((z, "zip"))
             if r in seen or r == dest.resolve():
                 continue
             if _looks_prepared(d) or _looks_partial(d):
@@ -547,14 +546,72 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
     out = dirs or zips              # 풀려 있는 쪽을 우선 (복사 없이 링크만 하면 됨)
     if not out:
         raise FileNotFoundError(
-            "전처리 결과(dogskin_prepared)를 찾지 못했습니다.\n"
-            f"  찾아본 곳: {[str(p) for p in _search_roots()]}\n"
-            "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
-            "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
-            "             (Kaggle 은 zip 을 자동으로 풀어서 crops/ manifests/ 로 둡니다)\n"
-            "  · 경로를 직접 주려면 env.load_prepared('/경로')"
+            "전처리 결과(dogskin_prepared)를 찾지 못했습니다.\n\n"
+            + _what_is_there()
+            + "\n찾는 것 (둘 중 하나):\n"
+            "  · dogskin*.zip 파일\n"
+            "  · crops/ 폴더를 가진 폴더 (Kaggle 은 zip 을 자동으로 풀어둡니다)\n\n"
+            "확인할 것:\n"
+            "  · Kaggle : 우측 패널 [Add Input] 으로 데이터셋을 붙였는지\n"
+            "             (붙였으면 위 목록의 /kaggle/input 아래에 보여야 합니다)\n"
+            "  · Colab  : Drive 를 마운트했는지 → env.mount_drive()\n"
+            "  · 경로를 직접 주려면 env.load_prepared('/kaggle/input/<데이터셋이름>')"
         )
     return out
+
+
+def _walk(base: Path, depth: int = 3) -> list[Path]:
+    """base 아래를 depth 단계까지. **심볼릭 링크 폴더도 들어갑니다.**
+
+    ⚠️ `Path.rglob` 은 심볼릭 링크인 하위 폴더로 들어가지 않습니다.
+       Kaggle 의 `/kaggle/input/<데이터셋>` 이 링크면 rglob 으로는 안 보입니다.
+       `iterdir()` + `is_dir()` 은 링크를 따라가므로 직접 훑습니다.
+    """
+    out = [base]
+    frontier = [base]
+    for _ in range(depth):
+        nxt: list[Path] = []
+        for d in frontier:
+            try:
+                for p in sorted(d.iterdir()):
+                    if p.is_dir():
+                        out.append(p)
+                        nxt.append(p)
+            except OSError:
+                continue
+        frontier = nxt
+    return out
+
+
+def _what_is_there(max_items: int = 12) -> str:
+    """검색 경로에 **실제로 뭐가 있는지** 보여줍니다.
+
+    "못 찾았다"만 알려주면 사용자가 다음에 뭘 볼지 알 수 없습니다.
+    """
+    lines = ["실제로 있는 것:"]
+    for base in _search_roots():
+        lines.append(f"  {base}")
+        try:
+            items = sorted(base.iterdir())
+        except OSError as exc:
+            lines.append(f"      (읽을 수 없음: {type(exc).__name__})")
+            continue
+        if not items:
+            lines.append("      (비어 있음)")
+            continue
+        for p in items[:max_items]:
+            if p.is_dir():
+                try:
+                    inner = sorted(x.name for x in p.iterdir())[:6]
+                except OSError:
+                    inner = ["(읽을 수 없음)"]
+                lines.append(f"      📁 {p.name}/   → {inner}")
+            else:
+                mb = p.stat().st_size / 1024**2
+                lines.append(f"      📄 {p.name}  ({mb:,.0f} MB)")
+        if len(items) > max_items:
+            lines.append(f"      … 외 {len(items) - max_items}개")
+    return "\n".join(lines) + "\n"
 
 
 def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
