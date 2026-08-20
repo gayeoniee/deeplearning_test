@@ -20,6 +20,9 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
+import random
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,6 +91,166 @@ def cosine_with_warmup(optimizer, warmup_steps: int, total_steps: int, min_ratio
 
 
 # ──────────────────────────────────────────────────────────────
+# 중단 대비 — 체크포인트 영속화
+# ──────────────────────────────────────────────────────────────
+# ⚠️ Colab 의 `/content` 는 **세션이 끊기면 통째로 사라집니다.** 25에폭 학습이
+#    23에폭에서 끊기면 처음부터 다시입니다. 그래서 두 가지를 합니다:
+#
+#    1) 매 에폭 `last.pt` 를 저장합니다 (모델 + EMA + 옵티마이저 + 스케줄러 + RNG)
+#    2) 그걸 살아남는 저장소(Drive)로 복사합니다
+#
+#    다음 세션에서 `fit(..., resume=True)` 를 부르면 Drive → 로컬로 되돌린 뒤
+#    끊긴 에폭 다음부터 이어갑니다. 이미 끝난 학습이면 아예 건너뜁니다.
+#
+# 비용: resnet50 기준 last.pt ≈ 400MB, best.pt ≈ 200MB. Drive 쓰기가
+#       에폭당 10~30초 붙습니다. 80분을 날리는 것보다 훨씬 쌉니다.
+#       `persist_every=2` 로 줄일 수 있습니다 (그만큼 되돌아가는 폭도 커집니다).
+
+_SYNC_FILES = ("best.pt", "last.pt", "history.csv", "config.json", "result.json")
+
+
+def ckpt_dir(exp: str) -> Path:
+    """로컬(빠른 디스크) 체크포인트 폴더."""
+    p = env.ensure_dirs()["checkpoints"] / exp
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def persist_dir(exp: str) -> Path | None:
+    """세션이 끊겨도 남는 체크포인트 폴더. 없으면 None."""
+    root = env.persist_root()
+    if root is None:
+        return None
+    p = Path(root) / "checkpoints" / exp
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return p
+
+
+def _same_dir(a: Path | None, b: Path | None) -> bool:
+    """로컬 실행에서는 영속 저장소가 작업 폴더와 같은 곳입니다 — 복사할 게 없습니다."""
+    if a is None or b is None:
+        return False
+    try:
+        return a.resolve() == b.resolve()
+    except OSError:
+        return False
+
+
+def _copy_atomic(src: Path, dst: Path) -> None:
+    """중간에 끊겨도 반쪽 파일이 남지 않게 임시 이름으로 쓰고 바꿔치기합니다."""
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    shutil.copy2(src, tmp)
+    os.replace(tmp, dst)
+
+
+def sync_to_persist(exp: str, files: tuple[str, ...] = _SYNC_FILES,
+                    verbose: bool = False) -> float:
+    """로컬 → 영속 저장소. 걸린 초를 돌려줍니다 (영속 저장소가 없으면 0)."""
+    dst_dir = persist_dir(exp)
+    src_dir = ckpt_dir(exp)
+    if dst_dir is None or _same_dir(dst_dir, src_dir):
+        return 0.0
+    t0 = time.time()
+    done = []
+    for name in files:
+        src = src_dir / name
+        if not src.exists():
+            continue
+        try:
+            _copy_atomic(src, dst_dir / name)
+            done.append(name)
+        except OSError as exc:
+            # Drive 가 잠깐 끊기는 일은 흔합니다. 학습을 죽이지는 않습니다.
+            print(f"⚠️ [train] '{name}' 백업 실패 — {type(exc).__name__}: {exc}")
+    dt = time.time() - t0
+    if verbose and done:
+        print(f"[train] 백업 {len(done)}개 → {dst_dir}  ({dt:.1f}초)")
+    return dt
+
+
+def restore_from_persist(exp: str, verbose: bool = True) -> bool:
+    """영속 저장소 → 로컬. 되돌릴 게 있었으면 True."""
+    src_dir = persist_dir(exp)
+    dst_dir = ckpt_dir(exp)
+    if src_dir is None or not src_dir.exists() or _same_dir(src_dir, dst_dir):
+        return False
+    n = 0
+    for name in _SYNC_FILES:
+        src = src_dir / name
+        if not src.exists():
+            continue
+        dst = dst_dir / name
+        # 로컬이 더 새것이면 덮어쓰지 않습니다 (같은 세션에서 재실행한 경우)
+        if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+            continue
+        try:
+            _copy_atomic(src, dst)
+            n += 1
+        except OSError as exc:
+            print(f"⚠️ [train] '{name}' 복원 실패 — {type(exc).__name__}: {exc}")
+    if n and verbose:
+        print(f"[train] 이전 세션 체크포인트 {n}개 복원 ← {src_dir}")
+    return n > 0
+
+
+def training_state(exp: str, check_persist: bool = True) -> dict:
+    """이 실험이 어디까지 갔는지. 학습을 시작하기 전에 물어봅니다."""
+    if check_persist:
+        restore_from_persist(exp, verbose=False)
+    d = ckpt_dir(exp)
+    out = {"exp": exp, "dir": str(d), "completed": False,
+           "epochs_done": 0, "best_score": None, "best_epoch": None,
+           "target_epochs": 0, "early_stopped": False,
+           "has_last": (d / "last.pt").exists(), "has_best": (d / "best.pt").exists(),
+           "persist": str(persist_dir(exp) or "")}
+    rj = d / "result.json"
+    if rj.exists():
+        try:
+            r = json.loads(rj.read_text(encoding="utf-8"))
+            out["completed"] = bool(r.get("completed"))
+            out["best_score"] = r.get("best_score")
+            out["best_epoch"] = r.get("best_epoch")
+            out["epochs_done"] = len(r.get("history") or [])
+            out["early_stopped"] = bool(r.get("early_stopped"))
+            # 예전 형식(target_epochs 없음)은 돌린 만큼이 목표였다고 봅니다.
+            out["target_epochs"] = int(r.get("target_epochs") or out["epochs_done"])
+        except (OSError, json.JSONDecodeError):
+            pass
+    if out["has_last"]:
+        try:
+            ck = torch.load(d / "last.pt", map_location="cpu", weights_only=False)
+            out["epochs_done"] = max(out["epochs_done"], int(ck.get("epoch", -1)) + 1)
+            out["best_score"] = ck.get("best", out["best_score"])
+        except Exception:
+            pass
+    return out
+
+
+def _rng_state() -> dict:
+    st = {"torch": torch.get_rng_state(), "numpy": np.random.get_state(),
+          "python": random.getstate()}
+    if torch.cuda.is_available():
+        st["cuda"] = torch.cuda.get_rng_state_all()
+    return st
+
+
+def _set_rng_state(st: dict | None) -> None:
+    if not st:
+        return
+    try:
+        torch.set_rng_state(st["torch"].cpu() if torch.is_tensor(st["torch"]) else st["torch"])
+        np.random.set_state(st["numpy"])
+        random.setstate(st["python"])
+        if torch.cuda.is_available() and st.get("cuda") is not None:
+            torch.cuda.set_rng_state_all(st["cuda"])
+    except Exception as exc:
+        print(f"⚠️ [train] 난수 상태 복원 실패 (계속 진행) — {type(exc).__name__}")
+
+
+# ──────────────────────────────────────────────────────────────
 # 결과 컨테이너
 # ──────────────────────────────────────────────────────────────
 @dataclass
@@ -98,6 +261,21 @@ class FitResult:
     history: list[dict] = field(default_factory=list)
     cfg: dict = field(default_factory=dict)
     elapsed_sec: float = 0.0
+    resumed_from: int = 0        # 이어서 시작한 에폭 (0 이면 처음부터)
+    skipped: bool = False        # 이미 끝나 있어서 학습을 아예 건너뜀
+
+    @classmethod
+    def from_dir(cls, d: Path | str, cfg: dict | None = None) -> "FitResult":
+        """result.json 으로부터 되살립니다 (이미 끝난 학습을 건너뛸 때)."""
+        d = Path(d)
+        r = json.loads((d / "result.json").read_text(encoding="utf-8"))
+        return cls(best_score=float(r.get("best_score", 0.0)),
+                   best_epoch=int(r.get("best_epoch", -1)),
+                   best_ckpt=str(d / "best.pt"),
+                   history=list(r.get("history") or []),
+                   cfg=cfg or r.get("cfg") or {},
+                   elapsed_sec=float(r.get("elapsed_sec", 0.0)),
+                   skipped=True)
 
     def summary(self) -> None:
         print(f"\n최고 {self.cfg.get('monitor', 'score')} = {self.best_score:.4f} "
@@ -225,11 +403,61 @@ def fit(
     device: str | None = None,
     exp_name: str | None = None,
     verbose: bool = True,
+    resume: bool = True,
+    persist: bool = True,
+    persist_every: int = 1,
+    restore_best: bool = True,
 ) -> FitResult:
+    """학습 루프.
+
+    resume=True (기본): 같은 `exp_name` 의 체크포인트가 있으면 이어서 합니다.
+        - 이미 끝난 학습이면 **아무것도 안 하고** best 가중치만 model 에 얹어 돌려줍니다.
+        - 중간에 끊긴 학습이면 다음 에폭부터 이어갑니다.
+        처음부터 다시 하려면 `resume=False` (기존 기록을 덮어씁니다).
+
+    persist=True (기본): 매 에폭 체크포인트를 세션 밖(Drive 등)으로 복사합니다.
+        Colab 세션이 끊겨도 살아남습니다. → `env.persist_root()`
+
+    restore_best=True (기본): 학습이 끝나면 **best 에폭의 가중치를 model 에 되돌립니다.**
+        ⚠️ 이게 없으면 model 은 마지막 에폭 가중치를 들고 있어서, 저장된 best.pt 와
+           노트북에서 평가하는 대상이 서로 다른 모델이 됩니다.
+    """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     exp = exp_name or cfg.exp_name
     n_cls = getattr(dl_train.dataset, "classes", None)
     n_cls = len(n_cls) if n_cls else int(max(dl_train.dataset.targets)) + 1
+
+    ck_dir = ckpt_dir(exp)
+    if resume and persist:
+        restore_from_persist(exp, verbose=verbose)
+
+    # ── 이미 끝난 학습이면 건너뜁니다 ────────────────────────────
+    # 단, cfg.epochs 를 늘려서 다시 부른 경우는 "더 돌려보자" 는 뜻이므로
+    # 건너뛰지 않고 이어서 갑니다 (조기 종료로 끝난 건 이어가도 의미 없음).
+    if resume:
+        st = training_state(exp, check_persist=False)
+        finished = st["completed"] and st["has_best"] and (
+            st["early_stopped"] or cfg.epochs <= st["target_epochs"])
+        if finished:
+            res = FitResult.from_dir(ck_dir, cfg=cfg.to_dict())
+            if verbose:
+                why = " (조기 종료)" if st["early_stopped"] else ""
+                print(f"⏭️  '{exp}' 은 이미 끝난 학습입니다{why} — 건너뜁니다.\n"
+                      f"    최고 {cfg.monitor} = {res.best_score:.4f} "
+                      f"(epoch {res.best_epoch}, {res.elapsed_sec / 60:.1f}분 소요)\n"
+                      f"    다시 학습하려면 resume=False, 더 돌리려면 epochs 를 늘리세요.")
+            if restore_best:
+                _load_into(model, ck_dir / "best.pt", verbose=verbose)
+            model.to(device)
+            return res
+        if st["completed"] and st["has_last"] and cfg.epochs > st["target_epochs"]:
+            if verbose:
+                print(f"🔁 '{exp}' 을 {st['target_epochs']} → {cfg.epochs} 에폭으로 "
+                      f"연장합니다.")
+    elif (ck_dir / "history.csv").exists():
+        # resume=False 는 "처음부터" 라는 뜻이므로 이전 기록을 치웁니다.
+        for name in ("history.csv", "last.pt", "result.json"):
+            (ck_dir / name).unlink(missing_ok=True)
 
     model = model.to(device)
     if device == "cuda":
@@ -245,22 +473,68 @@ def fit(
     scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
     ema = ModelEMA(model, cfg.ema_decay) if cfg.ema_decay > 0 else None
 
-    ck_dir = env.ensure_dirs()["checkpoints"] / exp
-    ck_dir.mkdir(parents=True, exist_ok=True)
     cfg.save(ck_dir / "config.json")
     log_path = ck_dir / "history.csv"
 
     res = FitResult(cfg=cfg.to_dict())
     best, bad_epochs = -1.0, 0
+    start_epoch = 0
+    prior_sec = 0.0
+
+    # ── 중간에 끊긴 학습 이어받기 ────────────────────────────────
+    if resume and (ck_dir / "last.pt").exists():
+        try:
+            ck = torch.load(ck_dir / "last.pt", map_location=device, weights_only=False)
+            model.load_state_dict(ck["model"])
+            if ema is not None and ck.get("ema") is not None:
+                ema.ema.load_state_dict(ck["ema"])
+            optimizer.load_state_dict(ck["optimizer"])
+            if ck.get("scheduler") is not None:
+                scheduler.load_state_dict(ck["scheduler"])
+            if ck.get("scaler") is not None:
+                scaler.load_state_dict(ck["scaler"])
+            _set_rng_state(ck.get("rng"))
+            start_epoch = int(ck["epoch"]) + 1
+            best = float(ck.get("best", -1.0))
+            bad_epochs = int(ck.get("bad_epochs", 0))
+            res.history = list(ck.get("history") or [])
+            res.best_score = float(ck.get("best_score", max(best, 0.0)))
+            res.best_epoch = int(ck.get("best_epoch", -1))
+            res.best_ckpt = str(ck_dir / "best.pt")
+            res.resumed_from = start_epoch
+            prior_sec = float(ck.get("elapsed_sec", 0.0))
+            if verbose:
+                print(f"▶️  '{exp}' 을 epoch {start_epoch} 부터 이어서 합니다 "
+                      f"(이전 최고 {cfg.monitor} {res.best_score:.4f}, "
+                      f"누적 {prior_sec / 60:.1f}분)")
+        except Exception as exc:
+            print(f"⚠️ [train] last.pt 를 읽지 못해 처음부터 시작합니다 — "
+                  f"{type(exc).__name__}: {exc}")
+            start_epoch, best, bad_epochs, prior_sec = 0, -1.0, 0, 0.0
+            res = FitResult(cfg=cfg.to_dict())
+
     t0 = time.time()
 
     if verbose:
         print(f"\n{'=' * 60}\n 실험: {exp}  |  {cfg.model_name}  |  {device}")
         print(f" epochs={cfg.epochs} batch={cfg.resolved_batch_size()} "
               f"accum={cfg.grad_accum} lr={cfg.lr} amp={cfg.amp} ema={cfg.ema_decay > 0}")
-        print(f" 조기종료 기준: val {cfg.monitor} (patience={cfg.early_stop_patience})\n{'=' * 60}")
+        print(f" 조기종료 기준: val {cfg.monitor} (patience={cfg.early_stop_patience})")
+        pd_ = persist_dir(exp) if persist else None
+        if _same_dir(pd_, ck_dir):
+            print(" 체크포인트가 이미 영속 디스크에 있습니다 — 별도 백업 없음")
+        elif pd_ is not None:
+            print(f" 중단 대비 백업: {pd_}  (매 {persist_every} 에폭)")
+        elif persist:
+            print(" ⚠️ 중단 대비 백업 없음 — 세션이 끊기면 체크포인트가 사라집니다.\n"
+                  "    Colab 이면 env.mount_drive() 를 먼저 실행하세요.")
+        print("=" * 60)
 
-    for epoch in range(cfg.epochs):
+    if start_epoch >= cfg.epochs and verbose:
+        print(f"이미 {start_epoch} 에폭까지 끝났습니다 (목표 {cfg.epochs}). 학습 생략.")
+
+    early_stopped = False
+    for epoch in range(start_epoch, cfg.epochs):
         tl = _train_epoch(model, dl_train, criterion, optimizer, scheduler,
                           scaler, cfg, ema, device, n_cls)
         eval_model = ema.ema if ema is not None else model
@@ -274,9 +548,11 @@ def fit(
                "lr": optimizer.param_groups[0]["lr"]}
         res.history.append(row)
 
+        # 이어받기 후에도 헤더가 두 번 찍히지 않게 파일 존재 여부로 판단합니다.
+        need_header = not log_path.exists() or log_path.stat().st_size == 0
         with log_path.open("a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(row))
-            if epoch == 0:
+            if need_header:
                 w.writeheader()
             w.writerow(row)
 
@@ -296,26 +572,111 @@ def fit(
         else:
             bad_epochs += 1
 
+        stop = bad_epochs >= cfg.early_stop_patience
+        res.elapsed_sec = prior_sec + (time.time() - t0)
+
+        # ── 중단 대비: 매 에폭 전체 상태를 남깁니다 ──────────────
+        torch.save({
+            "model": model.state_dict(),
+            "ema": ema.ema.state_dict() if ema else None,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict() if scheduler else None,
+            "scaler": scaler.state_dict() if scaler is not None else None,
+            "rng": _rng_state(),
+            "epoch": epoch, "best": best, "bad_epochs": bad_epochs,
+            "best_score": res.best_score, "best_epoch": res.best_epoch,
+            "history": res.history, "elapsed_sec": res.elapsed_sec,
+            "cfg": cfg.to_dict(),
+            "classes": getattr(dl_train.dataset, "classes", None),
+        }, ck_dir / "last.pt")
+        _write_result(ck_dir, res, completed=False, target_epochs=cfg.epochs)
+
+        sync_sec = 0.0
+        last_epoch = stop or epoch == cfg.epochs - 1
+        if persist and (epoch % max(persist_every, 1) == 0 or last_epoch):
+            sync_sec = sync_to_persist(exp)
+
         if verbose:
+            extra = f" | 백업 {sync_sec:.0f}초" if sync_sec >= 1 else ""
             print(f"[{epoch:>2}/{cfg.epochs - 1}] train {tl:.4f} | val {vl:.4f} | "
                   f"acc {m['acc']:.4f} | macroF1 {m['macro_f1']:.4f} | "
-                  f"balAcc {m['balanced_acc']:.4f}{flag}")
+                  f"balAcc {m['balanced_acc']:.4f}{flag}{extra}")
 
-        if bad_epochs >= cfg.early_stop_patience:
+        if stop:
+            early_stopped = True
             if verbose:
                 print(f"\n조기 종료 — {cfg.early_stop_patience} 에폭 동안 개선 없음")
             break
 
-    res.elapsed_sec = time.time() - t0
-    (ck_dir / "result.json").write_text(
-        json.dumps({"best_score": res.best_score, "best_epoch": res.best_epoch,
-                    "history": res.history, "elapsed_sec": res.elapsed_sec},
-                   indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    res.elapsed_sec = prior_sec + (time.time() - t0)
+    _write_result(ck_dir, res, completed=True, target_epochs=cfg.epochs,
+                  early_stopped=early_stopped)
+    if persist:
+        sync_to_persist(exp)
+
+    # ⚠️ 여기까지 model 은 **마지막 에폭** 가중치입니다. 저장된 best.pt 와 다릅니다.
+    #    노트북은 fit() 이 끝난 뒤 이 model 로 평가하므로, best 를 되돌려 놓습니다.
+    if restore_best and res.best_ckpt and Path(res.best_ckpt).exists():
+        _load_into(model, Path(res.best_ckpt), verbose=verbose)
+
     if verbose:
         res.summary()
     return res
+
+
+def _write_result(ck_dir: Path, res: FitResult, completed: bool,
+                  target_epochs: int = 0, early_stopped: bool = False) -> None:
+    (ck_dir / "result.json").write_text(
+        json.dumps({"best_score": res.best_score, "best_epoch": res.best_epoch,
+                    "history": res.history, "elapsed_sec": res.elapsed_sec,
+                    "completed": completed, "target_epochs": target_epochs,
+                    "early_stopped": early_stopped, "cfg": res.cfg},
+                   indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _load_into(model: nn.Module, ckpt_path: Path, use_ema: bool = True,
+               verbose: bool = True) -> nn.Module:
+    """체크포인트의 가중치를 **주어진 model 객체에** 그대로 얹습니다.
+
+    EMA 를 썼다면 EMA 가중치가 best 로 저장된 것이므로 그쪽을 씁니다.
+    """
+    ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state = (ck.get("ema") if use_ema else None) or ck.get("model") or ck
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if (missing or unexpected) and verbose:
+        print(f"⚠️ [train] state_dict 불일치 — missing={len(missing)}, "
+              f"unexpected={len(unexpected)}")
+    which = "EMA" if (use_ema and ck.get("ema") is not None) else "raw"
+    if verbose:
+        print(f"[train] best 가중치({which}, epoch {ck.get('epoch', '?')}) 를 "
+              f"model 에 되돌렸습니다.")
+    return model
+
+
+def print_status(*exps: str) -> list[dict]:
+    """실험들이 어디까지 갔는지 한눈에. 학습 셀을 돌리기 전에 확인용."""
+    root = env.persist_root()
+    if root is None:
+        print("영속 저장소: ❌ 없음 — 세션이 끊기면 체크포인트가 사라집니다 "
+              "(Colab 이면 env.mount_drive())")
+    elif _same_dir(Path(root), Path(env.work_root())):
+        print(f"영속 저장소: {root} (작업 폴더와 동일 — 휘발성 디스크가 아닙니다)")
+    else:
+        print(f"영속 저장소: {root}")
+    rows = []
+    for e in exps:
+        st = training_state(e)
+        rows.append(st)
+        if st["completed"]:
+            mark, note = "✅", f"완료 — 최고 {st['best_score']:.4f} (epoch {st['best_epoch']})"
+        elif st["has_last"]:
+            mark, note = "⏸️", f"{st['epochs_done']} 에폭까지 진행 — 이어서 합니다"
+        else:
+            mark, note = "🆕", "처음부터"
+        print(f"  {mark} {e:<32} {note}")
+    return rows
 
 
 def load_best(result: FitResult, spec, n_classes: int, device: str = "cuda",

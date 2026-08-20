@@ -99,6 +99,39 @@ def workspace() -> Path:
     return project_root()
 
 
+def persist_root() -> Path | None:
+    """**세션이 끊겨도 살아남는** 저장소. 없으면 None.
+
+    ⚠️ Colab 의 `/content` 는 휘발성입니다. 세션이 끊기면 체크포인트까지 전부
+       사라집니다. 90분짜리 학습이 80분에 끊기면 처음부터 다시입니다.
+
+    그래서 체크포인트는 Drive 로 복사해 둡니다. Drive 가 마운트돼 있어야 하므로
+    `env.mount_drive()` 를 먼저 부르세요 (노트북 첫 셀이 합니다).
+
+    환경변수 `DOG_SKIN_PERSIST` 로 직접 지정할 수 있습니다.
+    """
+    override = os.environ.get("DOG_SKIN_PERSIST")
+    if override:
+        p = Path(override)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    if is_colab():
+        drive = Path("/content/drive/MyDrive")
+        if drive.exists():
+            p = drive / "dogskin_work"
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        return None            # Drive 미마운트 — 호출부가 경고합니다
+
+    if detect() == "kaggle":
+        # Kaggle 은 /kaggle/working 이 세션 종료 시 출력으로 보존됩니다
+        return workspace()
+
+    # 로컬은 애초에 휘발성이 아닙니다
+    return work_root()
+
+
 def data_root() -> Path:
     """원본 데이터(압축 해제본)가 놓일 곳. 환경변수 DOG_SKIN_DATA 로 덮어쓸 수 있습니다."""
     override = os.environ.get("DOG_SKIN_DATA")

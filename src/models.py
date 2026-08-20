@@ -237,7 +237,8 @@ class Ensemble:
 
 
 def load_checkpoint(path: str, spec: ModelSpec | str, n_classes: int,
-                    device: str = "cuda") -> nn.Module:
+                    device: str | None = None) -> nn.Module:
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     state = ckpt.get("ema") or ckpt.get("model") or ckpt
     model = build(spec, n_classes, pretrained=False, verbose=False)

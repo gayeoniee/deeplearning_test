@@ -160,6 +160,16 @@ python prepare_local.py --package
 → `src/explain.py` 가 CAM–병변 정렬도를 **수치로** 계산합니다.
 `median_lift < 1.3` 이면 정확도와 무관하게 재작업입니다.
 
+### 8. Colab 세션은 끊깁니다 — 이어받기
+
+`/content` 는 세션이 끝나면 통째로 사라집니다. 90분짜리 학습이 80분에 끊기면
+체크포인트까지 다 날아갑니다.
+
+→ `train.fit` 이 매 에폭 **옵티마이저·스케줄러·EMA·난수 상태까지** `last.pt` 로
+저장하고 Drive 로 복사합니다. 끊기면 **노트북을 그냥 다시 돌리세요** — 끝난 학습은
+`⏭️` 건너뛰고, 끊긴 학습은 `▶️` 그 에폭부터 이어갑니다.
+→ [`docs/cautions/09`](docs/cautions/09_세션이_끊겼을_때.md)
+
 ---
 
 ## 문서
@@ -174,12 +184,12 @@ python prepare_local.py --package
 
 ### ⚠️ 주의사항
 
-[`docs/cautions/`](docs/cautions/) — 8편.
+[`docs/cautions/`](docs/cautions/) — 9편.
 
 `01` 라이선스·재배포 · **`02` 데이터 누수** · `03` 의료AI 안전설계 ·
 `04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성 ·
 **`06` 해외IP 다운로드 차단** · `07` Windows 로컬 환경 설정 ·
-**`08` 2단계 파이프라인 설계**
+**`08` 2단계 파이프라인 설계** · `09` 세션이 끊겼을 때
 
 ### 🗺️ 전체 진행표
 
@@ -253,7 +263,7 @@ src/
 ├── crop.py        ROI 크롭
 ├── data.py        Dataset / DataLoader / 증강
 ├── models.py      timm 팩토리 (이름 자동 fallback) + EMA + 앙상블
-├── train.py       AMP + EMA + cosine warmup 학습 루프
+├── train.py       AMP + EMA + cosine warmup 학습 루프 + ★ 중단/재개
 ├── evaluate.py    macro-F1, 클래스별 recall, 부트스트랩 CI
 ├── calibrate.py   온도 스케일링, ECE, coverage-risk
 ├── explain.py     Grad-CAM + 병변 정렬도 수치화
