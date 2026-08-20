@@ -706,12 +706,20 @@ def load_prepared(
             how = _link_tags(src / "crops", dest / "crops")
             for tag, act in how.items():
                 print(f"[env] 크롭 {act}: {src.name}/crops/{tag}")
+            # ⚠️ `ensure_dirs()` 가 work_root()/manifests 를 **빈 폴더로 미리 만듭니다.**
+            #    "없으면 복사" 로 조건을 걸면 그 빈 폴더 때문에 영원히 복사가 안 되고,
+            #    나중에 manifest_final.parquet 을 못 찾아 죽습니다. 비어 있으면 채웁니다.
             man = dest / "manifests"
             if (src / "manifests").is_dir():
                 if force and man.exists() and not man.is_symlink():
                     shutil.rmtree(man)
-                if not man.exists():
-                    shutil.copytree(src / "manifests", man)
+                have = sorted(man.glob("*")) if man.exists() else []
+                if not have:
+                    man.mkdir(parents=True, exist_ok=True)
+                    for f in sorted((src / "manifests").iterdir()):
+                        if f.is_file():
+                            shutil.copy2(f, man / f.name)
+                    print(f"[env] 매니페스트 복사: {src.name}/manifests → {man}")
         elif already:
             print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
         else:
