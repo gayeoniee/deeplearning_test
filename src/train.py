@@ -198,6 +198,55 @@ def restore_from_persist(exp: str, verbose: bool = True) -> bool:
     return n > 0
 
 
+def import_checkpoints(src: str | Path, exps: list[str] | None = None,
+                       verbose: bool = True) -> list[str]:
+    """다른 환경에서 만든 체크포인트를 가져옵니다 (Colab → Kaggle 이주 등).
+
+    `src` 는 `checkpoints/` 를 담은 폴더이거나 `checkpoints/` 자체입니다.
+    Kaggle 이면 보통 `/kaggle/input/<데이터셋이름>` 입니다.
+
+        train.import_checkpoints("/kaggle/input/dogskin-ckpt")
+
+    ⚠️ 학습 환경이 달라도 가중치는 그대로 쓸 수 있습니다. 다만 `last.pt` 로
+       이어서 학습할 때는 배치 크기·워커 수가 달라져 배치 순서가 바뀝니다
+       (결과가 소수점 셋째 자리에서 흔들립니다 — cautions/09 참고).
+    """
+    src = Path(src)
+    root = src / "checkpoints" if (src / "checkpoints").is_dir() else src
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"{src} 안에서 체크포인트 폴더를 찾지 못했습니다.\n"
+            f"  기대한 구조: {src}/checkpoints/<실험이름>/best.pt  또는\n"
+            f"                {src}/<실험이름>/best.pt"
+        )
+
+    done = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        if exps and d.name not in exps:
+            continue
+        dst = ckpt_dir(d.name)
+        n = 0
+        for f in d.iterdir():
+            if f.is_file():
+                try:
+                    _copy_atomic(f, dst / f.name)
+                    n += 1
+                except OSError as exc:
+                    print(f"⚠️ [train] '{d.name}/{f.name}' 복사 실패 — {type(exc).__name__}")
+        if n:
+            done.append(d.name)
+            sync_to_persist(d.name)          # 이 환경의 영속 저장소에도 남깁니다
+            if verbose:
+                st = training_state(d.name, check_persist=False)
+                mark = "✅ 완료" if st["completed"] else f"⏸️ {st['epochs_done']}에폭"
+                print(f"  {mark}  {d.name}  ({n}개 파일)")
+    if verbose:
+        print(f"[train] 체크포인트 {len(done)}개 실험을 가져왔습니다 ← {root}")
+        if not done:
+            print(f"  ⚠️ 가져온 게 없습니다. {root} 안에 실험 폴더가 있는지 확인하세요.")
+    return done
+
+
 def training_state(exp: str, check_persist: bool = True) -> dict:
     """이 실험이 어디까지 갔는지. 학습을 시작하기 전에 물어봅니다."""
     if check_persist:

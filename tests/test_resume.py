@@ -473,6 +473,43 @@ def test_draft_matches_full_decode_for_eval():
     check("draft 후에도 텐서 크기가 같다", same_shape)
 
 
+def test_import_checkpoints():
+    """다른 환경에서 만든 체크포인트를 가져와 그대로 '완료' 로 인식해야 합니다."""
+    exp = "t_import"
+    fit_once(exp, 2)
+
+    # 다른 머신에서 받아온 폴더인 척 옮깁니다
+    outside = _TMP / "from_colab" / "checkpoints" / exp
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(train.ckpt_dir(exp), outside)
+    shutil.rmtree(train.ckpt_dir(exp))
+    pd_ = train.persist_dir(exp)
+    if pd_ and pd_.exists():
+        shutil.rmtree(pd_)                    # 이 환경에는 흔적이 없는 상태
+
+    st0 = train.training_state(exp)
+    check("가져오기 전에는 기록이 없다", not st0["has_best"], f"{st0}")
+
+    got = train.import_checkpoints(_TMP / "from_colab", verbose=False)
+    check("import_checkpoints 가 실험을 찾는다", got == [exp], f"{got}")
+
+    st = train.training_state(exp)
+    check("가져온 실험이 '완료' 로 인식된다", st["completed"] and st["has_best"], f"{st}")
+
+    res, _ = fit_once(exp, 2)
+    check("가져온 뒤 다시 부르면 학습을 건너뛴다", res.skipped is True)
+
+
+def test_import_checkpoints_bad_path():
+    try:
+        train.import_checkpoints(_TMP / "없는폴더", verbose=False)
+        check("없는 경로면 명확한 예외", False, "예외가 안 났습니다")
+    except FileNotFoundError as exc:
+        check("없는 경로면 명확한 예외", "체크포인트" in str(exc))
+    except Exception as exc:                                    # noqa: BLE001
+        check("없는 경로면 명확한 예외", False, repr(exc))
+
+
 def test_print_status_runs():
     try:
         rows = train.print_status("t_resume", "t_never_run")
@@ -497,6 +534,7 @@ if __name__ == "__main__":
                test_cache_invalidated_by_different_rows, test_cache_invalidated_by_tta,
                test_cache_survives_wiped_local_disk, test_cache_off,
                test_draft_matches_full_decode_for_eval,
+               test_import_checkpoints, test_import_checkpoints_bad_path,
                test_print_status_runs]:
         print(f"\n── {fn.__name__} ──")
         fn()
