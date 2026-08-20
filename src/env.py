@@ -163,15 +163,40 @@ def ensure_dirs() -> dict[str, Path]:
     return paths
 
 
-def mount_drive(mountpoint: str = "/content/drive") -> Path | None:
-    """Colab 에서만 Google Drive 를 마운트합니다. 다른 환경에서는 None."""
+def mount_drive(mountpoint: str = "/content/drive", strict: bool = False) -> Path | None:
+    """Colab 에서만 Google Drive 를 마운트합니다. 다른 환경에서는 None.
+
+    ⚠️ **실패해도 예외를 던지지 않습니다.** Drive 는 체크포인트를 세션 밖에
+       남기기 위한 **편의 기능**이지, 학습의 전제가 아닙니다. 여기서 죽으면
+       노트북 전체가 멈추는데, 정작 데이터가 다른 곳에 있으면 그냥 진행하면
+       됩니다. 못 붙었다는 사실은 호출부(`persist_root()` 가 None)가 알립니다.
+
+    실제로 겪은 경우: `/var/colab/hostname` 이 없는 Colab 계열 환경
+    (로컬 런타임 / Colab Enterprise / 일부 프록시 세션)에서
+    `NotImplementedError: Mounting drive is unsupported in this environment`.
+
+    strict=True 로 주면 예외를 그대로 올립니다.
+    """
     if not is_colab():
         print("[env] Colab 이 아니므로 Drive 마운트를 건너뜁니다.")
         return None
-    from google.colab import drive  # type: ignore[import-not-found]
+    try:
+        from google.colab import drive  # type: ignore[import-not-found]
 
-    drive.mount(mountpoint)
-    return Path(mountpoint) / "MyDrive"
+        drive.mount(mountpoint)
+    except Exception as exc:                                    # noqa: BLE001
+        if strict:
+            raise
+        print(f"⚠️ [env] Drive 마운트 실패 — {type(exc).__name__}: "
+              f"{str(exc).splitlines()[0][:120]}")
+        print("   이 환경에서는 Drive 를 쓸 수 없습니다. **계속 진행할 수 있습니다.**")
+        print("   다만 두 가지가 달라집니다:")
+        print("     · 데이터를 Drive 에서 못 읽습니다 → zip 을 다른 경로에 두거나 Kaggle 사용")
+        print("     · 체크포인트가 세션 밖에 안 남습니다 → 끊기면 학습을 처음부터")
+        print("   체크포인트만 살리려면: os.environ['DOG_SKIN_PERSIST'] = '/어딘가/영구경로'")
+        return None
+    p = Path(mountpoint) / "MyDrive"
+    return p if p.exists() else None
 
 
 # ──────────────────────────────────────────────────────────────
