@@ -414,52 +414,87 @@ def _looks_prepared(d: Path) -> bool:
     return (d / "crops").is_dir() and (d / "manifests").is_dir()
 
 
+def _looks_partial(d: Path) -> bool:
+    """`crops/` 만 있고 매니페스트는 없는 폴더 — 태그를 나눠 올린 경우."""
+    return (d / "crops").is_dir() and not (d / "manifests").is_dir()
+
+
 def find_prepared(dest: Path | None = None) -> tuple[Path, str]:
-    """전처리 결과를 찾습니다. `(경로, "zip" | "dir")`.
+    """전처리 결과를 하나 찾습니다. `(경로, "zip" | "dir")`."""
+    src, kind = find_prepared_all(dest)[0]
+    return src, kind
+
+
+def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
+    """전처리 결과를 **전부** 찾습니다. `[(경로, "zip" | "dir"), ...]`.
 
     ⚠️ **Kaggle 은 업로드한 zip 을 데이터셋에 넣을 때 자동으로 풀어버립니다.**
        그래서 `/kaggle/input/<데이터셋>/crops/...` 만 있고 zip 은 없습니다.
        zip 만 찾으면 여기서 막힙니다 — 풀려 있는 폴더도 같이 봅니다.
+
+    ⚠️ 전체 zip 은 5GB 를 넘습니다. 업로드가 자주 끊겨서 **태그별로 나눠**
+       올리는 경우가 있습니다 (`crops/m1.5` 하나, `crops/full` 하나).
+       그래서 하나만 찾고 멈추지 않고 다 모아서 합칩니다.
     """
     dest = Path(dest) if dest else work_root()
+    zips: list[tuple[Path, str]] = []
+    dirs: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
     for base in _search_roots():
-        z = sorted(base.rglob("dogskin_prepared*.zip"))[:1]
-        if z:
-            return z[0], "zip"
-    for base in _search_roots():
+        for z in sorted(base.rglob("dogskin*.zip")):
+            if z.resolve() not in seen:
+                seen.add(z.resolve())
+                zips.append((z, "zip"))
         cands = [base] + ([p for p in sorted(base.iterdir()) if p.is_dir()]
                           if base.is_dir() else [])
         for d in cands:
-            if _looks_prepared(d) and d.resolve() != dest.resolve():
-                return d, "dir"
-    raise FileNotFoundError(
-        "전처리 결과(dogskin_prepared)를 찾지 못했습니다.\n"
-        f"  찾아본 곳: {[str(p) for p in _search_roots()]}\n"
-        "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
-        "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
-        "             (Kaggle 은 zip 을 자동으로 풀어서 crops/ manifests/ 로 둡니다)\n"
-        "  · 경로를 직접 주려면 env.load_prepared('/경로')"
-    )
+            r = d.resolve()
+            if r in seen or r == dest.resolve():
+                continue
+            if _looks_prepared(d) or _looks_partial(d):
+                seen.add(r)
+                dirs.append((d, "dir"))
+
+    out = dirs or zips              # 풀려 있는 쪽을 우선 (복사 없이 링크만 하면 됨)
+    if not out:
+        raise FileNotFoundError(
+            "전처리 결과(dogskin_prepared)를 찾지 못했습니다.\n"
+            f"  찾아본 곳: {[str(p) for p in _search_roots()]}\n"
+            "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
+            "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
+            "             (Kaggle 은 zip 을 자동으로 풀어서 crops/ manifests/ 로 둡니다)\n"
+            "  · 경로를 직접 주려면 env.load_prepared('/경로')"
+        )
+    return out
 
 
-def _link_or_copy(src: Path, dst: Path) -> str:
-    """읽기 전용 원본을 심볼릭 링크로 겁니다. 안 되면 복사합니다.
+def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
+    """크롭을 **태그 단위로** 연결합니다. 여러 입력을 합칠 수 있습니다.
 
     Kaggle 의 `/kaggle/input` 은 읽기 전용이고, 크롭 45,885장을
     `/kaggle/working`(20GB 제한) 으로 복사하는 건 시간도 용량도 낭비입니다.
+    폴더 통째로가 아니라 태그별로 링크해야 `crops/m1.5` 와 `crops/full` 을
+    **서로 다른 데이터셋에서** 가져와 합칠 수 있습니다.
     """
-    if dst.is_symlink():
-        if dst.resolve() == src.resolve():
-            return "이미 연결됨"
-        dst.unlink()
-    elif dst.exists():
-        return "이미 있음"
-    try:
-        dst.symlink_to(src.resolve(), target_is_directory=True)
-        return "링크"
-    except OSError:
-        shutil.copytree(src, dst)
-        return "복사"
+    dst_crops.mkdir(parents=True, exist_ok=True)
+    out: dict[str, str] = {}
+    for tag_dir in sorted(p for p in src_crops.iterdir() if p.is_dir()):
+        dst = dst_crops / tag_dir.name
+        if dst.is_symlink():
+            out[tag_dir.name] = ("이미 연결됨" if dst.resolve() == tag_dir.resolve()
+                                 else "다른 곳에 연결됨(유지)")
+            continue
+        if dst.exists():
+            out[tag_dir.name] = "이미 있음"
+            continue
+        try:
+            dst.symlink_to(tag_dir.resolve(), target_is_directory=True)
+            out[tag_dir.name] = "링크"
+        except OSError:
+            shutil.copytree(tag_dir, dst)
+            out[tag_dir.name] = "복사"
+    return out
 
 
 def load_prepared(
@@ -484,39 +519,49 @@ def load_prepared(
     dest.mkdir(parents=True, exist_ok=True)
 
     if zip_path is None:
-        src, kind = find_prepared(dest)
-        print(f"[env] 자동 탐색: {src}  ({'압축 파일' if kind == 'zip' else '풀려 있는 폴더'})")
+        sources = find_prepared_all(dest)
+    elif isinstance(zip_path, (list, tuple)):
+        sources = [(Path(p), "zip" if Path(p).suffix == ".zip" else "dir") for p in zip_path]
     else:
-        src = Path(zip_path)
-        kind = "zip" if src.suffix == ".zip" else "dir"
+        p = Path(zip_path)
+        sources = [(p, "zip" if p.suffix == ".zip" else "dir")]
 
-    marker = dest / ".prepared_from"
-    already = marker.exists() and marker.read_text().strip() == str(src) and not force
+    if len(sources) > 1:
+        print(f"[env] 입력 {len(sources)}개를 합칩니다: {[s.name for s, _ in sources]}")
 
-    if kind == "dir":
-        # 읽기 전용일 수 있으므로 크롭은 링크, 매니페스트는 복사(작고, 안전하게 쓰기 위해)
-        how = _link_or_copy(src / "crops", dest / "crops")
-        man = dest / "manifests"
-        if force and man.exists() and not man.is_symlink():
-            shutil.rmtree(man)
-        if not man.exists():
-            shutil.copytree(src / "manifests", man)
-        print(f"[env] 크롭 {how}: {src / 'crops'} → {dest / 'crops'}")
-        marker.write_text(str(src))
-    elif already:
-        print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
-    else:
-        size = src.stat().st_size / 1024**3
-        print(f"[env] 압축 해제 {src.name} ({size:.2f}GB) → {dest}")
-        print("      (Drive 에서 직접 읽지 않고 로컬 디스크로 풉니다 — 학습 속도 때문)")
-        with zipfile.ZipFile(src) as z:
-            z.extractall(dest)
-        marker.write_text(str(src))
+    for src, kind in sources:
+        marker = dest / ".prepared_from"
+        already = (marker.exists() and marker.read_text().strip() == str(src)
+                   and not force and kind == "zip")
+
+        if kind == "dir":
+            # 읽기 전용일 수 있으므로 크롭은 태그별 링크, 매니페스트는 복사
+            how = _link_tags(src / "crops", dest / "crops")
+            for tag, act in how.items():
+                print(f"[env] 크롭 {act}: {src.name}/crops/{tag}")
+            man = dest / "manifests"
+            if (src / "manifests").is_dir():
+                if force and man.exists() and not man.is_symlink():
+                    shutil.rmtree(man)
+                if not man.exists():
+                    shutil.copytree(src / "manifests", man)
+        elif already:
+            print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
+        else:
+            size = src.stat().st_size / 1024**3
+            print(f"[env] 압축 해제 {src.name} ({size:.2f}GB) → {dest}")
+            print("      (Drive 에서 직접 읽지 않고 로컬 디스크로 풉니다 — 학습 속도 때문)")
+            with zipfile.ZipFile(src) as z:
+                z.extractall(dest)
+            marker.write_text(str(src))
 
     crops = dest / "crops"
     mans = sorted((dest / "manifests").glob("*.parquet")) if (dest / "manifests").exists() else []
-    n_crop = sum(1 for _ in crops.rglob("*.jpg")) if crops.exists() else 0
+    # ⚠️ `crops.rglob()` 은 **심볼릭 링크 하위 폴더로 들어가지 않습니다.**
+    #    Kaggle 에서는 태그마다 링크를 걸므로 여기서 0장이 나옵니다.
+    #    태그 폴더를 하나씩(= 링크 자체를 시작점으로) 훑어야 합니다.
     tags = sorted(p.name for p in crops.iterdir() if p.is_dir()) if crops.exists() else []
+    n_crop = sum(sum(1 for _ in (crops / t).rglob("*.jpg")) for t in tags)
 
     print(f"[env] 크롭 {n_crop:,}장, 크롭 태그 {tags}")
     print(f"[env] 매니페스트 {[m.name for m in mans]}")

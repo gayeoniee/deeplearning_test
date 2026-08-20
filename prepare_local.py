@@ -229,7 +229,18 @@ def step_scan() -> None:
     print("   · polygon/bbox 키                · 클래스별 이미지 수")
 
 
-def step_package(out: Path) -> None:
+def step_package(out: Path, tags: str | None = None) -> None:
+    """업로드용 zip. `tags` 로 크롭 태그를 골라 담을 수 있습니다.
+
+    ⚠️ 전체 zip 은 쉽게 5GB 를 넘습니다. Kaggle/Drive 업로드가 오래 걸리고
+       중간에 끊기면 처음부터입니다. 학습에 실제로 쓰는 태그만 담으면
+       크게 줄일 수 있습니다:
+
+           py prepare_local.py --package --tags m1.5 --out dogskin_m15.zip
+           py prepare_local.py --package --tags full --out dogskin_full.zip
+
+       나눠 올려도 `env.load_prepared()` 가 여러 입력을 합쳐서 인식합니다.
+    """
     from src import env
 
     print("\n" + "=" * 68)
@@ -237,6 +248,24 @@ def step_package(out: Path) -> None:
     print("=" * 68)
 
     work = env.work_root()
+    want = [t.strip() for t in tags.split(",")] if tags else None
+
+    crops = work / "crops"
+    if crops.exists():
+        have = sorted(p.name for p in crops.iterdir() if p.is_dir())
+        print(f"  가진 크롭 태그: {have}")
+        if want:
+            missing = [t for t in want if t not in have]
+            if missing:
+                raise SystemExit(f"❌ 없는 태그: {missing}. 가진 것: {have}")
+            print(f"  담을 태그      : {want}  (나머지는 제외)")
+        # 태그별 용량을 보여줍니다 — 무엇이 큰지 알아야 판단이 됩니다
+        for t in have:
+            n = sum(1 for _ in (crops / t).rglob("*.jpg"))
+            mb = sum(f.stat().st_size for f in (crops / t).rglob("*.jpg")) / 1024**2
+            mark = "→ 담음" if (want is None or t in want) else "  제외"
+            print(f"    {mark}  {t:<8} {n:>7,}장  {mb:>8,.0f} MB")
+
     stage = work.parent / "_pkg"
     if stage.exists():
         shutil.rmtree(stage)
@@ -244,7 +273,14 @@ def step_package(out: Path) -> None:
 
     for sub in ("crops", "manifests", "reports"):
         s = work / sub
-        if s.exists():
+        if not s.exists():
+            continue
+        if sub == "crops" and want:
+            (stage / "crops").mkdir(parents=True, exist_ok=True)
+            for t in want:
+                print(f"  담는 중: crops/{t}")
+                shutil.copytree(s / t, stage / "crops" / t)
+        else:
             print(f"  담는 중: {sub}")
             shutil.copytree(s, stage / sub)
 
@@ -273,6 +309,9 @@ def main() -> None:
     p.add_argument("--finalize", action="store_true",
                    help="★ 모든 청크를 합쳐 중복제거 + 개체 단위 분할. 마지막에 한 번")
     p.add_argument("--package", action="store_true", help="업로드용 zip 생성")
+    p.add_argument("--tags", default=None, metavar="목록",
+                   help="패키지에 담을 크롭 태그 (콤마 구분, 예: m1.5,full). "
+                        "생략하면 전부. 업로드 용량을 줄일 때 씁니다")
     p.add_argument("--all", action="store_true", help="VL01 만 받아 전 과정 (가장 간단)")
     p.add_argument("--download", action="store_true", help="(단독) 다운로드만")
     p.add_argument("--scan", action="store_true", help="(단독) 스캔만")
@@ -305,7 +344,7 @@ def main() -> None:
     if a.all:
         step_chunk("VL01", margins, a.keep_raw, a.mode)
         step_finalize(margins)
-        step_package(Path(a.out))
+        step_package(Path(a.out), a.tags)
     else:
         if a.download:
             step_download(a.filekey.split(","))
@@ -316,7 +355,7 @@ def main() -> None:
         if a.finalize:
             step_finalize(margins)
         if a.package:
-            step_package(Path(a.out))
+            step_package(Path(a.out), a.tags)
 
     print("\n" + "=" * 68)
     print(" 끝났습니다.")
