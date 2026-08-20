@@ -178,7 +178,9 @@ def restore_from_persist(exp: str, verbose: bool = True) -> bool:
     if src_dir is None or not src_dir.exists() or _same_dir(src_dir, dst_dir):
         return False
     n = 0
-    for name in _SYNC_FILES:
+    # 고정 목록 + 이 실험이 남긴 logits 캐시 전부
+    names = list(_SYNC_FILES) + sorted(p.name for p in src_dir.glob("logits_*.npz"))
+    for name in names:
         src = src_dir / name
         if not src.exists():
             continue
@@ -653,6 +655,101 @@ def _load_into(model: nn.Module, ckpt_path: Path, use_ema: bool = True,
         print(f"[train] best 가중치({which}, epoch {ck.get('epoch', '?')}) 를 "
               f"model 에 되돌렸습니다.")
     return model
+
+
+# ──────────────────────────────────────────────────────────────
+# 평가 결과 캐시
+# ──────────────────────────────────────────────────────────────
+# 세션이 끊겨 노트북을 처음부터 다시 돌리면, 학습은 건너뛰어도 **검증 추론은
+# 매번 다시** 합니다. 노트북 03 기준 전부 합쳐 7만 장 넘는 순전파 = 10분 이상.
+# 모델도 데이터도 그대로인데 같은 숫자를 다시 계산하는 건 낭비입니다.
+#
+# 그래서 logits 를 파일로 남기고, **입력이 같을 때만** 재사용합니다.
+# "같다" 의 판정(지문)에 들어가는 것:
+#   · 체크포인트 파일의 크기·수정시각  → 모델이 바뀌면 무효
+#   · 이미지 경로 목록의 해시·행 수     → 데이터·순서가 바뀌면 무효
+#   · TTA 여부, 클래스 수              → 추론 방식이 바뀌면 무효
+# 하나라도 다르면 조용히 다시 계산합니다. 낡은 숫자를 쓰는 사고를 막는 게 우선입니다.
+
+
+def _fingerprint(dataset, tta: bool, n_cls: int, ckpt: Path | None) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    # ⚠️ 행 수는 **항상** 넣습니다. paths 같은 선택 속성에만 기대면, 그게 없는
+    #    Dataset 에서 지문이 데이터를 아예 안 보게 되어 낡은 캐시를 재사용합니다.
+    h.update(f"{len(dataset)}|{tta}|{n_cls}|".encode())
+    for p in getattr(dataset, "paths", []) or []:
+        h.update(str(p).encode())
+        h.update(b"\0")
+    t = getattr(dataset, "targets", None)
+    if t is not None:
+        h.update(np.asarray(t).tobytes())
+    if ckpt is not None and ckpt.exists():
+        st = ckpt.stat()
+        h.update(f"|{st.st_size}|{int(st.st_mtime)}|{_file_digest(ckpt)}".encode())
+    return h.hexdigest()[:32]
+
+
+def _file_digest(p: Path, head: int = 1 << 20) -> str:
+    """파일 앞 1MB 의 해시. mtime 만 보면 같은 초에 덮어쓴 체크포인트를 놓칩니다."""
+    import hashlib
+
+    try:
+        with p.open("rb") as f:
+            return hashlib.sha256(f.read(head)).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def cached_logits(model, loader, key: str, exp: str, n_cls: int,
+                  device: str | None = None, tta_hflip: bool = False,
+                  ckpt: str | Path | None = None,
+                  use_cache: bool = True, verbose: bool = True):
+    """`evaluate_loader` 의 캐시판. `(logits, y)` 를 돌려줍니다.
+
+        lg, y = train.cached_logits(m1, dl_va1, key="val", exp=cfg1.exp_name,
+                                    n_cls=len(CLASSES_STAGE1), tta_hflip=True)
+
+    캐시가 유효하면 즉시, 아니면 계산 후 저장 + 영속 저장소로 백업합니다.
+    강제로 다시 계산하려면 `use_cache=False`.
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    d = ckpt_dir(exp)
+    name = f"logits_{key}.npz"
+    path = d / name
+    ckpt_p = Path(ckpt) if ckpt else (d / "best.pt")
+    fp = _fingerprint(loader.dataset, tta_hflip, n_cls, ckpt_p)
+
+    if use_cache:
+        if not path.exists():
+            restore_from_persist(exp, verbose=False)
+        if path.exists():
+            try:
+                z = np.load(path, allow_pickle=False)
+                if str(z["fingerprint"]) == fp:
+                    if verbose:
+                        print(f"⏭️  [{exp}/{key}] 캐시 재사용 — {len(z['y']):,}행 "
+                              f"(다시 계산 안 함)")
+                    return torch.from_numpy(z["logits"]), torch.from_numpy(z["y"])
+                if verbose:
+                    print(f"[{exp}/{key}] 캐시가 현재 입력과 안 맞습니다 — 다시 계산합니다.")
+            except Exception as exc:
+                print(f"⚠️ [{exp}/{key}] 캐시를 읽지 못해 다시 계산합니다 — "
+                      f"{type(exc).__name__}")
+
+    t0 = time.time()
+    _, logits, ys = evaluate_loader(model, loader, None, device, n_cls, tta_hflip=tta_hflip)
+    dt = time.time() - t0
+    try:
+        np.savez_compressed(path, logits=logits.numpy(), y=ys.numpy(), fingerprint=fp)
+        sync_to_persist(exp, files=(name,))
+        if verbose:
+            print(f"[{exp}/{key}] {len(ys):,}행 추론 {dt:.0f}초 → 캐시 저장 "
+                  f"(다음 실행부터는 건너뜁니다)")
+    except OSError as exc:
+        print(f"⚠️ [{exp}/{key}] 캐시 저장 실패 — {type(exc).__name__}: {exc}")
+    return logits, ys
 
 
 def print_status(*exps: str) -> list[dict]:

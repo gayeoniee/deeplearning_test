@@ -329,6 +329,150 @@ def test_extend_records_new_target():
     check("연장이 끝나면 그 다음부터는 건너뛴다", res.skipped is True)
 
 
+# ──────────────────────────────────────────────────────────────
+# 6. 평가 캐시 — 낡은 값을 쓰면 캐시가 없느니만 못합니다
+# ──────────────────────────────────────────────────────────────
+def _val_loader():
+    return DataLoader(TinyDS(n=24, seed=1), batch_size=8, num_workers=0)
+
+
+def test_cache_hit_and_reuse():
+    exp = "t_cache"
+    _, m = fit_once(exp, 2)
+    dl = _val_loader()
+    lg1, y1 = train.cached_logits(m, dl, key="val", exp=exp, n_cls=3,
+                                  device="cpu", verbose=False)
+    p = train.ckpt_dir(exp) / "logits_val.npz"
+    check("캐시 파일이 만들어진다", p.exists())
+
+    lg2, y2 = train.cached_logits(m, dl, key="val", exp=exp, n_cls=3,
+                                  device="cpu", verbose=False)
+    check("두 번째 호출이 같은 값을 준다",
+          torch.allclose(lg1, lg2) and torch.equal(y1, y2))
+
+
+def test_cache_invalidated_by_new_weights():
+    """모델이 바뀌면 캐시를 버려야 합니다. 이게 안 되면 옛 점수를 보게 됩니다."""
+    exp = "t_cache_w"
+    _, m = fit_once(exp, 2)
+    dl = _val_loader()
+    lg1, _ = train.cached_logits(m, dl, key="val", exp=exp, n_cls=3,
+                                 device="cpu", verbose=False)
+
+    # best.pt 를 다른 가중치로 덮어씁니다 (= 재학습 후 상황)
+    m2 = TinyNet()
+    with torch.no_grad():
+        for p in m2.parameters():
+            p.add_(torch.randn_like(p) * 0.5)
+    ck = train.ckpt_dir(exp) / "best.pt"
+    saved = torch.load(ck, map_location="cpu", weights_only=False)
+    saved["model"] = m2.state_dict()
+    saved["ema"] = m2.state_dict()
+    torch.save(saved, ck)
+
+    lg2, _ = train.cached_logits(m2, dl, key="val", exp=exp, n_cls=3,
+                                 device="cpu", verbose=False)
+    check("체크포인트가 바뀌면 다시 계산한다",
+          not torch.allclose(lg1, lg2),
+          "같은 값이 나왔습니다 = 낡은 캐시를 재사용했습니다")
+
+
+def test_cache_invalidated_by_different_rows():
+    exp = "t_cache_r"
+    _, m = fit_once(exp, 2)
+    lg_a, y_a = train.cached_logits(m, _val_loader(), key="v", exp=exp, n_cls=3,
+                                    device="cpu", verbose=False)
+    other = DataLoader(TinyDS(n=16, seed=7), batch_size=8, num_workers=0)
+    lg_b, y_b = train.cached_logits(m, other, key="v", exp=exp, n_cls=3,
+                                    device="cpu", verbose=False)
+    check("행 수가 다르면 다시 계산한다", len(y_b) == 16 and len(y_a) == 24,
+          f"{len(y_a)} vs {len(y_b)}")
+
+
+def test_cache_invalidated_by_tta():
+    exp = "t_cache_t"
+    _, m = fit_once(exp, 2)
+    dl = _val_loader()
+    a, _ = train.cached_logits(m, dl, key="v", exp=exp, n_cls=3, device="cpu",
+                               tta_hflip=False, verbose=False)
+    b, _ = train.cached_logits(m, dl, key="v", exp=exp, n_cls=3, device="cpu",
+                               tta_hflip=True, verbose=False)
+    check("TTA 여부가 바뀌면 다시 계산한다", not torch.allclose(a, b))
+
+
+def test_cache_survives_wiped_local_disk():
+    exp = "t_cache_p"
+    _, m = fit_once(exp, 2)
+    dl = _val_loader()
+    lg1, _ = train.cached_logits(m, dl, key="val", exp=exp, n_cls=3,
+                                 device="cpu", verbose=False)
+    pd_ = train.persist_dir(exp)
+    check("캐시가 영속 저장소로 백업된다",
+          pd_ is not None and (pd_ / "logits_val.npz").exists())
+
+    shutil.rmtree(train.ckpt_dir(exp))          # 세션 종료
+    train.restore_from_persist(exp, verbose=False)
+    check("복원 시 logits 캐시도 같이 돌아온다",
+          (train.ckpt_dir(exp) / "logits_val.npz").exists())
+
+
+def test_cache_off():
+    exp = "t_cache_off"
+    _, m = fit_once(exp, 2)
+    dl = _val_loader()
+    train.cached_logits(m, dl, key="v", exp=exp, n_cls=3, device="cpu", verbose=False)
+    p = train.ckpt_dir(exp) / "logits_v.npz"
+    p.write_bytes(b"garbage")                    # 깨진 캐시
+    try:
+        lg, y = train.cached_logits(m, dl, key="v", exp=exp, n_cls=3,
+                                    device="cpu", verbose=False)
+        check("깨진 캐시는 무시하고 다시 계산한다", len(y) == 24)
+    except Exception as exc:                                    # noqa: BLE001
+        check("깨진 캐시는 무시하고 다시 계산한다", False, repr(exc))
+
+
+# ──────────────────────────────────────────────────────────────
+# 7. 디코딩 draft — 검증 변환에서는 결과가 사실상 같아야 합니다
+# ──────────────────────────────────────────────────────────────
+def test_draft_matches_full_decode_for_eval():
+    """draft 로 절반 크기 디코딩해도 검증 점수가 바뀌면 안 됩니다."""
+    import numpy as np
+    import pandas as pd
+    from PIL import Image
+
+    from src.config import CFG as _CFG
+    from src.data import SkinDataset, build_transforms
+
+    d = _TMP / "draftimgs"
+    d.mkdir(exist_ok=True)
+    rng = np.random.default_rng(0)
+    rows = []
+    for i in range(6):
+        # 부드러운 그라디언트 + 약한 노이즈 = 실제 사진과 비슷한 주파수 특성
+        yy, xx = np.mgrid[0:512, 0:512]
+        base = ((xx + yy) / 4 % 255).astype(np.uint8)
+        arr = np.stack([base, np.roll(base, 40, 0), np.roll(base, 80, 1)], -1)
+        arr = np.clip(arr.astype(int) + rng.integers(-6, 6, arr.shape), 0, 255).astype(np.uint8)
+        p = d / f"g{i}.jpg"
+        Image.fromarray(arr).save(p, quality=92)
+        rows.append({"crop_path": str(p), "label": "A1"})
+    df = pd.DataFrame(rows)
+
+    cfg = _CFG(model_name="tiny", img_size=224)
+    tf = build_transforms(cfg, train=False)
+    full = SkinDataset(df, tf, classes=["A1"])
+    drafted = SkinDataset(df, tf, classes=["A1"], draft_size=int(224 * 1.14))
+
+    diffs = [float((full[i][0] - drafted[i][0]).abs().mean()) for i in range(len(df))]
+    worst = max(diffs)
+    # 정규화된 텐서 기준. 0.05 는 8비트로 약 1.3 수준 — 모델 판정에 영향 없는 크기입니다.
+    check("draft 디코딩이 검증 이미지를 거의 안 바꾼다", worst < 0.05,
+          f"평균절대차 최대 {worst:.4f}")
+
+    same_shape = all(full[i][0].shape == drafted[i][0].shape for i in range(len(df)))
+    check("draft 후에도 텐서 크기가 같다", same_shape)
+
+
 def test_print_status_runs():
     try:
         rows = train.print_status("t_resume", "t_never_run")
@@ -349,6 +493,10 @@ if __name__ == "__main__":
                test_restore_best_puts_best_weights_in_model, test_restore_best_off,
                test_survives_wiped_local_disk, test_corrupt_last_pt_falls_back,
                test_early_stopped_is_not_extended, test_extend_records_new_target,
+               test_cache_hit_and_reuse, test_cache_invalidated_by_new_weights,
+               test_cache_invalidated_by_different_rows, test_cache_invalidated_by_tta,
+               test_cache_survives_wiped_local_disk, test_cache_off,
+               test_draft_matches_full_decode_for_eval,
                test_print_status_runs]:
         print(f"\n── {fn.__name__} ──")
         fn()

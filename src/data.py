@@ -92,8 +92,15 @@ class SkinDataset(Dataset):
         label_col: str = "label",
         classes: list[str] | None = None,
         return_index: bool = False,
+        draft_size: int | None = None,
     ):
         self.classes = classes or CLASSES
+        # JPEG 은 1/2, 1/4, 1/8 크기로 **디코딩 단계에서** 줄일 수 있습니다(DCT 스케일링).
+        # 512px 크롭을 224 로 쓸 거면 512 전체를 푸는 건 낭비입니다.
+        # draft_size 를 주면 그 크기 이상이 되는 가장 작은 배율로 풉니다.
+        # ⚠️ 학습용에는 쓰지 마세요 — RandomResizedCrop 이 확대할 여지를 줄입니다.
+        #    검증/추론 변환은 Resize(img_size*1.14) 로 어차피 줄이므로 손실이 없습니다.
+        self.draft_size = draft_size
         self.cls2idx = {c: i for i, c in enumerate(self.classes)}
         self.df = df[df[path_col].notna()].reset_index(drop=True)
         self.paths = self.df[path_col].tolist()
@@ -115,6 +122,8 @@ class SkinDataset(Dataset):
 
         try:
             with Image.open(self.paths[i]) as im:
+                if self.draft_size:
+                    im.draft("RGB", (self.draft_size, self.draft_size))
                 img = im.convert("RGB")
         except Exception:
             img = Image.new("RGB", (256, 256), (128, 128, 128))
@@ -176,7 +185,10 @@ def build_loaders(
     tf_va = transforms_for_model(cfg, model, False) if model else build_transforms(cfg, False)
 
     ds_tr = SkinDataset(train_df, tf_tr, path_col, classes=classes)
-    ds_va = SkinDataset(val_df, tf_va, path_col, classes=classes)
+    # 검증은 어차피 Resize(img_size*1.14) 로 줄이므로 그 크기로 디코딩합니다.
+    # full 크롭(512px)에서 매 에폭 검증이 2~3배 빨라지고, 결과는 사실상 같습니다.
+    ds_va = SkinDataset(val_df, tf_va, path_col, classes=classes,
+                        draft_size=int(cfg.img_size * 1.14))
 
     bs = cfg.resolved_batch_size()
     sampler = weighted_sampler(ds_tr) if cfg.balance_strategy == "weighted_sampler" else None
@@ -214,13 +226,16 @@ def eval_loader(
     걸러내므로, 원본 df 를 정답으로 쓰면 한 칸씩 밀릴 수 있습니다.
     """
     tf = transforms_for_model(cfg, model, False) if model else build_transforms(cfg, False)
-    ds = SkinDataset(df, tf, path_col, classes=classes)
+    ds = SkinDataset(df, tf, path_col, classes=classes,
+                     draft_size=int(cfg.img_size * 1.14))
+    nw = cfg.resolved_num_workers()
     dl = DataLoader(
         ds,
         batch_size=max(cfg.resolved_batch_size() * batch_mult, 1),
         shuffle=False,
-        num_workers=cfg.resolved_num_workers(),
+        num_workers=nw,
         pin_memory=torch.cuda.is_available(),
+        prefetch_factor=4 if nw > 0 else None,
     )
     if len(ds) != len(df):
         print(f"⚠️ {len(df) - len(ds):,}행이 제외됐습니다 (크롭 파일 없음). "
