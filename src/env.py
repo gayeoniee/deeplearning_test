@@ -293,6 +293,41 @@ def suggest_batch_size(img_size: int, model_scale: str = "base") -> int:
     return out
 
 
+def require_gpu(hard: bool = True) -> Device:
+    """GPU 가 붙어 있는지 확인하고, 없으면 **크게** 알립니다.
+
+    왜 필요한가: GPU 가 없어도 코드는 그냥 돕니다 — 다만 20~30배 느립니다.
+    `DEV = "cuda" if torch.cuda.is_available() else "cpu"` 는 조용히 CPU 로
+    떨어지고, `suggest_batch_size` 도 8 을 돌려주기 때문에 겉보기엔 정상입니다.
+    실측: 검증 7,751장에 GPU 1~2분 vs CPU **40분**. 학습은 며칠입니다.
+
+    Colab 무료 티어는 GPU 사용량 한도를 넘기면 **말없이 CPU 런타임을 줍니다.**
+    그래서 사람이 알아채기 전에 몇 시간을 버리게 됩니다.
+    """
+    d = device_info()
+    if d.kind == "cuda":
+        return d
+
+    msg = (
+        "\n" + "🚨" * 20 + "\n"
+        "  GPU 가 없습니다 — 지금 학습/추론하면 20~30배 느립니다.\n"
+        + "🚨" * 20 + "\n\n"
+        "  실측 비교 (검증 7,751장):\n"
+        "     GPU(T4) 1~2분   ↔   CPU 약 40분\n"
+        "     학습은 CPU 로 며칠 걸립니다. 기다리지 마세요.\n\n"
+        "  · Colab  : 런타임 → 런타임 유형 변경 → T4 GPU → 저장\n"
+        "             이미 GPU 로 되어 있는데 이 메시지가 뜬다면\n"
+        "             **무료 GPU 한도를 다 쓴 것**입니다 (보통 12~24시간 뒤 회복).\n"
+        "             → Kaggle 로 옮기거나(주 30시간 별도) Colab Pro 를 보세요.\n"
+        "  · Kaggle : 우측 Settings → Accelerator → GPU T4 x2\n\n"
+        "  그래도 CPU 로 진행하려면: env.require_gpu(hard=False)\n"
+    )
+    if hard:
+        raise RuntimeError(msg)
+    print(msg)
+    return d
+
+
 def suggest_workers() -> int:
     """DataLoader 워커 수. CPU 코어에 맞춥니다.
 
@@ -355,7 +390,10 @@ def describe(verbose: bool = True) -> EnvSummary:
             print(f" GPU         : {d.name}  {d.vram_gb}GB  x{d.count}  "
                   f"(sm_{d.capability}, AMP={amp})")
         else:
-            print(f" GPU         : 없음 ({d.kind}) — 학습은 매우 느립니다")
+            print(f" GPU         : 🚨 없음 ({d.kind})")
+            print(" " * 15 + "학습·추론이 20~30배 느려집니다. 지금 멈추세요.")
+            print(" " * 15 + "Colab: 런타임 → 런타임 유형 변경 → T4 GPU")
+            print(" " * 15 + "(이미 GPU 인데도 이러면 무료 한도 소진입니다)")
         print(f" 여유 디스크 : {s.free_disk_gb} GB")
         print(f" 원본 데이터 : {s.paths['data_root']}")
         print(f" 작업 폴더   : {s.paths['work_root']}")
