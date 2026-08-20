@@ -405,53 +405,113 @@ def describe(verbose: bool = True) -> EnvSummary:
     return s
 
 
+def _search_roots() -> list[Path]:
+    return [p for p in (Path("/kaggle/input"), Path("/content/drive/MyDrive"),
+                        Path("/content"), Path.cwd()) if p.exists()]
+
+
+def _looks_prepared(d: Path) -> bool:
+    return (d / "crops").is_dir() and (d / "manifests").is_dir()
+
+
+def find_prepared(dest: Path | None = None) -> tuple[Path, str]:
+    """전처리 결과를 찾습니다. `(경로, "zip" | "dir")`.
+
+    ⚠️ **Kaggle 은 업로드한 zip 을 데이터셋에 넣을 때 자동으로 풀어버립니다.**
+       그래서 `/kaggle/input/<데이터셋>/crops/...` 만 있고 zip 은 없습니다.
+       zip 만 찾으면 여기서 막힙니다 — 풀려 있는 폴더도 같이 봅니다.
+    """
+    dest = Path(dest) if dest else work_root()
+    for base in _search_roots():
+        z = sorted(base.rglob("dogskin_prepared*.zip"))[:1]
+        if z:
+            return z[0], "zip"
+    for base in _search_roots():
+        cands = [base] + ([p for p in sorted(base.iterdir()) if p.is_dir()]
+                          if base.is_dir() else [])
+        for d in cands:
+            if _looks_prepared(d) and d.resolve() != dest.resolve():
+                return d, "dir"
+    raise FileNotFoundError(
+        "전처리 결과(dogskin_prepared)를 찾지 못했습니다.\n"
+        f"  찾아본 곳: {[str(p) for p in _search_roots()]}\n"
+        "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
+        "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
+        "             (Kaggle 은 zip 을 자동으로 풀어서 crops/ manifests/ 로 둡니다)\n"
+        "  · 경로를 직접 주려면 env.load_prepared('/경로')"
+    )
+
+
+def _link_or_copy(src: Path, dst: Path) -> str:
+    """읽기 전용 원본을 심볼릭 링크로 겁니다. 안 되면 복사합니다.
+
+    Kaggle 의 `/kaggle/input` 은 읽기 전용이고, 크롭 45,885장을
+    `/kaggle/working`(20GB 제한) 으로 복사하는 건 시간도 용량도 낭비입니다.
+    """
+    if dst.is_symlink():
+        if dst.resolve() == src.resolve():
+            return "이미 연결됨"
+        dst.unlink()
+    elif dst.exists():
+        return "이미 있음"
+    try:
+        dst.symlink_to(src.resolve(), target_is_directory=True)
+        return "링크"
+    except OSError:
+        shutil.copytree(src, dst)
+        return "복사"
+
+
 def load_prepared(
     zip_path: str | Path | None = None,
     dest: Path | None = None,
     force: bool = False,
 ) -> Path:
-    """로컬에서 만든 `dogskin_prepared.zip` 을 클라우드 작업 폴더로 풉니다.
+    """로컬에서 만든 전처리 결과를 클라우드 작업 폴더에 붙입니다.
 
     한국 PC 에서 `prepare_local.py` 로 전처리한 결과를 Drive/Kaggle 에 올린 뒤,
-    학습 노트북 첫 부분에서 이걸 부르면 됩니다.
+    학습 노트북 첫 부분에서 이걸 부르면 됩니다. 두 가지 형태를 다 받습니다:
 
-    zip_path 를 생략하면 흔한 위치를 자동으로 뒤집니다.
+      · `dogskin_prepared.zip`  → 로컬 디스크로 풉니다 (Colab + Drive)
+      · 이미 풀린 `crops/ manifests/` 폴더 → 링크만 겁니다 (Kaggle)
 
-    ⚠️ 반드시 **로컬 디스크**로 풉니다. Drive 에 마운트된 채로 이미지를 읽으면
-       네트워크 왕복 때문에 학습이 10배 가까이 느려집니다.
+    ⚠️ zip 은 반드시 **로컬 디스크**로 풉니다. Drive 에 마운트된 채로 이미지를
+       읽으면 네트워크 왕복 때문에 학습이 10배 가까이 느려집니다.
     """
     import zipfile
 
     dest = Path(dest) if dest else work_root()
+    dest.mkdir(parents=True, exist_ok=True)
 
     if zip_path is None:
-        cands: list[Path] = []
-        for base in (Path("/content/drive/MyDrive"), Path("/kaggle/input"),
-                     Path("/content"), Path.cwd()):
-            if base.exists():
-                cands += sorted(base.rglob("dogskin_prepared*.zip"))[:5]
-        if not cands:
-            raise FileNotFoundError(
-                "dogskin_prepared.zip 을 찾지 못했습니다.\n"
-                "  · Colab  : Drive 를 마운트했는지 확인 → env.mount_drive()\n"
-                "  · Kaggle : 우측 Add Input 으로 데이터셋을 붙였는지 확인\n"
-                "  · 경로를 직접 주려면 env.load_prepared('/경로/dogskin_prepared.zip')"
-            )
-        zip_path = cands[0]
-        print(f"[env] 자동 탐색: {zip_path}")
+        src, kind = find_prepared(dest)
+        print(f"[env] 자동 탐색: {src}  ({'압축 파일' if kind == 'zip' else '풀려 있는 폴더'})")
+    else:
+        src = Path(zip_path)
+        kind = "zip" if src.suffix == ".zip" else "dir"
 
-    zip_path = Path(zip_path)
     marker = dest / ".prepared_from"
-    if marker.exists() and marker.read_text().strip() == str(zip_path) and not force:
+    already = marker.exists() and marker.read_text().strip() == str(src) and not force
+
+    if kind == "dir":
+        # 읽기 전용일 수 있으므로 크롭은 링크, 매니페스트는 복사(작고, 안전하게 쓰기 위해)
+        how = _link_or_copy(src / "crops", dest / "crops")
+        man = dest / "manifests"
+        if force and man.exists() and not man.is_symlink():
+            shutil.rmtree(man)
+        if not man.exists():
+            shutil.copytree(src / "manifests", man)
+        print(f"[env] 크롭 {how}: {src / 'crops'} → {dest / 'crops'}")
+        marker.write_text(str(src))
+    elif already:
         print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
     else:
-        dest.mkdir(parents=True, exist_ok=True)
-        size = zip_path.stat().st_size / 1024**3
-        print(f"[env] 압축 해제 {zip_path.name} ({size:.2f}GB) → {dest}")
+        size = src.stat().st_size / 1024**3
+        print(f"[env] 압축 해제 {src.name} ({size:.2f}GB) → {dest}")
         print("      (Drive 에서 직접 읽지 않고 로컬 디스크로 풉니다 — 학습 속도 때문)")
-        with zipfile.ZipFile(zip_path) as z:
+        with zipfile.ZipFile(src) as z:
             z.extractall(dest)
-        marker.write_text(str(zip_path))
+        marker.write_text(str(src))
 
     crops = dest / "crops"
     mans = sorted((dest / "manifests").glob("*.parquet")) if (dest / "manifests").exists() else []
@@ -461,7 +521,7 @@ def load_prepared(
     print(f"[env] 크롭 {n_crop:,}장, 크롭 태그 {tags}")
     print(f"[env] 매니페스트 {[m.name for m in mans]}")
     if n_crop == 0:
-        print("⚠️ 크롭이 하나도 없습니다. zip 내용을 확인하세요.")
+        print("⚠️ 크롭이 하나도 없습니다. 데이터셋 내용을 확인하세요.")
     if not any("final" in m.name for m in mans):
         print("⚠️ manifest_final.parquet 이 없습니다.")
         print("   로컬에서 `python prepare_local.py --finalize` 를 돌렸는지 확인하세요.")

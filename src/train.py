@@ -212,6 +212,17 @@ def import_checkpoints(src: str | Path, exps: list[str] | None = None,
        (결과가 소수점 셋째 자리에서 흔들립니다 — cautions/09 참고).
     """
     src = Path(src)
+    # Kaggle 에 zip 으로 올렸다면(자동 해제가 안 됐다면) 먼저 풉니다
+    if src.is_file() and src.suffix == ".zip":
+        import zipfile
+
+        out = env.work_root() / "_imported_ckpt"
+        out.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(src) as z:
+            z.extractall(out)
+        print(f"[train] {src.name} 해제 → {out}")
+        src = out
+
     root = src / "checkpoints" if (src / "checkpoints").is_dir() else src
     if not root.is_dir():
         raise FileNotFoundError(
