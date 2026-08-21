@@ -132,7 +132,8 @@ def param_groups(model: nn.Module, cfg: CFG) -> list[dict]:
 
     사전학습된 백본은 이미 좋은 특징을 뽑고 있는데 높은 lr 로 흔들면
     그 지식을 망가뜨립니다(catastrophic forgetting). 헤드는 랜덤 초기화라
-    빠르게 배워야 하고요. 전이학습의 기본 관례입니다.
+    빠르게 배워야 하고요. 파인튜닝의 기본 관례입니다.
+    (백본을 얼리는 linear probe 에는 해당하지 않습니다 — 거기선 백본 lr 이 아예 없습니다)
 
     BatchNorm/LayerNorm/bias 에는 weight decay 를 걸지 않습니다 — 통상적인 관례로,
     이들에 decay 를 걸면 정규화 통계가 왜곡됩니다.

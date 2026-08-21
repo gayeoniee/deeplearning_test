@@ -41,6 +41,7 @@ def train_and_measure(
     epochs: int,
     model_name: str = "resnet50",
     finetune: str = "moderate",
+    aug: str = "default",
     fold: int = 0,
     n_robust: int = 3000,
     measure_robust: bool = True,
@@ -50,28 +51,31 @@ def train_and_measure(
 
     stage=1 이면 정상/이상(이진), stage=2 면 병변 6종입니다.
 
-    반환하는 dict 는 `resolution_report()` 가 그대로 먹습니다.
+    반환하는 dict 는 `resolution_report()` / `augmentation_report()` 가 그대로 먹습니다.
     모델은 다 쓰고 나면 버립니다 (해상도를 올리면 VRAM 이 빠듯합니다).
     """
     from src import data, evaluate, models, robust, split, stages, train
-    from src.config import CLASSES, CLASSES_STAGE1, CFG, with_finetune
+    from src.config import CLASSES, CLASSES_STAGE1, CFG, with_aug, with_finetune
 
     classes = CLASSES_STAGE1 if stage == 1 else CLASSES
-    cfg = with_finetune(
-        CFG(model_name=model_name, img_size=img_size, epochs=epochs,
-            # 1단계는 정상:이상이 5:5 라 가중치가 필요 없습니다.
-            balance_strategy="none" if stage == 1 else "class_weight",
-            monitor="macro_f1",
-            # ⚠️ 해상도를 이름에 넣습니다 — 안 넣으면 224 체크포인트를 384 학습이
-            #    "이미 끝난 학습" 으로 착각하고 건너뜁니다.
-            exp_name=f"stage{stage}_{model_name}_{crop_tag}_{img_size}"),
-        finetune)
+    cfg = with_aug(
+        with_finetune(
+            CFG(model_name=model_name, img_size=img_size, epochs=epochs,
+                # 1단계는 정상:이상이 5:5 라 가중치가 필요 없습니다.
+                balance_strategy="none" if stage == 1 else "class_weight",
+                monitor="macro_f1",
+                # ⚠️ 해상도를 이름에 넣습니다 — 안 넣으면 224 체크포인트를 384 학습이
+                #    "이미 끝난 학습" 으로 착각하고 건너뜁니다.
+                #    (증강 프리셋은 with_aug 가 이름 뒤에 자동으로 붙입니다)
+                exp_name=f"stage{stage}_{model_name}_{crop_tag}_{img_size}"),
+            finetune),
+        aug)
 
     tr, va = split.get_fold(view, fold)
     if verbose:
         print(f"\n{'━' * 66}")
-        print(f"  {stage}단계 @ {img_size}px  (크롭 '{crop_tag}', {epochs}에폭, "
-              f"배치 {cfg.resolved_batch_size()})")
+        print(f"  {stage}단계 @ {img_size}px · 증강 '{aug}'")
+        print(f"  크롭 '{crop_tag}' / {epochs}에폭 / 배치 {cfg.resolved_batch_size()}")
         print(f"{'━' * 66}")
         print(f"  train {len(tr):,} / val {len(va):,}")
 
@@ -89,7 +93,7 @@ def train_and_measure(
                                     tta_hflip=cfg.tta_hflip)
 
     out: dict[str, Any] = {
-        "stage": stage, "img_size": img_size, "crop_tag": crop_tag,
+        "stage": stage, "img_size": img_size, "crop_tag": crop_tag, "aug": aug,
         "exp_name": cfg.exp_name, "epochs": epochs, "minutes": minutes,
         "batch_size": cfg.resolved_batch_size(),
         "best_epoch": res.best_epoch, "n_epochs": len(res.history),
@@ -125,15 +129,11 @@ def train_and_measure(
     return out
 
 
-def resolution_report(runs: list[dict], *, baseline_size: int = 224) -> dict[str, Any]:
-    """해상도 비교 표를 찍고 **채택 여부까지** 판정합니다.
+def _compare(runs: list[dict], key: str, base_val, title: str,
+             fmt=str) -> dict[str, Any]:
+    """`key` 만 다른 실행들을 견고성 기준으로 비교합니다.
 
-    판정 기준을 실험 **전에** 못 박아 둡니다 (결과를 보고 기준을 고르면
-    무슨 숫자가 나와도 성공담을 쓸 수 있습니다):
-
-        · 배율 하락이 잡음(±3%p)보다 크게 줄었다  → 채택
-        · 점수는 올랐는데 하락폭이 그대로다        → 보류, 배포 설계로 넘김
-        · 둘 다 그대로다                          → 해상도 문제가 아님
+    해상도 비교와 증강 비교가 같은 판정 규칙을 쓰도록 한 곳에 모았습니다.
     """
     runs = [r for r in runs if r]
     if not runs:
@@ -145,60 +145,76 @@ def resolution_report(runs: list[dict], *, baseline_size: int = 224) -> dict[str
 
     verdicts: dict[str, Any] = {}
     for stage in sorted(by_stage):
-        rs = sorted(by_stage[stage], key=lambda r: r["img_size"])
+        rs = by_stage[stage]
         name = rs[0]["score_name"]
-        print(f"\n{'=' * 68}\n {stage}단계 — 해상도 비교\n{'=' * 68}")
-        print(f"  {'해상도':<9}{name:>10}{'배율하락':>10}{'배치':>7}{'분':>8}   수렴")
+        print(f"\n{'=' * 68}\n {stage}단계 — {title}\n{'=' * 68}")
+        print(f"  {'설정':<16}{name:>10}{'배율하락':>10}{'최악조건':>10}{'분':>7}   수렴")
         for r in rs:
             drop = r.get("scale_drop")
             ds = f"{drop:>9.1%}" if drop is not None else f"{'—':>10}"
-            print(f"  {str(r['img_size']) + 'px':<9}{r['score']:>10.4f}{ds}"
-                  f"{r['batch_size']:>7}{r['minutes']:>8.0f}   "
-                  f"{'✅' if r['converged'] else '📈 더 필요'}")
+            print(f"  {fmt(r[key]):<16}{r['score']:>10.4f}{ds}"
+                  f"{str(r.get('scale_worst_at', '?')):>10}{r['minutes']:>7.0f}   "
+                  f"{'수렴' if r['converged'] else '더 필요'}")
 
-        base = next((r for r in rs if r["img_size"] == baseline_size), rs[0])
-        best = max(rs, key=lambda r: r["score"])
-        v: dict[str, Any] = {"baseline": base, "best_score": best}
-
-        # ── 판정 ────────────────────────────────────────────────
+        base = next((r for r in rs if r[key] == base_val), rs[0])
         others = [r for r in rs if r is not base]
+        v: dict[str, Any] = {"baseline": base}
         if not others:
             print("\n  (비교 대상이 없어 판정을 생략합니다)")
             verdicts[f"stage{stage}"] = v
             continue
 
-        hi = max(others, key=lambda r: r["img_size"])
-        d_score = hi["score"] - base["score"]
-        print(f"\n  {name}  {base['score']:.4f} → {hi['score']:.4f}  ({d_score:+.4f})")
-
-        bd, hd = base.get("scale_drop"), hi.get("scale_drop")
-        if bd is not None and hd is not None:
-            d_drop = hd - bd
-            print(f"  배율 하락  {bd:.1%} → {hd:.1%}  ({d_drop:+.1%})")
-            v["drop_delta"] = d_drop
-
-            if d_drop < -NOISE_PP and hd <= DROP_WANT:
-                v["verdict"] = "adopt"
-                print(f"\n  ✅ 채택 — 하락이 잡음(±{NOISE_PP:.0%})보다 크게 줄었고 "
-                      f"목표({DROP_WANT:.0%}) 안에 들어왔습니다.")
-                print(f"     노트북의 IMG_SIZE 를 {hi['img_size']} 로 바꾸세요.")
-            elif d_drop < -NOISE_PP:
-                v["verdict"] = "improved"
-                print(f"\n  🤔 개선됐지만 아직 {hd:.0%} 입니다 (목표 {DROP_WANT:.0%}).")
-                print("     방향은 맞습니다 — 해상도를 더 올리거나 배포 설계로 보완하세요.")
-            else:
-                v["verdict"] = "no_effect"
-                print(f"\n  ❌ 하락폭이 그대로입니다 (잡음 ±{NOISE_PP:.0%} 안).")
-                print("     해상도로도 안 잡힙니다. 남은 건 모델링이 아니라 배포 설계입니다:")
-                print('     "병변이 화면 절반 이상 차지하게 찍어주세요" 로 입력을 제한하고,')
-                print("     full 크롭 점수를 정직한 숫자로 보고하는 쪽.")
-        else:
+        # 견고성이 가장 좋은 것 = 하락이 가장 작은 것. 점수가 아니라 이걸로 고릅니다.
+        scored = [r for r in others if r.get("scale_drop") is not None]
+        if not scored or base.get("scale_drop") is None:
             v["verdict"] = "unmeasured"
             print("\n  ⚠️ 배율 하락을 안 재서 판정할 수 없습니다.")
+            verdicts[f"stage{stage}"] = v
+            continue
 
-        if not hi["converged"]:
-            print(f"\n  📈 {hi['img_size']}px 는 마지막 에폭이 최고였습니다 — "
-                  f"덜 학습됐습니다. 에폭을 {int(hi['epochs'] * 1.6)} 로 올리면 더 오를 수 있습니다.")
+        best = min(scored, key=lambda r: r["scale_drop"])
+        bd, hd = base["scale_drop"], best["scale_drop"]
+        d_drop, d_score = hd - bd, best["score"] - base["score"]
+        v.update(best=best, drop_delta=d_drop, score_delta=d_score)
+
+        print(f"\n  가장 견고한 설정: {fmt(best[key])}")
+        print(f"  {name}  {base['score']:.4f} → {best['score']:.4f}  ({d_score:+.4f})")
+        print(f"  배율 하락  {bd:.1%} → {hd:.1%}  ({d_drop:+.1%})")
+
+        if d_drop < -NOISE_PP and hd <= DROP_WANT:
+            v["verdict"] = "adopt"
+            print(f"\n  ✅ 채택 — 하락이 잡음(±{NOISE_PP:.0%})보다 크게 줄었고 "
+                  f"목표({DROP_WANT:.0%}) 안에 들어왔습니다.")
+        elif d_drop < -NOISE_PP:
+            v["verdict"] = "improved"
+            print(f"\n  🤔 개선됐지만 아직 {hd:.0%} 입니다 (목표 {DROP_WANT:.0%}).")
+            print("     방향은 맞습니다 — 더 밀어붙이거나 배포 설계로 보완하세요.")
+        else:
+            v["verdict"] = "no_effect"
+            print(f"\n  ❌ 하락폭이 그대로입니다 (잡음 ±{NOISE_PP:.0%} 안).")
+            print("     이 축으로는 안 잡힙니다. 남은 건 배포 설계입니다:")
+            print('     "병변이 화면 절반 이상 차지하게 찍어주세요" 로 입력을 제한하고,')
+            print("     full 크롭 점수를 정직한 숫자로 보고하는 쪽.")
+
+        if not best["converged"]:
+            print(f"\n  📈 {fmt(best[key])} 는 마지막 에폭이 최고였습니다 — 덜 학습됐습니다. "
+                  f"에폭을 {int(best['epochs'] * 1.6)} 로 올리면 더 오를 수 있습니다.")
         verdicts[f"stage{stage}"] = v
 
     return verdicts
+
+
+def resolution_report(runs: list[dict], *, baseline_size: int = 224) -> dict[str, Any]:
+    """해상도 비교. 판정 기준은 `_compare` 에 있습니다."""
+    return _compare(runs, "img_size", baseline_size, "해상도 비교",
+                    fmt=lambda v: f"{v}px")
+
+
+def augmentation_report(runs: list[dict], *, baseline: str = "default") -> dict[str, Any]:
+    """증강 프리셋 비교.
+
+    ⚠️ **점수가 아니라 배율 하락으로 고릅니다.** 검증 macro-F1 은 "정답 박스로
+    잘라준 사진" 점수라서, 증강을 세게 걸면 대개 조금 내려갑니다. 그래도
+    하락폭이 크게 줄면 배포에는 그쪽이 낫습니다.
+    """
+    return _compare(runs, "aug", baseline, "증강 비교", fmt=str)

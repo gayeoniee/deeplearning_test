@@ -402,7 +402,7 @@ def recommend_plan(free_gb: float | None = None) -> list[dict]:
     print(f"\n   그래도 충분한 이유")
     print(f"            · VL01 21GB ≈ 이미지 약 {est:,}장 (전체 평균 장당 0.76MB 기준)")
     print("            · 반려견+일반카메라 필터 후 대략 1만~1.3만 장 예상")
-    print("            · 전이학습에는 충분한 규모 (밑바닥 학습이 아님)")
+    print("            · 파인튜닝에는 충분한 규모 (밑바닥 학습이 아님)")
     print("            · 'Validation' 이라는 이름은 무시하세요. 우리는 이걸 전체 데이터로 보고")
     print("              split.py 로 train/val/holdout 을 개체 단위로 다시 나눕니다")
 

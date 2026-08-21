@@ -118,7 +118,7 @@ class CFG:
     batch_size: int = 0               # 0 이면 env.suggest_batch_size() 로 자동
     grad_accum: int = 1
     lr: float = 3e-4
-    backbone_lr_mult: float = 0.1     # 백본은 헤드보다 낮은 lr (전이학습 관례)
+    backbone_lr_mult: float = 0.1     # 백본은 헤드보다 낮은 lr (파인튜닝 관례)
     weight_decay: float = 0.05
     warmup_epochs: int = 2
     label_smoothing: float = 0.1
@@ -357,7 +357,7 @@ def with_aug(cfg: "CFG", name: str) -> "CFG":
 #    다시 import 하기 전까지 그대로입니다. src/ 만 매번 최신이 됩니다.
 #    그래서 셀을 고칠 때마다 이 값을 올리고, 노트북 첫 셀이 자기가 들고 있는
 #    값과 비교해 **낡았으면 바로 알립니다.** (몇 시간 뒤에 알게 되면 늦습니다)
-NOTEBOOK_VERSION = "2026-08-21.2"
+NOTEBOOK_VERSION = "2026-08-21.3"
 
 # ──────────────────────────────────────────────────────────────
 # 모델 라인업 — STEP 4 에서 순서대로 돌립니다.
