@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -373,11 +374,17 @@ def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True,
         lambda p: Path(p).relative_to(out_dir).as_posix())
     out["crop_tag"] = tag
 
+    # ⚠️ 45,885번의 파일 확인입니다. Kaggle 입력은 네트워크 마운트라 캐시가
+    #    차가우면 몇 분씩 걸리는데, 그동안 출력이 없으면 멈춘 줄 알고 세션을
+    #    껐다 켜게 됩니다 — 그게 더 큰 낭비라 진행 상황을 찍습니다.
+    if verbose:
+        print(f"[crop] 태그 '{tag}' 로 전환 — {len(out):,}장 확인 중 …", flush=True)
+    t0 = time.time()
     exists = out["crop_path"].apply(lambda p: Path(p).exists())
     cover = float(exists.mean())
     if verbose:
         print(f"[crop] 태그 '{tag}' 로 전환 — {exists.sum():,}/{len(out):,}장 존재 "
-              f"({cover:.1%})")
+              f"({cover:.1%}, {time.time() - t0:.0f}초)")
     if not exists.all():
         miss = int((~exists).sum())
         print(f"⚠️ {miss:,}장이 없습니다. 이 태그의 크롭이 안 만들어졌거나 "
