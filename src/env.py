@@ -738,11 +738,19 @@ def load_prepared(
     #    Kaggle 에서는 태그마다 링크를 걸므로 여기서 0장이 나옵니다.
     #    태그 폴더를 하나씩(= 링크 자체를 시작점으로) 훑어야 합니다.
     tags = sorted(p.name for p in crops.iterdir() if p.is_dir()) if crops.exists() else []
-    n_crop = sum(sum(1 for _ in (crops / t).rglob("*.jpg")) for t in tags)
 
     # ⚠️ 태그별로 세어 보여줍니다. 하나만 덜 올라간 경우가 실제로 있었습니다
     #    (full 30% / m1.5 100%) — 합계만 보면 안 보입니다.
-    per_tag = {t: sum(1 for _ in (crops / t).rglob("*.jpg")) for t in tags}
+    #
+    # ⚠️ **한 번만 훑습니다.** 예전에는 합계용으로 한 번, 태그별로 또 한 번 훑어서
+    #    같은 일을 두 번 했습니다. Kaggle 입력은 네트워크 마운트라 9만 장을 세는 데
+    #    8분 30초가 걸렸고, 그동안 아무 출력이 없어 멈춘 것처럼 보였습니다.
+    per_tag: dict[str, int] = {}
+    for t in tags:
+        print(f"[env] 크롭 세는 중 … {t}", flush=True)
+        per_tag[t] = sum(1 for _ in (crops / t).rglob("*.jpg"))
+        print(f"[env]   {t}: {per_tag[t]:,}장", flush=True)
+    n_crop = sum(per_tag.values())
     print(f"[env] 크롭 {n_crop:,}장, 태그별 {per_tag}")
     if len(per_tag) > 1:
         hi = max(per_tag.values())
