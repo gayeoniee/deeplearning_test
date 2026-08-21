@@ -27,6 +27,83 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 # ──────────────────────────────────────────────────────────────
 # 변환
 # ──────────────────────────────────────────────────────────────
+class _AlbumentationsAdapter:
+    """PIL 을 받아 albumentations 를 태우고 텐서를 돌려줍니다.
+
+    SkinDataset 은 PIL 을 넘겨주고 torchvision 은 PIL 을 먹지만,
+    albumentations 는 numpy(HWC, uint8)를 먹습니다. 그 사이를 잇습니다.
+    """
+
+    def __init__(self, tf):
+        self.tf = tf
+
+    def __call__(self, pil):
+        import numpy as np
+
+        return self.tf(image=np.asarray(pil.convert("RGB")))["image"]
+
+
+def _albumentations_train(cfg: CFG, mean, std):
+    """학습용 실시간 증강 (albumentations).
+
+    ⚠️ **학습 경로에만** 씁니다. 검증은 torchvision 그대로 둡니다 —
+    검증 전처리를 바꾸면 지금까지 쌓은 기준선(1단계 0.8192 / 2단계 0.5697)과
+    비교가 안 되고, 로짓 캐시 지문도 전부 무효가 됩니다.
+
+    None 을 돌려주면 호출자가 torchvision 으로 되돌아갑니다.
+    """
+    try:
+        import albumentations as A
+        from albumentations.pytorch import ToTensorV2
+    except ImportError:
+        return None
+
+    S = cfg.img_size
+    ops = [
+        # RandomResizedCrop 은 **잘라서 확대**만 합니다 (축소 불가).
+        A.RandomResizedCrop(size=(S, S), scale=tuple(cfg.rrc_scale),
+                            ratio=(0.85, 1.18)),
+    ]
+
+    # 축소까지 배우려면 이미지를 실제로 줄이고 여백을 채워야 합니다.
+    # shift_limit 은 위치 교란(실측 20.6% 하락) 대응입니다.
+    if cfg.affine_scale or cfg.shift_limit or cfg.rotate_deg:
+        lo, hi = cfg.affine_scale if cfg.affine_scale else (1.0, 1.0)
+        ops.append(A.Affine(
+            scale=(lo, hi),
+            translate_percent=(-cfg.shift_limit, cfg.shift_limit) if cfg.shift_limit else None,
+            rotate=(-cfg.rotate_deg, cfg.rotate_deg) if cfg.rotate_deg else None,
+            border_mode=0, fill=0, p=1.0 if (cfg.affine_scale or cfg.shift_limit) else 0.5,
+        ))
+
+    if cfg.hflip:
+        ops.append(A.HorizontalFlip(p=cfg.hflip))
+    if cfg.vflip:
+        ops.append(A.VerticalFlip(p=cfg.vflip))
+
+    # ⚠️ 색은 조심합니다 — A3(과다색소침착)은 색 자체가 라벨입니다.
+    if cfg.color_jitter or cfg.hue_jitter:
+        ops.append(A.ColorJitter(
+            brightness=cfg.color_jitter, contrast=cfg.color_jitter,
+            saturation=cfg.color_jitter * 0.5, hue=cfg.hue_jitter, p=0.7))
+
+    # 촬영 조건 흉내 — 보호자 사진은 흐리고 압축돼 있습니다.
+    if cfg.clahe_p:
+        ops.append(A.CLAHE(clip_limit=2.0, p=cfg.clahe_p))
+    if cfg.blur_p:
+        ops.append(A.OneOf([A.GaussianBlur(blur_limit=(3, 7)),
+                            A.MotionBlur(blur_limit=(3, 7))], p=cfg.blur_p))
+    if cfg.noise_p:
+        ops.append(A.GaussNoise(p=cfg.noise_p))
+    if cfg.jpeg_p:
+        ops.append(A.ImageCompression(quality_range=(40, 90), p=cfg.jpeg_p))
+
+    ops += [A.Normalize(mean=mean, std=std), ToTensorV2()]
+    if cfg.random_erasing:
+        ops.insert(-1, A.CoarseDropout(p=cfg.random_erasing))
+    return _AlbumentationsAdapter(A.Compose(ops))
+
+
 def build_transforms(cfg: CFG, train: bool, mean=IMAGENET_MEAN, std=IMAGENET_STD):
     from torchvision import transforms as T
 
@@ -38,6 +115,12 @@ def build_transforms(cfg: CFG, train: bool, mean=IMAGENET_MEAN, std=IMAGENET_STD
             T.ToTensor(),
             T.Normalize(mean, std),
         ])
+
+    # ★ 학습 증강은 albumentations 우선 (torchvision 보다 빠르고 기법이 많습니다).
+    #   없으면 아래 torchvision 경로로 조용히 되돌아갑니다.
+    alb = _albumentations_train(cfg, mean, std)
+    if alb is not None:
+        return alb
 
     ops = [T.RandomResizedCrop(cfg.img_size, scale=cfg.rrc_scale, ratio=(0.85, 1.18))]
     # ⚠️ RandomResizedCrop 은 잘라서 **확대**만 합니다 (가장 축소돼도 이미지 전체).

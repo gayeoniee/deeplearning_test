@@ -32,6 +32,9 @@ train = [
     "torchvision>=0.17",
     "timm>=1.0.9",            # 백본 팩토리 (ConvNeXt-V2 / EVA-02 / SigLIP / DINOv3)
     "grad-cam>=1.5",          # 노트북 05 의 필수 검증 게이트
+    # 학습 중 실시간 증강. torchvision(PIL) 보다 빠르고 기법이 많습니다.
+    # bench 실측에서 증강·변환이 18.0ms 로 파이프라인 병목이었습니다.
+    "albumentations>=1.4",
 ]
 
 [tool.uv]

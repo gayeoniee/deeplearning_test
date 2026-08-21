@@ -279,18 +279,33 @@ def test_full_crop_loss_fixed_tag_keeps_lesion():
 # ──────────────────────────────────────────────────────────────
 # 증강 프리셋
 # ──────────────────────────────────────────────────────────────
-def test_aug_presets_widen_scale_range():
+def test_aug_presets_change_scale_range():
+    """프리셋이 배율 범위를 의도한 방향으로 바꾸는가 (넓히기 / **좁히기** 둘 다)."""
     from src.config import AUG_PRESETS, with_aug
 
     base = CFG(exp_name="s2")
     lo_default = base.rrc_scale[0]
-    for name in ("scale_robust", "scale_robust_hard"):
+
+    # 넓히는 쪽 — 확대 범위를 키웁니다
+    for name in ("scale_robust", "zoom_both"):
         c = with_aug(base, name)
         assert c.rrc_scale[0] < lo_default, f"{name} 이 배율 범위를 넓히지 않습니다"
         assert c.exp_name.endswith(name), "실험 이름에 프리셋이 안 붙었습니다"
-    # hard 가 더 넓어야 합니다
-    assert (with_aug(base, "scale_robust_hard").rrc_scale[0]
-            < with_aug(base, "scale_robust").rrc_scale[0])
+
+    # ★ 좁히는 쪽 (멘토 피드백 1번) — 넓히기만 두 번 실패해서 추가한 방향입니다
+    narrow = with_aug(base, "narrow")
+    assert narrow.rrc_scale[0] > lo_default, "narrow 가 배율 범위를 좁히지 않습니다"
+
+    # 축소를 가르치는 프리셋은 affine_scale 하한이 1 미만이어야 합니다.
+    # RandomResizedCrop 은 축소를 못 하므로 이게 없으면 축소를 못 배웁니다.
+    for name in ("zoom_both", "zoom_mild", "zoom_shift", "kitchen_sink"):
+        c = with_aug(base, name)
+        assert c.affine_scale and c.affine_scale[0] < 1.0, \
+            f"{name} 에 축소(affine_scale<1)가 없습니다"
+
+    # zoom_mild 는 zoom_both 보다 완만해야 합니다
+    assert with_aug(base, "zoom_mild").affine_scale[0] > with_aug(base, "zoom_both").affine_scale[0]
+
     # default 는 아무것도 안 바꿈
     assert with_aug(base, "default").to_dict() == base.to_dict()
     assert "default" in AUG_PRESETS
@@ -307,23 +322,65 @@ def test_aug_preset_rejects_unknown():
         raise AssertionError("모르는 프리셋을 통과시켰습니다")
 
 
-def test_scale_robust_preset_actually_changes_transform():
-    """프리셋이 실제 변환에 반영되는지 (설정만 바뀌고 안 쓰이면 무의미)."""
+def test_aug_preset_actually_changes_transform():
+    """프리셋이 **실제 변환에** 반영되는지 (설정만 바뀌고 안 쓰이면 무의미).
+
+    albumentations 든 torchvision 이든 같은 불변식을 확인합니다.
+    """
     from src.config import with_aug
     from src.data import build_transforms
 
     base = CFG(img_size=IMG, exp_name="t")
-    tf_a = build_transforms(base, train=True)
-    tf_b = build_transforms(with_aug(base, "scale_robust_hard"), train=True)
 
     def rrc_scale(tf):
-        for op in tf.transforms:
+        # albumentations 는 어댑터 안에 Compose 가 들어 있습니다
+        ops = getattr(getattr(tf, "tf", tf), "transforms", [])
+        for op in ops:
             if type(op).__name__ == "RandomResizedCrop":
                 return tuple(op.scale)
         return None
 
-    assert rrc_scale(tf_a) != rrc_scale(tf_b)
-    assert rrc_scale(tf_b)[0] < rrc_scale(tf_a)[0]
+    a = rrc_scale(build_transforms(base, train=True))
+    wide = rrc_scale(build_transforms(with_aug(base, "zoom_both"), train=True))
+    narrow = rrc_scale(build_transforms(with_aug(base, "narrow"), train=True))
+
+    assert a and wide and narrow, "RandomResizedCrop 을 못 찾았습니다"
+    assert wide[0] < a[0], "zoom_both 가 변환에 반영되지 않았습니다"
+    assert narrow[0] > a[0], "narrow 가 변환에 반영되지 않았습니다"
+
+
+def test_train_aug_is_random_per_call():
+    """증강은 **학습 중 실시간 랜덤**이어야 합니다 (멘토 피드백 7번).
+
+    같은 이미지를 두 번 넣어 다른 결과가 나와야 합니다. 미리 만들어 캐시하는
+    구조라면 여기서 걸립니다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.data import build_transforms
+
+    tf = build_transforms(CFG(img_size=IMG, exp_name="t"), train=True)
+    im = Image.fromarray(np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8))
+    a, b = tf(im), tf(im)
+    assert a.shape == b.shape
+    assert not np.allclose(a.numpy(), b.numpy()), "같은 입력에 같은 결과 — 랜덤이 아닙니다"
+
+
+def test_val_transform_is_deterministic():
+    """검증은 반대로 **결정론적**이어야 합니다.
+
+    여기에 랜덤이 섞이면 점수가 흔들리고 로짓 캐시 지문도 무의미해집니다.
+    albumentations 로 옮기면서 검증 경로를 안 건드렸는지 확인합니다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from src.data import build_transforms
+
+    tf = build_transforms(CFG(img_size=IMG, exp_name="t"), train=False)
+    im = Image.fromarray(np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8))
+    assert np.allclose(tf(im).numpy(), tf(im).numpy()), "검증 변환에 랜덤이 섞였습니다"
 
 
 # ──────────────────────────────────────────────────────────────

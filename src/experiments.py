@@ -43,6 +43,7 @@ def train_and_measure(
     finetune: str = "moderate",
     aug: str = "default",
     fold: int = 0,
+    subset_frac: float = 1.0,
     n_robust: int = 3000,
     measure_robust: bool = True,
     verbose: bool = True,
@@ -72,6 +73,23 @@ def train_and_measure(
         aug)
 
     tr, va = split.get_fold(view, fold)
+
+    # ── 빠른 스윕용 부분 학습 ────────────────────────────────────
+    # 멘토 피드백 6번: "초반에는 최대한 빠르게 자동으로 시도"
+    # ⚠️ **학습셋만** 줄입니다. 검증셋을 줄이면 프리셋 간 점수 비교가 흔들립니다.
+    #    클래스별로 같은 비율을 뽑아 불균형 구조를 유지합니다.
+    #    ⚠️ 서브셋 순위가 풀 데이터 순위와 같다는 보장은 없습니다.
+    #       **후보를 줄이는 용도**이고, 확정은 반드시 풀 스케일로 다시 합니다.
+    if subset_frac < 1.0:
+        n_before = len(tr)
+        # groupby(...).sample 은 그룹별 비율 표본을 바로 줍니다.
+        # (groupby.apply 는 pandas 2.2+ 에서 그룹 컬럼 처리로 경고가 납니다)
+        tr = tr.loc[tr.groupby("label").sample(
+            frac=subset_frac, random_state=fold).index].reset_index(drop=True)
+        if verbose:
+            print(f"\n  [스윕] 학습셋 {n_before:,} → {len(tr):,}장 "
+                  f"({subset_frac:.0%}) · 검증셋 {len(va):,}장은 그대로")
+
     if verbose:
         print(f"\n{'━' * 66}")
         print(f"  {stage}단계 @ {img_size}px · 증강 '{aug}'")
@@ -94,6 +112,7 @@ def train_and_measure(
 
     out: dict[str, Any] = {
         "stage": stage, "img_size": img_size, "crop_tag": crop_tag, "aug": aug,
+        "subset_frac": subset_frac, "n_train": len(tr),
         "exp_name": cfg.exp_name, "epochs": epochs, "minutes": minutes,
         "batch_size": cfg.resolved_batch_size(),
         "best_epoch": res.best_epoch, "n_epochs": len(res.history),
