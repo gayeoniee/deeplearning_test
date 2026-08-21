@@ -1,0 +1,40 @@
+[project]
+name = "dog-skin-screening"
+version = "0.1.0"
+description = "반려견 피부 병변 스크리닝 보조 모델 (AI Hub 561) — 진단이 아니라 '병원 가보세요' 까지"
+requires-python = ">=3.10"
+
+# ─────────────────────────────────────────────────────────────────
+# 기본 의존성 = **전처리만** 돌리는 데 필요한 것 (torch 없음)
+#
+# 로컬 PC 는 원본 이미지를 크롭해서 zip 으로 묶는 일만 합니다.
+# 거기에 2GB 짜리 torch 를 깔 이유가 없어서 일부러 뺐습니다.
+#   uv sync            → 이만큼만 (로컬 전처리용)
+#   uv sync --extra train → torch 까지 (학습까지 로컬에서 할 때)
+# ─────────────────────────────────────────────────────────────────
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "pyarrow>=15.0",          # parquet 매니페스트
+    "Pillow>=10.2",
+    "scikit-learn>=1.4",      # StratifiedGroupKFold, 지표
+    "imagehash>=4.3",         # 중복 탐지용 perceptual hash
+    "opencv-python-headless>=4.9",
+    "tqdm>=4.66",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# 학습·평가. Colab / Kaggle 에는 torch 가 이미 깔려 있으므로
+# 노트북 첫 셀은 이 extra 를 쓰지 않고 timm 등 몇 개만 pip 로 얹습니다.
+train = [
+    "torch>=2.2",
+    "torchvision>=0.17",
+    "timm>=1.0.9",            # 백본 팩토리 (ConvNeXt-V2 / EVA-02 / SigLIP / DINOv3)
+    "grad-cam>=1.5",          # 노트북 05 의 필수 검증 게이트
+]
+
+[tool.uv]
+# src/ 는 `from src import env` 로 **경로에서 직접** 임포트합니다.
+# 설치 대상 패키지가 아니므로 uv 가 빌드하지 않게 막습니다.
+package = false

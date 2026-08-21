@@ -40,19 +40,29 @@ python --version
 pip --version
 ```
 
-### `pip` 이 없다고 나올 때
+### 패키지 설치는 `uv` 로 합니다
 
-Python 은 있는데 `pip` 만 안 잡히는 경우입니다. `py -m pip` 로 우회하세요:
+이 프로젝트는 **pip 이 아니라 [uv](https://docs.astral.sh/uv/)** 를 씁니다.
+설치 (PowerShell, 한 줄):
 
-```cmd
-py -m pip install -r requirements.txt
+```powershell
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-`py` 는 Python 공식 설치 프로그램이 함께 넣어주는 실행기라, PATH 설정이 꼬여 있어도
-대부분 동작합니다. **이 프로젝트의 모든 명령에 `py -m` 을 붙여 쓰면 됩니다:**
+설치했으면 **명령 프롬프트를 새로 열고** 리포 폴더에서:
 
 ```cmd
-py prepare_local.py --chunk VL01
+uv sync
+```
+
+`pyproject.toml` + `uv.lock` 을 읽어 필요한 것만 정확히 그 버전으로 깔아줍니다.
+Python 이 아예 없어도 uv 가 알아서 받아옵니다 — 따로 설치할 필요 없습니다.
+
+이후 이 프로젝트의 모든 명령은 **`uv run python`** 으로 시작합니다
+(가상환경을 직접 활성화할 필요가 없습니다):
+
+```cmd
+uv run python prepare_local.py --chunk VL01
 ```
 
 그래도 안 되면 PATH 를 고치는 것보다 **Python 을 "Add to PATH" 체크하고 재설치**하는 게 빠릅니다.
@@ -136,21 +146,22 @@ echo %AIHUB_API_KEY%
 git clone https://github.com/gayeoniee/deeplearning_test.git
 cd deeplearning_test
 
-py -m pip install -r requirements.txt
+uv sync
 
 set AIHUB_API_KEY=발급받은키
 
-py prepare_local.py --chunk VL01
-py prepare_local.py --finalize
-py prepare_local.py --package
+uv run python prepare_local.py --chunk VL01
+uv run python prepare_local.py --finalize
+uv run python prepare_local.py --package
 ```
 
 ---
 
 ## 자주 막히는 곳
 
-**`'pip'은(는) 내부 또는 외부 명령...`**
-→ `py -m pip` 를 쓰세요. 또는 Python 을 "Add to PATH" 켜고 재설치.
+**`'uv'은(는) 내부 또는 외부 명령...`**
+→ uv 설치 후 **명령 프롬프트를 새로 열어야** PATH 가 반영됩니다.
+   그래도 안 되면 `py -m pip install uv` 로 깔고 `py -m uv sync` 를 쓰세요.
 
 **`'python'을 입력했더니 Microsoft Store 가 열림`**
 → Windows 기본 앱 실행 별칭 때문입니다.
@@ -160,13 +171,14 @@ py prepare_local.py --package
 **`aihubshell 은 bash 스크립트라...` 오류**
 → Git for Windows 설치. 설치 후 **명령 프롬프트를 새로 열어야** PATH 가 반영됩니다.
 
-**`pip install -r requirements.txt` 에서 `UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2`**
+**`UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2` — 설치 단계에서**
 
-Windows pip 은 `requirements.txt` 를 **시스템 로케일(한국어 Windows = cp949)** 로 읽습니다.
-파일에 한글이나 `─`, `→` 같은 문자가 하나라도 있으면 이 오류로 죽습니다.
+예전에 `pip install -r requirements.txt` 를 쓸 때 나던 오류입니다. Windows pip 은
+`requirements.txt` 를 **시스템 로케일(한국어 Windows = cp949)** 로 읽어서,
+파일에 한글이나 `─`, `→` 가 하나라도 있으면 죽었습니다.
 
-→ 이미 고쳤습니다. `git pull` 후 다시 실행하세요.
-   (`requirements.txt` 를 순수 ASCII 로 유지합니다. 편집할 때 한글을 넣지 마세요)
+→ **uv 로 옮기면서 없어졌습니다.** `pyproject.toml` 은 TOML 규격상 항상 UTF-8 로
+   읽히므로 한글 주석을 넣어도 안전합니다. `uv sync` 를 쓰세요.
 
 **`UnicodeEncodeError: 'cp949' codec can't encode character '\u2705'`**
 
@@ -192,14 +204,16 @@ set PYTHONUTF8=1
 
 > 💡 인코딩 문제가 세 번 반복돼서 회귀 테스트를 넣어뒀습니다:
 > ```cmd
-> py tests\test_windows_encoding.py
+> uv run python tests\test_windows_encoding.py
 > ```
 > 뭔가 이상하면 이걸 먼저 돌려보세요. 전부 PASS 여야 정상입니다.
 
 **torch 설치가 너무 오래 걸림**
-→ 전처리만 할 거면 torch 는 필요 없습니다. 최소 설치로 충분합니다:
+→ 그냥 `uv sync` 를 쓰면 됩니다. **기본 의존성에 torch 가 없습니다** —
+   로컬 PC 는 크롭해서 zip 으로 묶는 일만 하므로 2GB 짜리 torch 가 필요 없습니다.
+   로컬에서 학습까지 하려는 경우에만:
 ```cmd
-py -m pip install numpy pandas pillow scikit-learn imagehash pyarrow tqdm matplotlib
+uv sync --extra train
 ```
 
 **디스크 부족**

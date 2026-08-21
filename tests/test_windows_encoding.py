@@ -3,6 +3,7 @@
 이 프로젝트는 같은 종류의 인코딩 버그로 세 번 막혔습니다:
 
   1. requirements.txt 에 한글 → Windows pip 이 cp949 로 읽다 UnicodeDecodeError
+     (→ pyproject.toml + uv 로 옮겨 해결. TOML 은 항상 UTF-8 입니다)
   2. 콘솔에 ✅ ⚠️ 출력 → cp949 로 인코딩 못 해 UnicodeEncodeError
   3. aihubshell(UTF-8) 출력을 subprocess 로 읽음 → cp949 로 디코딩하다 UnicodeDecodeError
 
@@ -10,7 +11,7 @@
 리눅스/맥에서는 UTF-8 이 기본이라 절대 재현되지 않아서, 테스트로 못 박아둡니다.
 
 실행:
-    python tests/test_windows_encoding.py
+    uv run python tests/test_windows_encoding.py
 """
 
 from __future__ import annotations
@@ -33,24 +34,51 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-def test_requirements_is_ascii() -> None:
-    """pip 이 로케일 인코딩으로 읽으므로 순수 ASCII 여야 합니다."""
-    data = (ROOT / "requirements.txt").read_bytes()
-    bad = [(i, b) for i, b in enumerate(data) if b > 127]
-    check("requirements.txt is pure ASCII", not bad,
-          f"non-ASCII at {bad[:3]}")
+def test_pyproject_is_utf8() -> None:
+    """의존성 선언은 pyproject.toml 입니다 (requirements.txt 를 대체했습니다).
+
+    TOML 규격은 파일을 **항상 UTF-8** 로 읽도록 못 박고 있고 uv 도 그렇게 읽으므로,
+    requirements.txt 때와 달리 한글 주석을 넣어도 안전합니다. 여기서는 그 전제가
+    실제로 성립하는지(=UTF-8 로 파싱되는지)만 확인합니다.
+    """
     try:
-        data.decode("cp949")
-        ok = True
-    except UnicodeDecodeError as e:
+        import tomllib
+    except ModuleNotFoundError:                      # Python 3.10
+        check("pyproject.toml parses as UTF-8 TOML", True, "tomllib 없음 — 건너뜀")
+        return
+
+    data = (ROOT / "pyproject.toml").read_bytes()
+    try:
+        cfg = tomllib.loads(data.decode("utf-8"))
+        ok, detail = True, ""
+    except (UnicodeDecodeError, Exception) as e:     # noqa: B014
         ok, detail = False, str(e)
-    check("requirements.txt decodes as cp949", ok, locals().get("detail", ""))
+    check("pyproject.toml parses as UTF-8 TOML", ok, detail)
+    if not ok:
+        return
+
+    # uv 가 빌드를 시도하지 않아야 합니다 (src/ 는 설치 패키지가 아니라 경로 임포트)
+    check("uv is told not to build this repo as a package",
+          cfg.get("tool", {}).get("uv", {}).get("package") is False,
+          "[tool.uv] package = false 가 없습니다")
+
+    # 로컬 전처리에는 torch 가 필요 없습니다 — 기본 의존성에 들어가면 안 됩니다
+    base = " ".join(cfg["project"]["dependencies"]).lower()
+    check("torch stays out of the default dependencies",
+          "torch" not in base,
+          "기본 의존성에 torch 가 있으면 로컬 전처리 설치가 2GB 로 불어납니다")
+
+    check("uv.lock is committed", (ROOT / "uv.lock").exists(),
+          "uv.lock 이 없으면 팀원마다 다른 버전이 깔립니다")
 
 
 def test_subprocess_calls_declare_encoding() -> None:
     """text=True 로 subprocess 를 쓰면 encoding 을 반드시 명시해야 합니다."""
+    # ⚠️ 우리 코드만 봅니다. .venv/ 안의 서드파티 .py 에는 UTF-8 이 아닌 파일이
+    #    섞여 있어서(테스트 픽스처 등) read_text 가 그냥 죽습니다.
+    skip = {".git", ".venv", "venv", "__pycache__", "site-packages", "node_modules"}
     for py in sorted(ROOT.rglob("*.py")):
-        if ".git" in py.parts or py.parent.name == "tests":
+        if skip & set(py.parts) or py.parent.name == "tests":
             continue
         src = py.read_text(encoding="utf-8")
         for m in re.finditer(r"subprocess\.(run|Popen)\((.*?)\)\n", src, re.S):
@@ -119,7 +147,7 @@ def test_cp949_console_would_not_crash() -> None:
 
 if __name__ == "__main__":
     print("Windows(cp949) encoding regression tests\n")
-    for fn in (test_requirements_is_ascii,
+    for fn in (test_pyproject_is_utf8,
                test_subprocess_calls_declare_encoding,
                test_utf8_child_output_decodes,
                test_invalid_bytes_do_not_crash,

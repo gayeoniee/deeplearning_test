@@ -28,17 +28,17 @@ AI Hub 「반려동물 피부 질환 데이터」(dataSetSn=561)로 **반려견 
 # 내 컴퓨터(한국)에서. GPU 불필요, CPU 만 있으면 됩니다
 git clone https://github.com/gayeoniee/deeplearning_test.git
 cd deeplearning_test
-pip install -r requirements.txt
+uv sync                       # 전처리용 (torch 없이, 30초)
 export AIHUB_API_KEY="발급받은키"
-python prepare_local.py --all
+uv run python prepare_local.py --all
 ```
 
 <details><summary><b>Windows 는 명령이 조금 다릅니다</b> (클릭)</summary>
 
 ```cmd
-py -m pip install -r requirements.txt
+uv sync
 set AIHUB_API_KEY=발급받은키
-py prepare_local.py --all
+uv run python prepare_local.py --all
 ```
 
 `aihubshell` 은 bash 스크립트라 **Git for Windows(Git Bash)** 가 필요합니다.
@@ -49,10 +49,10 @@ py prepare_local.py --all
 데이터를 더 쓰고 싶으면 청크를 이어붙일 수 있습니다 (받고→정제→원본삭제 반복):
 
 ```bash
-python prepare_local.py --chunk VL01     # 21GB
-python prepare_local.py --chunk TL01     # 90GB 추가
-python prepare_local.py --finalize       # ★ 마지막에 한 번 (교차 누수 방지)
-python prepare_local.py --package
+uv run python prepare_local.py --chunk VL01     # 21GB
+uv run python prepare_local.py --chunk TL01     # 90GB 추가
+uv run python prepare_local.py --finalize       # ★ 마지막에 한 번 (교차 누수 방지)
+uv run python prepare_local.py --package
 ```
 
 원본 21GB → ROI 크롭 후 **2~5GB** 로 줄어들어 업로드가 현실적입니다.
@@ -169,6 +169,72 @@ python prepare_local.py --package
 저장하고 Drive 로 복사합니다. 끊기면 **노트북을 그냥 다시 돌리세요** — 끝난 학습은
 `⏭️` 건너뛰고, 끊긴 학습은 `▶️` 그 에폭부터 이어갑니다.
 → [`docs/cautions/09`](docs/cautions/09_세션이_끊겼을_때.md)
+
+---
+
+## 리포 구조 (팀원용 요약)
+
+**한 줄 요약**: 한국 PC 가 `prepare_local.py` 로 데이터를 만들고,
+클라우드가 `notebooks/` 로 학습합니다. 둘 다 `src/` 를 씁니다.
+
+```
+deeplearning_test/
+├── pyproject.toml / uv.lock   의존성 (pip 아님 — uv)
+├── prepare_local.py           ★ 한국 PC 전용: 다운로드 → 크롭 → zip
+├── diagnose.py                원본 JSON 스키마 확인용 일회성 도구
+│
+├── notebooks/                 ★ 클라우드(Colab/Kaggle) 전용: 학습·평가
+│   ├── 03_학습_베이스라인      1·2단계 학습 + 견고성 검사   ← 지금 여기
+│   ├── 04_학습_최신모델_비교    백본 6종 + 앙상블            (보류 중)
+│   └── 05_평가_보정_GradCAM    보정·임계값·CAM 게이트·holdout
+│
+├── src/                       ★ 두 쪽이 공유하는 실제 로직
+│   │  ── 데이터 만들기 ──
+│   ├── aihub.py               AI Hub 다운로드 (aihubshell 래퍼)
+│   ├── scan.py / labels.py    폴더·JSON → manifest.parquet
+│   ├── dedup.py               phash 중복 제거
+│   ├── split.py               ★ 개체 단위 그룹 분할 (누수 방지)
+│   ├── crop.py                ROI 크롭 (m1.5 / m2.5 / full / f320)
+│   │  ── 학습하기 ──
+│   ├── config.py              모든 하이퍼파라미터 + 증강 프리셋
+│   ├── stages.py              ★ 2단계 구조 (분할을 공유하는 두 뷰)
+│   ├── data.py / models.py    Dataset·증강 / timm 백본
+│   ├── train.py               학습 루프 + 세션 끊김 이어받기
+│   │  ── 검사하기 ──
+│   ├── evaluate.py            지표·혼동행렬·부트스트랩 CI
+│   ├── robust.py              ★ 배율/위치 교란 견고성 (지금 막힌 곳)
+│   ├── gates.py               품질 정지선 (노트북이 아니라 여기 둔 이유는 파일 참고)
+│   ├── calibrate.py           온도 보정·거절 임계값
+│   ├── explain.py             Grad-CAM 정렬도
+│   ├── infer.py               단일 사진 추론 + 안전 문구
+│   └── env.py                 Colab/Kaggle/로컬 자동 감지, 경로·시크릿
+│
+├── tests/                     162개 검사 (e2e 포함) — `uv run python tests/<파일>`
+├── docs/
+│   ├── 00_로드맵.md            전체 단계와 현재 위치
+│   ├── basics/                딥러닝 기초 10편 (ML 경험자용)
+│   ├── cautions/              주의사항 9편
+│   ├── data/DATASET_CARD.md   실물 스키마
+│   └── results/               ★ 실측 기록 — 숫자는 전부 여기
+└── data/                      (gitignore. 이미지·매니페스트·가중치는 커밋 금지)
+```
+
+> ⚠️ **커밋하면 안 되는 것**: AI Hub 데이터는 재배포 금지입니다.
+> 이미지·매니페스트·가중치·API 키는 `.gitignore` 가 막고 있습니다.
+> 클라우드에 올릴 때도 **반드시 Private** 으로 올리세요.
+
+### 팀원이 처음 할 일
+
+```bash
+git clone https://github.com/gayeoniee/deeplearning_test.git
+cd deeplearning_test
+uv sync                                   # 30초, torch 없이
+uv run python tests/test_stages.py        # 잘 깔렸는지 확인
+```
+
+읽는 순서: [`docs/00_로드맵.md`](docs/00_로드맵.md) →
+[`docs/results/`](docs/results/) (지금까지 나온 숫자) →
+관심 있는 `src/` 파일 (전부 한국어 주석)
 
 ---
 
