@@ -71,7 +71,7 @@ uv run python prepare_local.py --package
 
 | 노트북 | 내용 |
 |---|---|
-| [`03_학습_베이스라인`](notebooks/03_학습_베이스라인.ipynb) | 크롭 눈으로 확인 → **1단계+2단계 베이스라인** → 파이프라인 성능 → 크롭 비교 |
+| [`03_학습_베이스라인`](notebooks/03_학습_베이스라인.ipynb) | 크롭 확인 → **1·2단계 학습** → 파이프라인 성능 → 견고성 → **해상도 실험** (전체 ~3시간, 한 번에 실행) |
 | [`04_학습_최신모델_비교`](notebooks/04_학습_최신모델_비교.ipynb) | timm 6종 + 앙상블 (2단계 기준) |
 | [`05_평가_보정_GradCAM`](notebooks/05_평가_보정_GradCAM.ipynb) | 온도 보정, 거절 임계값, CAM 게이트, holdout 최종 |
 
@@ -180,6 +180,7 @@ uv run python prepare_local.py --package
 ```
 deeplearning_test/
 ├── pyproject.toml / uv.lock   의존성 (pip 아님 — uv)
+├── CLAUDE.md                  ★ 작업 규칙 + 현재 상태 (사람/AI 공용 온보딩)
 ├── prepare_local.py           ★ 한국 PC 전용: 다운로드 → 크롭 → zip
 ├── diagnose.py                원본 JSON 스키마 확인용 일회성 도구
 │
@@ -204,6 +205,7 @@ deeplearning_test/
 │   ├── evaluate.py            지표·혼동행렬·부트스트랩 CI
 │   ├── robust.py              ★ 배율/위치 교란 견고성 (지금 막힌 곳)
 │   ├── gates.py               품질 정지선 (노트북이 아니라 여기 둔 이유는 파일 참고)
+│   ├── experiments.py         해상도 등 비교 실험 (같은 이유로 여기에)
 │   ├── calibrate.py           온도 보정·거절 임계값
 │   ├── explain.py             Grad-CAM 정렬도
 │   ├── infer.py               단일 사진 추론 + 안전 문구
@@ -232,7 +234,8 @@ uv sync                                   # 30초, torch 없이
 uv run python tests/test_stages.py        # 잘 깔렸는지 확인
 ```
 
-읽는 순서: [`docs/00_로드맵.md`](docs/00_로드맵.md) →
+읽는 순서: [`CLAUDE.md`](CLAUDE.md) (작업 규칙·현재 상태) →
+[`docs/00_로드맵.md`](docs/00_로드맵.md) →
 [`docs/results/`](docs/results/) (지금까지 나온 숫자) →
 관심 있는 `src/` 파일 (전부 한국어 주석)
 
