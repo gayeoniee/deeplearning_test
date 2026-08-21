@@ -229,6 +229,20 @@ def resolution_report(runs: list[dict], *, baseline_size: int = 224) -> dict[str
                     fmt=lambda v: f"{v}px")
 
 
+def crop_report(runs: list[dict], *, baseline: str = "m1.5") -> dict[str, Any]:
+    """크롭 태그 비교 (m1.5 vs m2.5 vs f320 …).
+
+    ⚠️ 크롭은 **다른 축과 성격이 다릅니다.** 증강이나 백본을 바꾸면 모델만
+    바뀌지만, 크롭을 바꾸면 **입력 자체가 바뀝니다.** 그래서 이걸 먼저
+    확정해야 뒤(촬영 가이드·임계값·백본 순위)가 흔들리지 않습니다.
+
+    비교 지점은 "병변을 크게 보되 흐리게(m1.5)" vs "작게 보되 선명하게(m2.5)"
+    입니다. 크롭 창이 좁으면 384 로 늘릴 때 없는 픽셀을 만들어냅니다 —
+    실측으로 A1 은 m1.5 에서 2.6배 확대, m2.5 에서 1.6배입니다.
+    """
+    return _compare(runs, "crop_tag", baseline, "크롭 비교", fmt=str)
+
+
 def augmentation_report(runs: list[dict], *, baseline: str = "default") -> dict[str, Any]:
     """증강 프리셋 비교.
 
