@@ -244,6 +244,140 @@ def shift_stress(model, df, cfg: CFG | None = None, classes: list[str] | None = 
                 baseline_name=_shift_name(0.0) if 0.0 in tuple(fracs) else None)
 
 
+# ──────────────────────────────────────────────────────────────
+# 촬영 가이드 (capture guideline) 도출
+# ──────────────────────────────────────────────────────────────
+def usable_range(
+    model, df, cfg: CFG | None = None, classes: list[str] | None = None,
+    zooms=(0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0),
+    tolerances=(0.05, 0.10),
+    crop_margin: float = 1.5,
+    n: int = 3000, seed: int = 0, path_col: str = "crop_path",
+    device: str | None = None,
+) -> dict:
+    """**보호자에게 뭐라고 안내할지**를 실측에서 뽑아냅니다.
+
+    배율 강건성(scale robustness)을 모델링으로 못 잡으면, 남은 길은 애초에
+    나쁜 배율이 안 들어오게 **입력을 제한**하는 것입니다. 그러려면 "얼마나
+    가까이" 를 숫자로 말할 수 있어야 하는데, 그 숫자가 여기서 나옵니다.
+
+    학습은 전혀 안 합니다 — 이미 학습된 모델에 배율만 바꿔 추론할 뿐입니다.
+
+    기본 격자가 `scale_stress` 보다 촘촘합니다. 5개 점(간격 √2)으로는
+    "5% 이내로 버티는 구간" 의 경계가 0.85x 인지 1.2x 인지 알 수 없습니다.
+
+    Args:
+        tolerances: 최고점 대비 허용 하락률. 각각에 대해 연속 구간을 찾습니다.
+        crop_margin: 학습 크롭의 margin (m1.5 면 1.5). 배율을 **화면 점유율**로
+            바꾸는 데 씁니다 — 보호자는 "1.2배" 를 모르지만 "화면 절반" 은 압니다.
+
+    Returns:
+        {"table": [...], "peak": {...}, "bands": {0.05: (lo, hi), ...},
+         "occupancy": {...}}  — occupancy 는 화면 가로 점유율(%)
+    """
+    from src.config import CLASSES
+
+    cfg = cfg or CFG()
+    classes = classes or CLASSES
+    views = [(_zoom_name(z), ZoomView(cfg.img_size, z)) for z in zooms]
+    res = _run(model, df, cfg, classes, views, n, seed, path_col, device,
+               "촬영 가이드 측정 — 어느 배율까지 버티는가",
+               "→ 이 구간을 벗어나지 않도록 촬영 UI 로 유도하세요.",
+               baseline_name=_zoom_name(1.0) if 1.0 in tuple(zooms) else None)
+
+    rows = [(z, res[_zoom_name(z)]["macro_f1"]) for z in zooms
+            if res.get(_zoom_name(z), {}).get("macro_f1") == res.get(_zoom_name(z), {}).get("macro_f1")]
+    if not rows:
+        return {"table": [], "peak": None, "bands": {}, "occupancy": {}}
+
+    peak_z, peak_f1 = max(rows, key=lambda r: r[1])
+
+    # 배율 → 화면 가로 점유율. 학습 크롭이 m1.5 면 1x 에서 병변이 1/1.5 = 67%.
+    def occ(z: float) -> float:
+        return min(z / crop_margin, 1.0)
+
+    bands: dict[float, tuple[float, float]] = {}
+    for tol in tolerances:
+        floor_f1 = peak_f1 * (1 - tol)
+        # peak 에서 양옆으로 **연속으로** 기준을 만족하는 구간만 인정합니다.
+        # 띄엄띄엄 만족하는 건 가이드로 쓸 수 없습니다.
+        ok = [z for z, f in rows if f >= floor_f1]
+        lo = hi = peak_z
+        srt = sorted(z for z, _ in rows)
+        i = srt.index(peak_z)
+        for j in range(i - 1, -1, -1):
+            if srt[j] in ok:
+                lo = srt[j]
+            else:
+                break
+        for j in range(i + 1, len(srt)):
+            if srt[j] in ok:
+                hi = srt[j]
+            else:
+                break
+        bands[tol] = (lo, hi)
+
+    print(f"\n{'=' * 68}\n 촬영 가이드 — 실측에서 뽑은 허용 구간\n{'=' * 68}")
+    print(f"  최고점: 배율 {peak_z}x  (macro-F1 {peak_f1:.4f})")
+    print(f"  학습 크롭 margin {crop_margin} → 1x 에서 병변이 화면 가로의 "
+          f"{occ(1.0):.0%}")
+    print(f"\n  {'배율':>6}{'macro-F1':>11}{'최고점 대비':>12}{'화면 점유율':>12}")
+    for z, f in sorted(rows):
+        print(f"  {z:>5}x{f:>11.4f}{(f / peak_f1 - 1):>11.1%}{occ(z):>11.0%}")
+
+    print()
+    for tol, (lo, hi) in bands.items():
+        print(f"  하락 {tol:.0%} 이내 : 배율 {lo}x ~ {hi}x  "
+              f"→ 병변이 화면 가로의 **{occ(lo):.0%} ~ {occ(hi):.0%}**")
+    print("=" * 68)
+
+    return {"table": rows, "peak": {"zoom": peak_z, "macro_f1": peak_f1},
+            "bands": bands,
+            "occupancy": {z: occ(z) for z, _ in rows},
+            "crop_margin": crop_margin, "raw": res}
+
+
+def usable_shift(
+    model, df, cfg: CFG | None = None, classes: list[str] | None = None,
+    fracs=(0.0, 0.05, 0.10, 0.15, 0.20, 0.30),
+    tolerance: float = 0.05,
+    n: int = 3000, seed: int = 0, path_col: str = "crop_path",
+    device: str | None = None,
+) -> dict:
+    """병변이 화면 중앙에서 얼마나 벗어나도 되는지 — 촬영 가이드의 두 번째 축."""
+    from src.config import CLASSES
+
+    cfg = cfg or CFG()
+    classes = classes or CLASSES
+    views = [(_shift_name(f), ShiftView(cfg.img_size, f)) for f in fracs]
+    res = _run(model, df, cfg, classes, views, n, seed, path_col, device,
+               "촬영 가이드 측정 — 병변이 중앙에서 벗어나도 되는가",
+               "→ 촬영 UI 에 중앙 가이드 프레임을 두세요.",
+               baseline_name=_shift_name(0.0) if 0.0 in tuple(fracs) else None)
+
+    rows = [(f, res[_shift_name(f)]["macro_f1"]) for f in fracs
+            if res.get(_shift_name(f), {}).get("macro_f1") == res.get(_shift_name(f), {}).get("macro_f1")]
+    if not rows:
+        return {"table": [], "max_shift": None}
+
+    base = dict(rows).get(0.0, max(f for _, f in rows))
+    limit = base * (1 - tolerance)
+    allowed = 0.0
+    for f, sc in sorted(rows):
+        if sc >= limit:
+            allowed = f
+        else:
+            break
+
+    print(f"\n{'=' * 68}\n 촬영 가이드 — 위치 허용 범위\n{'=' * 68}")
+    print(f"  {'이동':>6}{'macro-F1':>11}{'중앙 대비':>11}")
+    for f, sc in sorted(rows):
+        print(f"  {f:>5.0%}{sc:>11.4f}{(sc / base - 1):>10.1%}")
+    print(f"\n  하락 {tolerance:.0%} 이내 : 중앙에서 화면의 **{allowed:.0%} 까지** 벗어나도 됨")
+    print("=" * 68)
+    return {"table": rows, "max_shift": allowed, "baseline": base, "raw": res}
+
+
 def report(model, df, cfg: CFG | None = None, classes: list[str] | None = None,
            n: int = 2000, **kw) -> dict:
     """배율 + 위치를 한 번에. 배포 판단 직전에 부르세요."""

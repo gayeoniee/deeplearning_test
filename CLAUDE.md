@@ -41,6 +41,33 @@ uv run python prepare_local.py --chunk VL01
 
 ---
 
+## 용어 표기 규칙
+
+한국어로 쓰되 **학술 용어는 영어를 병기**합니다. 논문·문서·회의에서 통하는 건
+영어 쪽이라, 한국어만 쓰면 검색도 안 되고 팀 밖에서 말이 안 통합니다.
+
+| 우리 표기 | 영어 | 주의 |
+|---|---|---|
+| 데이터 누수 | **data leakage** | |
+| 배율 교란 / 배율 강건성 | **scale perturbation / scale robustness** | ⚠️ multi-scale 아님 |
+| 위치 교란 | **shift perturbation** | |
+| 하한선 | **shortcut baseline** | 사진 없이 메타데이터만으로 맞히기 |
+| 파인튜닝 | **fine-tuning** | 우리는 처음부터 이것 (전이학습은 우산 개념) |
+| 백본 / 헤드 | **backbone / head** | |
+| 정성평가 | **qualitative evaluation** | |
+| 확률 보정 | **calibration** | |
+| 거절 | **abstention** | "판단 어려움" 으로 물러서기 |
+| 미탐 / 오탐 | **false negative / false positive** | |
+| 촬영 가이드 | **capture guideline** | |
+| 개체 단위 분할 | **group-aware split** | groups = animal_id |
+
+⚠️ **`multi-scale` 과 `scale perturbation` 은 반대 방향입니다.**
+전자는 여러 배율로 **학습**시키는 기법(= `zoom_both`, 우리는 실패),
+후자는 학습을 마친 모델을 배율 바꿔가며 **시험**하는 검사입니다.
+
+
+---
+
 ## 폴더 구조
 
 ```
@@ -92,7 +119,8 @@ deeplearning_test/
 │   ├── test_crop_geometry.py        크롭 창 계산
 │   ├── test_robust.py               교란 뷰
 │   ├── test_stages.py               2단계 분할 공유
-│   └── test_windows_encoding.py     cp949 회귀 (같은 버그로 3번 막혔음)
+│   ├── test_windows_encoding.py     cp949 회귀 (같은 버그로 3번 막혔음)
+│   └── test_capture_guide.py        촬영 가이드 밴드 계산
 │
 ├── docs/
 │   ├── 00_로드맵.md            전체 STEP 과 현재 위치
