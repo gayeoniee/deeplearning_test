@@ -8,10 +8,10 @@
   · /kaggle/working                                             (쓰기 가능)
   · /content 존재 + google.colab 임포트 가능                    (오판 유발 함정)
   · KAGGLE_KERNEL_RUN_TYPE 환경변수
-  · 데이터셋 두 개로 나눠 올린 경우 (m1.5 / full)
+  · 데이터셋을 나눠 올린 경우 (m2.5 / m1.5 / full)
 
     python tests/test_notebook_kaggle_e2e.py             # 두 크롭 태그 다 있음
-    python tests/test_notebook_kaggle_e2e.py --m15-only  # m1.5 만 올린 상태
+    python tests/test_notebook_kaggle_e2e.py --m15-only  # m2.5 가 안 올라간 상태
 
 ⚠️ 이 테스트가 존재하는 이유:
    Kaggle 로 옮기는 과정에서 오류를 **하나씩** 만났습니다 — 환경 오판,
@@ -36,7 +36,8 @@ REPO = Path(__file__).resolve().parent.parent
 NB = REPO / "notebooks" / "03_학습_베이스라인.ipynb"
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--m15-only", action="store_true", help="full 크롭 데이터셋 없이")
+ap.add_argument("--m15-only", action="store_true",
+                help="m1.5 만 올라간 상태 — 03 이 쓰는 m2.5 가 없어 셀 6 에서 멈춰야 정상")
 ap.add_argument("--stop-at", type=int, default=999, help="이 셀 번호까지만")
 args = ap.parse_args()
 
@@ -139,7 +140,8 @@ def write_crops(df: pd.DataFrame, root: Path, tags: list[str]) -> pd.DataFrame:
 print(f"작업 폴더: {T}")
 df0 = build_dataset()
 DS.mkdir(parents=True)
-df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only else ["m1.5", "full"])
+# 03 은 m2.5 를 씁니다 (STEP 4C). m1.5·full 도 같이 둬서 태그 전환 경로까지 밟습니다.
+df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only else ["m2.5", "m1.5", "full"])
 (DS / "manifests").mkdir(parents=True, exist_ok=True)
 df0.to_parquet(DS / "manifests" / "manifest_final.parquet")
 if not args.m15_only:

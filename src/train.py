@@ -198,7 +198,41 @@ def restore_from_persist(exp: str, verbose: bool = True) -> bool:
     return n > 0
 
 
-def import_checkpoints(src: str | Path, exps: list[str] | None = None,
+def find_checkpoint_sources() -> list[Path]:
+    """붙어 있는 입력에서 `checkpoints/<실험>/best.pt` 를 담은 폴더를 찾습니다.
+
+    **왜 필요한가** — Kaggle 은 노트북마다 세션이 따로입니다. 03 이 3시간 걸려
+    만든 체크포인트는 `/kaggle/working` 에 있는데, 05 를 열면 그건 이미 사라진
+    뒤입니다. 03 을 'Save & Run All (Commit)' 로 돌렸다면 그 출력이 데이터셋으로
+    남으므로, 05 에서 **Add Input → Notebook Output** 으로 붙이면 여기서 찾습니다.
+
+    경로를 사람이 외우게 하지 않으려고 자동으로 훑습니다 (얕게 3단계까지).
+    """
+    from src import env as _env
+
+    seen: list[Path] = []
+    for root in _env._search_roots():
+        if not root.is_dir():
+            continue
+        try:
+            entries = sorted(p for p in root.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for cand in [root, *entries, *(c for e in entries for c in _safe_dirs(e))]:
+            ck = cand / "checkpoints"
+            if ck.is_dir() and any(ck.glob("*/best.pt")) and ck not in seen:
+                seen.append(ck)
+    return seen
+
+
+def _safe_dirs(p: Path) -> list[Path]:
+    try:
+        return sorted(d for d in p.iterdir() if d.is_dir())
+    except OSError:
+        return []
+
+
+def import_checkpoints(src: str | Path | None = None, exps: list[str] | None = None,
                        verbose: bool = True) -> list[str]:
     """다른 환경에서 만든 체크포인트를 가져옵니다 (Colab → Kaggle 이주 등).
 
@@ -206,11 +240,28 @@ def import_checkpoints(src: str | Path, exps: list[str] | None = None,
     Kaggle 이면 보통 `/kaggle/input/<데이터셋이름>` 입니다.
 
         train.import_checkpoints("/kaggle/input/dogskin-ckpt")
+        train.import_checkpoints()          # 붙어 있는 입력에서 알아서 찾기
+
+    `src` 를 생략하면 `find_checkpoint_sources()` 가 찾은 곳을 **전부** 가져옵니다.
+    하나도 없으면 조용히 빈 목록을 돌려줍니다 — 같은 세션에서 방금 학습했다면
+    가져올 게 없는 게 정상이라, 여기서 멈추면 안 됩니다.
 
     ⚠️ 학습 환경이 달라도 가중치는 그대로 쓸 수 있습니다. 다만 `last.pt` 로
        이어서 학습할 때는 배치 크기·워커 수가 달라져 배치 순서가 바뀝니다
        (결과가 소수점 셋째 자리에서 흔들립니다 — cautions/09 참고).
     """
+    if src is None:
+        found = find_checkpoint_sources()
+        if not found:
+            if verbose:
+                print("[train] 붙어 있는 입력에 체크포인트가 없습니다 "
+                      "(같은 세션에서 학습했다면 정상입니다)")
+            return []
+        out: list[str] = []
+        for f in found:
+            out += import_checkpoints(f, exps=exps, verbose=verbose)
+        return out
+
     src = Path(src)
     # Kaggle 에 zip 으로 올렸다면(자동 해제가 안 됐다면) 먼저 풉니다
     if src.is_file() and src.suffix == ".zip":

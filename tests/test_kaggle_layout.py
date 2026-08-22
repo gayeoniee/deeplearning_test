@@ -375,6 +375,89 @@ def test_manifest_rebase_works_through_link():
           f"{df['crop_path'].head(2).tolist()}")
 
 
+# ──────────────────────────────────────────────────────────────
+# 노트북 사이의 체크포인트 인계
+#
+# Kaggle 은 **노트북마다 세션이 따로**입니다. 03 이 3시간 걸려 만든 가중치는
+# 그 세션의 /kaggle/working 에 있고, 05 를 열면 이미 없습니다.
+# 03 을 'Save & Run All (Commit)' 로 돌린 뒤 그 출력을 05 에 붙이는 게 정답인데,
+# 경로를 사람이 외우게 하면 결국 3시간을 다시 씁니다. 그래서 자동으로 찾습니다.
+# ──────────────────────────────────────────────────────────────
+def _fake_ckpt(root: Path, *exps: str) -> Path:
+    for e in exps:
+        d = root / "checkpoints" / e
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "best.pt").write_bytes(b"weights")
+        (d / "state.json").write_text('{"epochs_done": 25, "completed": true}')
+    return root
+
+
+def test_finds_checkpoints_in_notebook_output():
+    """05 에 붙인 03 의 노트북 출력에서 체크포인트를 찾아야 합니다."""
+    from src import env, train
+
+    base = _TMP / "ckpt_input"
+    _fake_ckpt(base / "dogskin-03-output",
+               "stage1_resnet50_m2.5_moderate", "stage2_resnet50_m2.5_moderate")
+    fresh_env("ckpt1")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        found = train.find_checkpoint_sources()
+        check("노트북 출력 안의 checkpoints/ 를 찾는다", len(found) == 1,
+              f"{[str(p) for p in found]}")
+        got = sorted(train.import_checkpoints(verbose=False))
+    finally:
+        env._search_roots = orig
+    check("두 실험을 모두 가져온다",
+          got == ["stage1_resnet50_m2.5_moderate", "stage2_resnet50_m2.5_moderate"], f"{got}")
+    check("가중치가 실제로 놓인다",
+          (train.ckpt_dir("stage1_resnet50_m2.5_moderate") / "best.pt").exists())
+
+
+def test_checkpoint_import_is_quiet_when_nothing_attached():
+    """같은 세션에서 방금 학습했으면 가져올 게 없는 게 정상 — 죽으면 안 됩니다."""
+    from src import env, train
+
+    empty = _TMP / "ckpt_empty"
+    empty.mkdir(exist_ok=True)
+    fresh_env("ckpt2")
+    orig = env._search_roots
+    env._search_roots = lambda: [empty]
+    try:
+        check("빈 입력이면 조용히 빈 목록", train.import_checkpoints(verbose=False) == [])
+    finally:
+        env._search_roots = orig
+
+
+def test_checkpoint_search_ignores_half_written_dirs():
+    """best.pt 가 없는 폴더는 후보가 아닙니다 (학습이 중간에 끊긴 출력)."""
+    from src import env, train
+
+    base = _TMP / "ckpt_partial"
+    d = base / "half" / "checkpoints" / "stage1_resnet50_m2.5_moderate"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "last.pt").write_bytes(b"partial")        # best.pt 는 없음
+    fresh_env("ckpt3")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        check("best.pt 없는 폴더는 무시한다", train.find_checkpoint_sources() == [])
+    finally:
+        env._search_roots = orig
+
+
+def test_notebook05_actually_calls_the_import():
+    """코드만 있고 노트북이 안 부르면 소용없습니다."""
+    import json as _json
+
+    nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
+                     .read_text(encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    check("05 가 import_checkpoints() 를 부른다", "train.import_checkpoints()" in src)
+
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
     for fn in [test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
@@ -386,7 +469,11 @@ if __name__ == "__main__":
                test_walk_does_not_descend_into_crops, test_finds_zip_inside_dataset_folder,
                test_error_lists_actual_contents,
                test_kaggle_wins_over_colab_signals, test_diagnose_reports_signals,
-               test_manifest_rebase_works_through_link]:
+               test_manifest_rebase_works_through_link,
+               test_finds_checkpoints_in_notebook_output,
+               test_checkpoint_import_is_quiet_when_nothing_attached,
+               test_checkpoint_search_ignores_half_written_dirs,
+               test_notebook05_actually_calls_the_import]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()
