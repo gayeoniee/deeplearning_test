@@ -12,7 +12,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 FAILS: list[str] = []
 
@@ -116,6 +117,65 @@ def test_usable_range_is_inference_only():
     check("scale_stress 와 같은 뷰를 쓴다", "ZoomView" in src)
 
 
+def _nb05_crop_block() -> str:
+    """노트북 05 의 크롭 결정 부분만 떼어냅니다.
+
+    e2e 는 03 만 돌립니다. 05 는 사람이 마지막에 한 번 돌리는 노트북이라
+    여기서 크롭을 잘못 고르면 **촬영 가이드 문구까지 통째로 틀립니다** —
+    그래서 이 블록만이라도 실제로 실행해 봅니다.
+    """
+    import json
+
+    nb = json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
+                    .read_text(encoding="utf-8"))
+    for cell in nb["cells"]:
+        s = "".join(cell["source"])
+        if "BEST_CROP" in s and "CROP_MARGIN" in s:
+            return s[s.index("BEST_CROP"):s.index("CROP_MARGIN") + s[s.index("CROP_MARGIN"):].index("\n")]
+    raise AssertionError("05 에서 크롭 결정 블록을 못 찾았습니다")
+
+
+def _resolve(sel: dict, crp: dict, thr: dict) -> tuple[str, float]:
+    from src import crop
+
+    ns = {"sel": sel, "crp": crp, "thr": thr, "crop": crop, "print": lambda *a, **k: None}
+    exec(_nb05_crop_block(), ns)
+    return ns["BEST_CROP"], ns["CROP_MARGIN"]
+
+
+def test_nb05_picks_the_crop_03c_chose():
+    """03c 가 고른 크롭이 05 로 흘러가야 합니다."""
+    c, m = _resolve({}, {"best_crop": "m2.5"}, {"stage2_crop": "m1.5"})
+    check("03c 의 best_crop 이 이긴다", c == "m2.5", f"got {c}")
+    check("margin 이 태그에서 유도된다", m == 2.5, f"got {m}")
+
+
+def test_nb05_ignores_stale_03_crop():
+    """03 은 크롭 비교 **이전** 노트북입니다. 그 값이 새 결론을 덮으면 안 됩니다."""
+    c, _ = _resolve({}, {}, {"stage2_crop": "m1.5"})
+    check("03 의 낡은 m1.5 가 무시된다", c == "m2.5", f"got {c}")
+
+
+def test_nb05_lets_04_override():
+    """04 가 백본과 함께 크롭까지 다시 골랐으면 04 가 최신입니다."""
+    c, m = _resolve({"stage2_crop": "m1.5"}, {"best_crop": "m2.5"}, {})
+    check("04 가 03c 를 덮는다", c == "m1.5", f"got {c}")
+    check("margin 도 따라간다", m == 1.5, f"got {m}")
+
+
+def test_nb05_margin_matches_robust_default():
+    """m1.5 는 1x 에서 67%, m2.5 는 40%. 이 변환이 가이드 문구의 근거입니다."""
+    from src import robust
+
+    for tag, margin, occ in (("m1.5", 1.5, 0.67), ("m2.5", 2.5, 0.40)):
+        _, m = _resolve({}, {"best_crop": tag}, {})
+        got = min(1.0 / m, 1.0)
+        check(f"{tag} → 점유율 {occ:.0%}", abs(got - occ) < 0.01, f"got {got:.3f}")
+    check("robust 가 crop_margin 인자를 받는다",
+          "crop_margin" in robust.usable_range.__code__.co_varnames)
+
+
+
 if __name__ == "__main__":
     print("촬영 가이드 도출 검증\n")
     for fn in (test_band_is_contiguous_around_peak,
@@ -123,7 +183,11 @@ if __name__ == "__main__":
                test_peak_need_not_be_1x,
                test_occupancy_conversion,
                test_real_measured_curve,
-               test_usable_range_is_inference_only):
+               test_usable_range_is_inference_only,
+               test_nb05_picks_the_crop_03c_chose,
+               test_nb05_ignores_stale_03_crop,
+               test_nb05_lets_04_override,
+               test_nb05_margin_matches_robust_default):
         fn()
     print()
     if FAILS:
