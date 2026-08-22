@@ -135,10 +135,11 @@ def _nb05_crop_block() -> str:
     raise AssertionError("05 에서 크롭 결정 블록을 못 찾았습니다")
 
 
-def _resolve(sel: dict, crp: dict, thr: dict) -> tuple[str, float]:
+def _resolve(sel: dict, crp: dict, thr: dict, inf: dict | None = None) -> tuple[str, float]:
     from src import crop
 
-    ns = {"sel": sel, "crp": crp, "thr": thr, "crop": crop, "print": lambda *a, **k: None}
+    ns = {"sel": sel, "crp": crp, "thr": thr, "inf": inf or {}, "crop": crop,
+          "print": lambda *a, **k: None}
     exec(_nb05_crop_block(), ns)
     return ns["BEST_CROP"], ns["CROP_MARGIN"]
 
@@ -161,6 +162,13 @@ def test_nb05_lets_04_override():
     c, m = _resolve({"stage2_crop": "m1.5"}, {"best_crop": "m2.5"}, {})
     check("04 가 03c 를 덮는다", c == "m1.5", f"got {c}")
     check("margin 도 따라간다", m == 1.5, f"got {m}")
+
+
+def test_nb05_falls_back_to_checkpoint_names():
+    """03 의 JSON 이 인계되지 않아도 체크포인트 이름으로 크롭을 살립니다."""
+    c, m = _resolve({}, {}, {}, {"stage1_crop": "full", "stage2_crop": "m2.5"})
+    check("체크포인트 이름에서 2단계 크롭", c == "m2.5", f"got {c}")
+    check("margin 도 따라온다", m == 2.5, f"got {m}")
 
 
 def test_nb05_margin_matches_robust_default():
@@ -187,6 +195,7 @@ if __name__ == "__main__":
                test_nb05_picks_the_crop_03c_chose,
                test_nb05_ignores_stale_03_crop,
                test_nb05_lets_04_override,
+               test_nb05_falls_back_to_checkpoint_names,
                test_nb05_margin_matches_robust_default):
         fn()
     print()

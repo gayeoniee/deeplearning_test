@@ -315,6 +315,47 @@ def import_run_files(src: str | Path | None = None, verbose: bool = True) -> lis
     return got
 
 
+def infer_run_settings() -> dict:
+    """체크포인트 **폴더 이름**에서 실행 설정을 되살립니다.
+
+    `stage1_threshold.json` 이 안 넘어와도 크롭과 실험 이름만은 살릴 수 있습니다 —
+    이름에 다 적혀 있으니까요:
+
+        stage1_resnet50_full_moderate  → stage 1 / resnet50 / full 크롭
+        stage2_resnet50_m2.5_moderate  → stage 2 / resnet50 / m2.5 크롭
+
+    가중치는 무겁고 JSON 은 가벼운데, 인계에서 **가벼운 쪽이 더 잘 빠집니다.**
+    (Kaggle 출력을 데이터셋으로 만들 때 실제로 그랬습니다)
+    """
+    from src import crop as _crop
+
+    roots = [env.ensure_dirs()["checkpoints"]]
+    p = env.persist_root()
+    if p:
+        roots.append(p / "checkpoints")
+
+    names: set[str] = set()
+    for r in roots:
+        if r.is_dir():
+            names |= {d.name for d in r.iterdir()
+                      if d.is_dir() and (d / "best.pt").exists()}
+
+    out: dict = {}
+    for n in sorted(names):
+        for stage in (1, 2):
+            if not n.startswith(f"stage{stage}_"):
+                continue
+            toks = n.split("_")[1:]
+            ci = next((i for i, t in enumerate(toks)
+                       if t == "full" or _crop.margin_of_tag(t) or _crop.fixed_of_tag(t)), None)
+            if ci is None:
+                continue
+            out[f"stage{stage}_exp"] = n
+            out[f"stage{stage}_crop"] = toks[ci]
+            out[f"stage{stage}_model"] = "_".join(toks[:ci]) or "resnet50"
+    return out
+
+
 def explain_handoff() -> str:
     """인계가 왜 안 됐는지 **눈으로 확인할 수 있게** 현재 상태를 적습니다.
 
@@ -361,7 +402,9 @@ def import_previous_run(src: str | Path | None = None, verbose: bool = True) -> 
     """
     ck = import_checkpoints(src, verbose=verbose)
     files = import_run_files(src, verbose=verbose)
-    if verbose and not ck and not files:
+    # ⚠️ 한쪽만 와도 진단을 찍습니다. 가중치는 왔는데 JSON 이 안 온 경우가
+    #    실제로 있었고, 그때 05 는 한참 뒤에야 "임계값이 없다" 로 죽었습니다.
+    if verbose and not (ck and files):
         print(explain_handoff())
     return {"checkpoints": ck, "files": files}
 

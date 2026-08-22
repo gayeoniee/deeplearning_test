@@ -419,6 +419,44 @@ def test_empty_crop_dir_does_not_shadow_the_real_one():
           f"m1.5 에서 {n}장 — 빈 03notebook/crops/m1.5 가 이겼습니다")
 
 
+def test_settings_recovered_from_checkpoint_names():
+    """JSON 이 안 넘어와도 크롭·실험 이름은 폴더 이름에서 살릴 수 있습니다."""
+    from src import train
+
+    w = fresh_env("infer")
+    for n in ("stage1_resnet50_full_moderate", "stage2_resnet50_m2.5_moderate"):
+        d = w / "checkpoints" / n
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "best.pt").write_bytes(b"w")
+    got = train.infer_run_settings()
+    check("1단계 크롭 full", got.get("stage1_crop") == "full", f"{got}")
+    check("2단계 크롭 m2.5", got.get("stage2_crop") == "m2.5", f"{got}")
+    check("실험 이름도 살아난다",
+          got.get("stage1_exp") == "stage1_resnet50_full_moderate", f"{got}")
+    check("모델 이름도 살아난다", got.get("stage2_model") == "resnet50", f"{got}")
+
+
+def test_settings_ignore_incomplete_checkpoints():
+    """best.pt 가 없는 폴더는 설정 근거가 못 됩니다."""
+    from src import train
+
+    w = fresh_env("infer2")
+    (w / "checkpoints" / "stage1_resnet50_m1.5_moderate").mkdir(parents=True, exist_ok=True)
+    check("미완성 체크포인트는 무시", train.infer_run_settings() == {})
+
+
+def test_notebook05_recovers_threshold_instead_of_defaulting():
+    """임계값을 0.5 로 때우면 파이프라인 평가가 조용히 틀립니다."""
+    import json as _json
+
+    nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
+                     .read_text(encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    check("체크포인트 이름에서 설정을 되살린다", "infer_run_settings()" in src)
+    check("임계값을 다시 계산한다", "if THR1 is None:" in src and "binary_report" in src)
+    check("0.5 로 때우지 않는다", "THR1 = 0.5" not in src)
+
+
 def test_finds_checkpoints_in_notebook_output():
     """05 에 붙인 03 의 노트북 출력에서 체크포인트를 찾아야 합니다."""
     from src import env, train
@@ -563,6 +601,9 @@ if __name__ == "__main__":
                test_checkpoint_import_is_quiet_when_nothing_attached,
                test_checkpoint_search_ignores_half_written_dirs,
                test_empty_crop_dir_does_not_shadow_the_real_one,
+               test_settings_recovered_from_checkpoint_names,
+               test_settings_ignore_incomplete_checkpoints,
+               test_notebook05_recovers_threshold_instead_of_defaulting,
                test_run_files_come_over_too,
                test_this_sessions_files_are_not_overwritten,
                test_deep_notebook_output_layout_is_found,
