@@ -356,6 +356,68 @@ def infer_run_settings() -> dict:
     return out
 
 
+def export_release(exps: list[str], meta: dict | None = None,
+                   files: dict[str, dict] | None = None,
+                   verbose: bool = True) -> Path:
+    """다음 노트북에 넘길 것만 **한 폴더에 모읍니다.**
+
+    왜 필요한가 — Kaggle 노트북 출력을 데이터셋으로 만들면 안쪽 폴더가
+    통째로 빠지는 일이 있습니다. 실제로 `checkpoints/` 는 왔는데
+    `data/work/stage1_threshold.json` 은 안 왔습니다. 무거운 쪽이 오고
+    가벼운 쪽이 빠졌습니다.
+
+    그래서 넘길 것만 골라 **작업 폴더 안쪽이 아니라 최상위**에 둡니다:
+
+        /kaggle/working/release/
+          READ_ME_FIRST.txt                     ← 사람이 눈으로 확인
+          stage1_threshold.json
+          reports/step4a_summary.json
+          checkpoints/<실험>/best.pt
+
+    폴더 구조가 원본과 같으므로 `import_previous_run()` 이 그대로 찾습니다.
+    `READ_ME_FIRST.txt` 는 **크롭과 점수를 적어둡니다** — 데이터셋을 만들 때
+    올바른 버전인지 열어보고 확인할 수 있게.
+    """
+    root = env.persist_root() or env.work_root()
+    dst = root / "release"
+    if dst.exists():
+        shutil.rmtree(dst, ignore_errors=True)
+    (dst / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    total = 0
+    for exp in exps:
+        src = ckpt_dir(exp) / "best.pt"
+        if not src.exists():
+            print(f"⚠️ [release] '{exp}/best.pt' 가 없어 건너뜁니다")
+            continue
+        out = dst / "checkpoints" / exp
+        out.mkdir(parents=True, exist_ok=True)
+        _copy_atomic(src, out / "best.pt")
+        total += src.stat().st_size
+
+    for name, payload in (files or {}).items():
+        f = dst / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ★ 사람이 읽는 확인표. 데이터셋을 만들 때 이 파일만 열어보면
+    #   올바른 실행인지 바로 압니다 (버전 목록에서 잘못 고르는 사고를 막습니다).
+    lines = ["이 폴더를 통째로 Kaggle 데이터셋(Private)으로 만들어",
+             "다음 노트북의 Add Input 에 붙이세요.", ""]
+    for k, v in (meta or {}).items():
+        lines.append(f"  {k:<22} {v}")
+    lines += ["", "체크포인트:"] + [f"  {e}" for e in exps]
+    (dst / "READ_ME_FIRST.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    if verbose:
+        print(f"\n📦 인계 꾸러미: {dst}  ({total / 1024**2:.0f}MB)")
+        for ln in lines:
+            if ln.strip():
+                print("   " + ln)
+        print("\n   → [Output] 탭에서 이 release 폴더를 New Dataset (Private) 으로 만드세요.")
+    return dst
+
+
 def explain_handoff() -> str:
     """인계가 왜 안 됐는지 **눈으로 확인할 수 있게** 현재 상태를 적습니다.
 

@@ -419,6 +419,68 @@ def test_empty_crop_dir_does_not_shadow_the_real_one():
           f"m1.5 에서 {n}장 — 빈 03notebook/crops/m1.5 가 이겼습니다")
 
 
+def test_release_bundle_is_flat_and_self_describing():
+    """넘길 것만 최상위 한 폴더에. 안쪽에 두면 데이터셋으로 만들 때 빠집니다."""
+    from src import env, train
+
+    w = fresh_env("release")
+    d = train.ckpt_dir("stage2_resnet50_m2.5_384_moderate")
+    (d / "best.pt").write_bytes(b"weights")
+    rel = train.export_release(
+        ["stage2_resnet50_m2.5_384_moderate"],
+        meta={"2단계 크롭": "m2.5", "2단계 macro-F1": "0.5313"},
+        files={"stage1_threshold.json": {"threshold": 0.2127},
+               "reports/step4a_summary.json": {"img_size": 384}},
+        verbose=False)
+    check("가중치가 들어간다",
+          (rel / "checkpoints" / "stage2_resnet50_m2.5_384_moderate" / "best.pt").is_file())
+    check("임계값 JSON 이 들어간다", (rel / "stage1_threshold.json").is_file())
+    check("reports/ 도 들어간다", (rel / "reports" / "step4a_summary.json").is_file())
+    txt = (rel / "READ_ME_FIRST.txt").read_text(encoding="utf-8")
+    check("사람이 크롭을 눈으로 확인할 수 있다", "m2.5" in txt, txt)
+    check("점수도 적혀 있다", "0.5313" in txt, txt)
+
+    # ★ 핵심 — 이 폴더만 붙여도 인계가 된다
+    base = _TMP / "release_input"
+    base.mkdir(exist_ok=True)
+    shutil.copytree(rel, base / "ds" / "release", dirs_exist_ok=True)
+    w2 = fresh_env("release_in")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        got = train.import_previous_run(verbose=False)
+    finally:
+        env._search_roots = orig
+    check("release 폴더만으로 가중치가 온다",
+          got["checkpoints"] == ["stage2_resnet50_m2.5_384_moderate"], f"{got}")
+    check("release 폴더만으로 JSON 도 온다", (w2 / "stage1_threshold.json").is_file())
+
+
+def test_notebook03_exports_a_release():
+    import json as _json
+
+    nb = _json.loads((ROOT / "notebooks" / "03_학습_베이스라인.ipynb")
+                     .read_text(encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    check("03 이 인계 꾸러미를 만든다", "train.export_release(" in src)
+
+
+def test_notebook05_validates_before_the_slow_part():
+    """크롭 세는 데 4분 걸립니다. 잘못된 입력이면 그 전에 멈춰야 합니다."""
+    import json as _json
+
+    nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
+                     .read_text(encoding="utf-8"))
+    for c in nb["cells"]:
+        s = "".join(c["source"])
+        if "load_prepared()" in s and "import_previous_run" in s:
+            check("인계 검증이 load_prepared 보다 먼저",
+                  s.index("import_previous_run") < s.index("load_prepared()"), s[:200])
+            check("크롭 불일치를 여기서 잡는다", "ADOPTED_STAGE2_CROP" in s)
+            return
+    check("검증 셀을 찾았다", False, "load_prepared 와 import 가 같은 셀에 없습니다")
+
+
 def test_settings_recovered_from_checkpoint_names():
     """JSON 이 안 넘어와도 크롭·실험 이름은 폴더 이름에서 살릴 수 있습니다."""
     from src import train
@@ -601,6 +663,9 @@ if __name__ == "__main__":
                test_checkpoint_import_is_quiet_when_nothing_attached,
                test_checkpoint_search_ignores_half_written_dirs,
                test_empty_crop_dir_does_not_shadow_the_real_one,
+               test_release_bundle_is_flat_and_self_describing,
+               test_notebook03_exports_a_release,
+               test_notebook05_validates_before_the_slow_part,
                test_settings_recovered_from_checkpoint_names,
                test_settings_ignore_incomplete_checkpoints,
                test_notebook05_recovers_threshold_instead_of_defaulting,
