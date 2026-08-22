@@ -438,6 +438,84 @@ def test_blur_score_orders_sharp_above_flat():
     assert crop._blur_score(flat) < 1.0     # 완전히 균일한 면은 0 에 가까움
 
 
+# ──────────────────────────────────────────────────────────────
+# 1단계 크롭 결정 — 실측 숫자로 못 박습니다
+#
+# ⚠️ 한 번 틀렸던 부분입니다. "2단계를 m2.5 로 바꾸면 1단계도 따라온다" 고
+#    말했는데, 실제로는 배율 격차 때문에 1단계는 'full' 로 갑니다.
+#    합성 데이터로만 돌린 e2e 에서는 격차가 없어서 그게 안 드러났습니다.
+#    그래서 **실측 숫자를 상수로 박아** 검사합니다.
+# ──────────────────────────────────────────────────────────────
+MEASURED_SCALE_GAP = 0.57      # 정상 bbox 0.71% / 병변 1.25% (VL01 전체)
+MEASURED_CEILING = 0.965       # full 로 갈 때 1단계 recall 상한
+TARGET = 0.95
+
+
+def test_stage1_goes_full_on_real_numbers():
+    """실측 격차 0.57배 → ROI 크롭 금지. full 이 있으면 full."""
+    r = crop.choose_stage1_tag("m2.5", MEASURED_SCALE_GAP, MEASURED_CEILING,
+                               TARGET, ["m1.5", "m2.5", "full"])
+    assert r["tag"] == "full", r
+    assert r["leaky"] is True
+    assert r["warnings"], "천장 여유 0.015 인데 경고가 없습니다"
+
+
+def test_stage1_does_not_follow_stage2_crop():
+    """★ 이걸 반대로 알고 있었습니다. m2.5 로 바꿔도 1단계는 안 따라옵니다."""
+    for best in ("m1.5", "m2.5"):
+        r = crop.choose_stage1_tag(best, MEASURED_SCALE_GAP, MEASURED_CEILING,
+                                   TARGET, ["m1.5", "m2.5", "full"])
+        assert r["tag"] == "full", f"{best} → {r['tag']}"
+
+
+def test_missing_full_fails_with_the_real_cause():
+    """full 을 안 붙이면, 'full 크롭이 0%' 가 아니라 '안 붙었다' 고 말해야 합니다."""
+    try:
+        crop.choose_stage1_tag("m2.5", MEASURED_SCALE_GAP, MEASURED_CEILING,
+                               TARGET, ["m1.5", "m2.5"])
+    except FileNotFoundError as e:
+        msg = str(e)
+        assert "Add Input" in msg, msg
+        assert "['m1.5', 'm2.5']" in msg, msg
+        assert "--margins -320" in msg, msg
+    else:
+        raise AssertionError("full 이 없는데 그냥 넘어갔습니다")
+
+
+def test_fixed_pixel_crop_wins_when_available():
+    """f320 이 있으면 full 보다 낫습니다 — 배율도 잡고 병변도 안 잃습니다."""
+    r = crop.choose_stage1_tag("m2.5", MEASURED_SCALE_GAP, MEASURED_CEILING,
+                               TARGET, ["m2.5", "full", "f320"])
+    assert r["tag"] == "f320", r
+    assert not r["warnings"], "f320 은 천장 경고가 필요 없습니다"
+
+
+def test_no_gap_keeps_the_roi_crop():
+    """격차가 없으면 ROI 크롭을 그대로 씁니다 (합성 데이터가 이 경우였습니다)."""
+    r = crop.choose_stage1_tag("m2.5", 1.0, MEASURED_CEILING, TARGET,
+                               ["m2.5", "full"])
+    assert r["tag"] == "m2.5" and r["leaky"] is False, r
+
+
+def test_low_ceiling_falls_back_with_a_loud_warning():
+    """full 천장이 목표에 못 미치면 ROI 크롭으로 돌아가되 낙관 경고를 답니다."""
+    r = crop.choose_stage1_tag("m2.5", MEASURED_SCALE_GAP, 0.93, TARGET,
+                               ["m2.5", "full"])
+    assert r["tag"] == "m2.5", r
+    assert any("낙관" in w for w in r["warnings"]), r["warnings"]
+
+
+def test_notebook03_uses_the_shared_rule():
+    """규칙이 노트북 셀에 복사돼 있으면 git pull 로 안 고쳐집니다."""
+    import json
+
+    nb = json.loads((Path(__file__).resolve().parents[1] /
+                     "notebooks" / "03_학습_베이스라인.ipynb").read_text(encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    assert "crop.choose_stage1_tag(" in src, "03 이 공용 규칙을 안 씁니다"
+    assert "SCALE_GAP > 1.5" not in src, "판정 규칙이 아직 노트북에 복사돼 있습니다"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     fails = 0

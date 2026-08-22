@@ -266,6 +266,79 @@ def margin_of_tag(tag: str) -> float:
         return 0.0
 
 
+def choose_stage1_tag(best_crop: str, scale_gap: float, full_ceiling: float,
+                      target_recall: float, tags: list[str]) -> dict:
+    """1단계(정상/이상)가 쓸 크롭을 고릅니다.
+
+    ⚠️ **1단계는 2단계 크롭을 따라오지 않습니다.** 한 번 헷갈렸던 부분이라 적어둡니다.
+
+    2단계는 병변 **형태**를 보므로 ROI 크롭(m1.5/m2.5)이 필요합니다. 그런데 1단계는
+    정상/이상을 가르는 문제라, ROI 크롭을 쓰면 **크롭 창 크기 자체가 정답을 흘립니다** —
+    정상의 bbox 면적 중앙값이 0.71%, 병변이 1.25% 라 창 크기만 봐도 반쯤 맞힙니다.
+    실측 지름길 하한선(`shortcut_baseline`)에서 1단계 AUROC 0.6042 가 나온 게 그것입니다.
+    게다가 그 신호는 **배포에는 존재하지 않습니다** (보호자 사진에는 bbox 가 없습니다).
+    검증 점수만 올리고 실사용에서는 사라지는, 가장 나쁜 종류의 지름길입니다.
+
+    그래서 우선순위는:
+      1. 고정 픽셀 크롭(f320 …)  — 배율이 일정하면서 병변도 화면에 남습니다
+      2. `full` (박스 미사용)     — 배율 정보가 아예 없지만 병변 일부를 잃습니다
+      3. 어쩔 수 없으면 ROI 크롭  — 점수를 낙관적으로 취급해야 합니다
+
+    Args:
+        scale_gap: 정상 bbox 면적 / 병변 bbox 면적 (`audit` 의
+            `area_ratio_normal_over_lesion`). 1 에서 멀수록 지름길이 큽니다.
+        full_ceiling: `full` 로 갈 때 1단계 recall 의 상한 (`full_crop_loss`).
+        tags: 실제로 **붙어 있는** 크롭 태그. 없는 걸 고르면 학습 직전에 죽습니다.
+
+    Returns:
+        {"tag", "why", "leaky", "warnings"} — `warnings` 는 그냥 출력하면 됩니다.
+    """
+    leaky = scale_gap > 1.5 or scale_gap < 0.67
+    fixed = next((t for t in tags if fixed_of_tag(t)), None)
+    warnings: list[str] = []
+
+    if not leaky:
+        tag = best_crop
+        why = f"배율 격차 {scale_gap:.2f}배 — 지름길이 약해 ROI 크롭을 그대로 씀"
+    elif fixed:
+        tag = fixed
+        why = f"배율 격차 {scale_gap:.2f}배 → 고정 픽셀 크롭 '{fixed}' (배율 일정 + 병변 보존)"
+    elif "full" in tags and full_ceiling >= target_recall + 0.01:
+        tag = "full"
+        why = (f"배율 격차 {scale_gap:.2f}배 → full (박스 미사용). "
+               f"천장 {full_ceiling:.3f} 이 목표 {target_recall:.2f} 보다 높아 사용 가능")
+        warnings.append(
+            f"⚠️ 천장 {full_ceiling:.3f} — 여유가 {full_ceiling - target_recall:.3f} 뿐입니다.\n"
+            "   1단계 recall 이 목표에 못 미치면 모델 문제가 아니라 이 천장 때문일 수 있습니다.\n"
+            "   f320 을 만들면 배율도 잡고 병변도 안 잃습니다 (--margins -320).")
+    elif "full" not in tags:
+        # ★ 여기서 멈추는 게 맞습니다. 예전에는 이 경우가 18번 셀까지 안 잡히고
+        #   FileNotFoundError 로 죽었습니다 — 원인이 "업로드 누락" 이라는 게 안 보였습니다.
+        raise FileNotFoundError(
+            f"\n배율 격차가 {scale_gap:.2f}배라 1단계는 ROI 크롭을 쓸 수 없는데,\n"
+            f"'full' 도 고정 픽셀 크롭도 붙어 있지 않습니다.\n"
+            f"  붙어 있는 태그: {tags}\n\n"
+            "해결:\n"
+            "  · Kaggle 이면 [Add Input] 으로 'full' 크롭 데이터셋을 붙이세요\n"
+            "  · 또는 로컬에서 고정 픽셀 크롭을 만드세요:\n"
+            "      py prepare_local.py --chunk VL01 --margins -320\n"
+            f"  · 지름길을 감수하고 진행하려면 STAGE1_CROP = '{best_crop}' 로 직접 지정하세요\n"
+            "    (그 경우 1단계 점수는 낙관적입니다 — 배포에는 없는 신호를 씁니다)")
+    else:
+        tag = best_crop
+        why = (f"배율 격차 {scale_gap:.2f}배지만 full 천장 {full_ceiling:.3f} 이 "
+               f"목표 {target_recall:.2f} 에 못 미치고, 고정 픽셀 크롭도 없음")
+        warnings.append(
+            "🚨 지름길을 막지 못한 상태로 진행합니다. 점수를 낙관적으로 취급하세요.\n"
+            "   · 로컬에서: py prepare_local.py --chunk VL01 --margins -320\n"
+            "   · 6번 배율 교란 검사로 실제 의존도를 확인하세요")
+
+    if tag not in tags:
+        raise FileNotFoundError(
+            f"1단계 크롭으로 '{tag}' 을 골랐는데 붙어 있지 않습니다. 붙어 있는 것: {tags}")
+    return {"tag": tag, "why": why, "leaky": leaky, "warnings": warnings}
+
+
 def fixed_of_tag(tag: str) -> int:
     """고정 픽셀 태그에서 창 크기를 되돌립니다. 'f320' → 320, 그 외 0."""
     if not isinstance(tag, str) or len(tag) < 2 or tag[0] != "f" or not tag[1:].isdigit():
