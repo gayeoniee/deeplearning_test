@@ -514,7 +514,9 @@ def test_notebook05_actually_calls_the_import():
     nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
                      .read_text(encoding="utf-8"))
     src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
-    check("05 가 import_previous_run() 을 부른다", "train.import_previous_run()" in src)
+    check("05 가 import_previous_run 을 부른다", "train.import_previous_run(" in src)
+    check("자동 탐색 실패용 수동 경로 자리가 있다", "PREV_RUN" in src)
+    check("실패하면 진단을 찍는다", "explain_handoff()" in src)
 
 
 

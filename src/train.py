@@ -252,21 +252,40 @@ def find_checkpoint_sources() -> list[Path]:
     return out
 
 
+def _has_run_files(d: Path) -> bool:
+    if any((d / f).is_file() for f in _RUN_FILES):
+        return True
+    rep = d / "reports"
+    return rep.is_dir() and any(rep.glob("*.json"))
+
+
+def _run_roots_under(base: Path, max_depth: int = 4) -> list[Path]:
+    """`base` 아래에서 결과 파일이 있는 폴더 (경로를 직접 줬을 때)."""
+    out, stack = [], [(base, 0)]
+    while stack:
+        d, depth = stack.pop()
+        if _has_run_files(d) and d not in out:
+            out.append(d)
+        if depth >= max_depth:
+            continue
+        try:
+            stack += [(k, depth + 1) for k in sorted(d.iterdir())
+                      if k.is_dir() and k.name not in _SKIP_WALK]
+        except OSError:
+            continue
+    return out
+
+
 def find_run_output_roots() -> list[Path]:
     """이전 실행이 남긴 결과 파일(`stage1_threshold.json` 등)이 있는 폴더."""
     out: list[Path] = []
     for d in _walk_inputs():
-        if d in out:
-            continue
-        has_file = any((d / f).is_file() for f in _RUN_FILES)
-        rep = d / "reports"
-        has_report = rep.is_dir() and any(rep.glob("*.json"))
-        if has_file or has_report:
+        if d not in out and _has_run_files(d):
             out.append(d)
     return out
 
 
-def import_run_files(verbose: bool = True) -> list[str]:
+def import_run_files(src: str | Path | None = None, verbose: bool = True) -> list[str]:
     """이전 실행의 결과 JSON 을 작업 폴더로 가져옵니다.
 
     ⚠️ **이미 있는 파일은 덮지 않습니다.** 이번 세션에서 방금 만든 결과를
@@ -274,7 +293,8 @@ def import_run_files(verbose: bool = True) -> list[str]:
     """
     dst_root = env.work_root()
     got: list[str] = []
-    for src in find_run_output_roots():
+    roots = find_run_output_roots() if src is None else _run_roots_under(Path(src))
+    for src in roots:
         pairs = [(src / f, dst_root / f) for f in _RUN_FILES if (src / f).is_file()]
         pairs += [(p, dst_root / "reports" / p.name)
                   for p in sorted((src / "reports").glob("*.json"))
@@ -295,19 +315,54 @@ def import_run_files(verbose: bool = True) -> list[str]:
     return got
 
 
-def import_previous_run(verbose: bool = True) -> dict:
+def explain_handoff() -> str:
+    """인계가 왜 안 됐는지 **눈으로 확인할 수 있게** 현재 상태를 적습니다.
+
+    "파일이 없습니다" 만 보면 원인이 세 갈래로 갈립니다 —
+    입력을 안 붙였나 / 붙였는데 출력이 비었나 / 붙었는데 못 찾았나.
+    셋을 구분하려면 붙어 있는 게 뭔지 실제로 보여줘야 합니다.
+    """
+    W = env.work_root()
+    lines = ["", "── 인계 진단 ──────────────────────────────────────"]
+    for root in env._search_roots():
+        try:
+            kids = sorted(p.name for p in root.iterdir())
+        except OSError as exc:
+            lines.append(f"  {root}  (읽기 실패: {type(exc).__name__})")
+            continue
+        lines.append(f"  {root}  →  {kids[:12]}" + (" …" if len(kids) > 12 else ""))
+    ck = find_checkpoint_sources()
+    rr = find_run_output_roots()
+    lines.append(f"  checkpoints/ 를 담은 폴더 : {[str(p) for p in ck] or '없음'}")
+    lines.append(f"  결과 JSON 을 담은 폴더    : {[str(p) for p in rr] or '없음'}")
+    here = sorted(p.name for p in W.iterdir()) if W.exists() else []
+    lines.append(f"  작업 폴더 {W} : {here or '비어 있음'}")
+    lines.append("───────────────────────────────────────────────────")
+    if not ck and not rr:
+        lines += [
+            "붙어 있는 입력에 이전 실행의 산출물이 없습니다.",
+            "  1) 03 을 [Save Version → Save & Run All (Commit)] 로 돌렸는지",
+            "  2) 05 의 [Add Input] → **Notebooks** 탭에서 그 03 노트북을 골랐는지",
+            "     (이 탭이 곧 '노트북 출력' 입니다 — 다운로드할 필요 없습니다)",
+            "  3) 그래도 안 보이면 03 의 Output 을 Private 데이터셋으로 만들어 붙이세요",
+            "  4) 경로를 직접 주려면:  train.import_previous_run(src='/kaggle/input/<이름>')",
+        ]
+    return "\n".join(lines)
+
+
+def import_previous_run(src: str | Path | None = None, verbose: bool = True) -> dict:
     """이전 노트북 실행의 **가중치 + 결과 파일**을 한 번에 가져옵니다.
 
-        train.import_previous_run()      # 05 의 첫 셀에서
+        train.import_previous_run()                        # 알아서 찾기
+        train.import_previous_run("/kaggle/input/xxx")     # 경로를 직접 줄 때
 
-    붙어 있는 게 없으면 조용히 지나갑니다 — 같은 세션에서 방금 학습했다면
-    가져올 게 없는 게 정상이라, 여기서 멈추면 안 됩니다.
+    붙어 있는 게 없으면 멈추지는 않되, **왜 없는지 진단을 출력**합니다.
+    같은 세션에서 방금 학습했다면 가져올 게 없는 게 정상입니다.
     """
-    ck = import_checkpoints(verbose=verbose)
-    files = import_run_files(verbose=verbose)
+    ck = import_checkpoints(src, verbose=verbose)
+    files = import_run_files(src, verbose=verbose)
     if verbose and not ck and not files:
-        print("   03 을 다른 세션에서 돌렸다면 [Add Input → Notebook Output] 으로\n"
-              "   그 출력을 붙이세요. 같은 세션이면 이 메시지는 무시해도 됩니다.")
+        print(explain_handoff())
     return {"checkpoints": ck, "files": files}
 
 
@@ -353,7 +408,15 @@ def import_checkpoints(src: str | Path | None = None, exps: list[str] | None = N
         print(f"[train] {src.name} 해제 → {out}")
         src = out
 
-    root = src / "checkpoints" if (src / "checkpoints").is_dir() else src
+    if (src / "checkpoints").is_dir():
+        root = src
+    else:
+        # 경로를 직접 줬는데 한두 단계 더 들어가 있는 경우 (노트북 출력의 data/work/…)
+        deeper = next((c for c in _run_roots_under(src)
+                       if (c / "checkpoints").is_dir()
+                       and any((c / "checkpoints").glob("*/best.pt"))), None)
+        root = deeper or src
+    root = root / "checkpoints" if (root / "checkpoints").is_dir() else root
     if not root.is_dir():
         raise FileNotFoundError(
             f"{src} 안에서 체크포인트 폴더를 찾지 못했습니다.\n"
