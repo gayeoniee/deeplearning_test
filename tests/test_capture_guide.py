@@ -128,17 +128,22 @@ def _nb05_crop_block() -> str:
 
     nb = json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
                     .read_text(encoding="utf-8"))
+    END = "ALLOW_CROP_MISMATCH = True\")"
     for cell in nb["cells"]:
         s = "".join(cell["source"])
-        if "BEST_CROP" in s and "CROP_MARGIN" in s:
-            return s[s.index("BEST_CROP"):s.index("CROP_MARGIN") + s[s.index("CROP_MARGIN"):].index("\n")]
+        if "BEST_CROP" in s and END in s:
+            # 크롭 결정부터 **낡은 체크포인트 차단까지** 한 덩어리로 봅니다.
+            return s[s.index("BEST_CROP"):s.index(END) + len(END)]
     raise AssertionError("05 에서 크롭 결정 블록을 못 찾았습니다")
 
 
 def _resolve(sel: dict, crp: dict, thr: dict, inf: dict | None = None) -> tuple[str, float]:
     from src import crop
 
+    from src.config import ADOPTED_STAGE2_CROP
+
     ns = {"sel": sel, "crp": crp, "thr": thr, "inf": inf or {}, "crop": crop,
+          "ADOPTED_STAGE2_CROP": ADOPTED_STAGE2_CROP, "EXP2": None,
           "print": lambda *a, **k: None}
     exec(_nb05_crop_block(), ns)
     return ns["BEST_CROP"], ns["CROP_MARGIN"]
@@ -158,10 +163,14 @@ def test_nb05_ignores_stale_03_crop():
 
 
 def test_nb05_lets_04_override():
-    """04 가 백본과 함께 크롭까지 다시 골랐으면 04 가 최신입니다."""
-    c, m = _resolve({"stage2_crop": "m1.5"}, {"best_crop": "m2.5"}, {})
-    check("04 가 03c 를 덮는다", c == "m1.5", f"got {c}")
-    check("margin 도 따라간다", m == 1.5, f"got {m}")
+    """04 가 백본과 함께 크롭까지 다시 골랐으면 04 가 최신입니다.
+
+    04 가 m2.5, 03c 가 m1.5 를 가리키는 상황 — 03c 가 이겼다면 낡은 크롭
+    차단에 걸려 SystemExit 이 납니다. 통과한다는 것 자체가 04 가 이겼다는 뜻입니다.
+    """
+    c, m = _resolve({"stage2_crop": "m2.5"}, {"best_crop": "m1.5"}, {})
+    check("04 가 03c 를 덮는다", c == "m2.5", f"got {c}")
+    check("margin 도 따라간다", m == 2.5, f"got {m}")
 
 
 def test_nb05_falls_back_to_checkpoint_names():
@@ -171,14 +180,48 @@ def test_nb05_falls_back_to_checkpoint_names():
     check("margin 도 따라온다", m == 2.5, f"got {m}")
 
 
+def test_nb05_stops_on_a_stale_checkpoint():
+    """예전 실행(m1.5)의 출력을 붙이면 멈춰야 합니다.
+
+    ★ 실제로 겪은 일입니다 — 03 의 08-21 버전(stage2 m1.5) 출력을 데이터셋으로
+    만들어 붙였고, 에러 없이 진행될 뻔했습니다. 그러면 촬영 가이드·보정·
+    임계값이 전부 **버린 설정** 기준으로 나옵니다.
+    """
+    try:
+        _resolve({}, {}, {}, {"stage1_crop": "full", "stage2_crop": "m1.5",
+                              "stage2_exp": "stage2_resnet50_m1.5_384_moderate"})
+    except SystemExit as e:
+        msg = str(e)
+        check("멈춘다", True)
+        check("어느 체크포인트인지 알려준다", "m1.5_384_moderate" in msg, msg)
+        check("무엇을 해야 하는지 알려준다", "Version" in msg and "다시" in msg, msg)
+        check("일부러 볼 때의 우회로도 알려준다", "ALLOW_CROP_MISMATCH" in msg, msg)
+    else:
+        raise AssertionError("낡은 크롭인데 그냥 진행했습니다")
+
+
+def test_nb05_passes_on_the_adopted_crop():
+    from src.config import ADOPTED_STAGE2_CROP
+
+    c, _ = _resolve({}, {}, {}, {"stage1_crop": "full",
+                                 "stage2_crop": ADOPTED_STAGE2_CROP})
+    check("채택 크롭이면 통과", c == ADOPTED_STAGE2_CROP, f"got {c}")
+
+
 def test_nb05_margin_matches_robust_default():
     """m1.5 는 1x 에서 67%, m2.5 는 40%. 이 변환이 가이드 문구의 근거입니다."""
     from src import robust
 
-    for tag, margin, occ in (("m1.5", 1.5, 0.67), ("m2.5", 2.5, 0.40)):
-        _, m = _resolve({}, {"best_crop": tag}, {})
+    # ⚠️ m1.5 는 이제 낡은 크롭 차단에 걸리므로 노트북 블록을 태우지 않고
+    #    변환 규칙만 직접 확인합니다 (규칙 자체는 크롭과 무관합니다).
+    from src import crop
+
+    for tag, occ in (("m1.5", 0.67), ("m2.5", 0.40)):
+        m = crop.margin_of_tag(tag)
         got = min(1.0 / m, 1.0)
         check(f"{tag} → 점유율 {occ:.0%}", abs(got - occ) < 0.01, f"got {got:.3f}")
+    _, m25 = _resolve({}, {"best_crop": "m2.5"}, {})
+    check("05 가 채택 크롭에서 margin 2.5 를 넘긴다", m25 == 2.5, f"got {m25}")
     check("robust 가 crop_margin 인자를 받는다",
           "crop_margin" in robust.usable_range.__code__.co_varnames)
 
@@ -196,6 +239,8 @@ if __name__ == "__main__":
                test_nb05_ignores_stale_03_crop,
                test_nb05_lets_04_override,
                test_nb05_falls_back_to_checkpoint_names,
+               test_nb05_stops_on_a_stale_checkpoint,
+               test_nb05_passes_on_the_adopted_crop,
                test_nb05_margin_matches_robust_default):
         fn()
     print()
