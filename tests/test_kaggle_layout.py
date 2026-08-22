@@ -392,6 +392,33 @@ def _fake_ckpt(root: Path, *exps: str) -> Path:
     return root
 
 
+def test_empty_crop_dir_does_not_shadow_the_real_one():
+    """노트북 출력을 데이터셋으로 만들면 crops/ 가 빈 폴더로 남을 수 있습니다.
+
+    이름 순서상 그게 먼저 걸리면 진짜 크롭 데이터셋을 가로막고
+    "크롭이 0% 밖에 없습니다" 로 죽습니다 — 실제로 겪은 함정의 이웃 사례입니다.
+    """
+    from src import env
+
+    base = _TMP / "shadow"
+    # 03 출력 데이터셋: 이름이 앞서고, crops/m2.5 가 비어 있음
+    (base / "03notebook" / "crops" / "m1.5").mkdir(parents=True, exist_ok=True)
+    (base / "03notebook" / "manifests").mkdir(parents=True, exist_ok=True)
+    # 진짜 크롭 데이터셋
+    make_prepared(base / "dogskin-m25", n=4)
+    w = fresh_env("shadow")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+    link = w / "crops" / "m1.5"
+    n = sum(1 for _ in link.rglob("*.jpg")) if link.exists() else 0
+    check("빈 폴더가 진짜 크롭을 가로막지 않는다", n > 0,
+          f"m1.5 에서 {n}장 — 빈 03notebook/crops/m1.5 가 이겼습니다")
+
+
 def test_finds_checkpoints_in_notebook_output():
     """05 에 붙인 03 의 노트북 출력에서 체크포인트를 찾아야 합니다."""
     from src import env, train
@@ -535,6 +562,7 @@ if __name__ == "__main__":
                test_finds_checkpoints_in_notebook_output,
                test_checkpoint_import_is_quiet_when_nothing_attached,
                test_checkpoint_search_ignores_half_written_dirs,
+               test_empty_crop_dir_does_not_shadow_the_real_one,
                test_run_files_come_over_too,
                test_this_sessions_files_are_not_overwritten,
                test_deep_notebook_output_layout_is_found,

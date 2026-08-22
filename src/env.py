@@ -643,6 +643,13 @@ def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
     dst_crops.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
     for tag_dir in sorted(p for p in src_crops.iterdir() if p.is_dir()):
+        # ⚠️ **빈 태그 폴더는 건너뜁니다.** 노트북 출력을 데이터셋으로 만들면
+        #    work/crops/ 의 심볼릭 링크가 빈 폴더로 남는 일이 있습니다.
+        #    먼저 연결된 쪽이 이기므로, 그 빈 폴더가 진짜 크롭 데이터셋을 가로막고
+        #    "크롭이 0% 밖에 없습니다" 로 죽습니다. 이름 순서 운에 맡길 일이 아닙니다.
+        if next(tag_dir.iterdir(), None) is None:
+            out[tag_dir.name] = "비어 있어 건너뜀"
+            continue
         dst = dst_crops / tag_dir.name
         if dst.is_symlink():
             out[tag_dir.name] = ("이미 연결됨" if dst.resolve() == tag_dir.resolve()
