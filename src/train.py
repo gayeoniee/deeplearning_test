@@ -198,38 +198,117 @@ def restore_from_persist(exp: str, verbose: bool = True) -> bool:
     return n > 0
 
 
-def find_checkpoint_sources() -> list[Path]:
-    """붙어 있는 입력에서 `checkpoints/<실험>/best.pt` 를 담은 폴더를 찾습니다.
+# ──────────────────────────────────────────────────────────────
+# 노트북 사이의 인계 (Kaggle 은 노트북마다 세션이 따로입니다)
+# ──────────────────────────────────────────────────────────────
+# 03 이 세 시간 걸려 만든 것들은 전부 그 세션의 /kaggle/working 안에 있습니다.
+# 05 를 열면 그건 이미 없습니다. 05 가 필요로 하는 건 두 종류입니다:
+#
+#   · 가중치      checkpoints/<실험>/best.pt
+#   · 실행 결과   stage1_threshold.json (임계값·크롭·실험 이름), reports/*.json
+#
+# 둘 중 하나만 가져오면 05 는 여전히 죽습니다. 그래서 `import_previous_run()`
+# 하나로 묶었습니다. 03 을 'Save & Run All (Commit)' 로 돌린 뒤
+# 05 에서 [Add Input → Notebook Output] 으로 붙이면 경로는 알아서 찾습니다.
 
-    **왜 필요한가** — Kaggle 은 노트북마다 세션이 따로입니다. 03 이 3시간 걸려
-    만든 체크포인트는 `/kaggle/working` 에 있는데, 05 를 열면 그건 이미 사라진
-    뒤입니다. 03 을 'Save & Run All (Commit)' 로 돌렸다면 그 출력이 데이터셋으로
-    남으므로, 05 에서 **Add Input → Notebook Output** 으로 붙이면 여기서 찾습니다.
-
-    경로를 사람이 외우게 하지 않으려고 자동으로 훑습니다 (얕게 3단계까지).
-    """
-    from src import env as _env
-
-    seen: list[Path] = []
-    for root in _env._search_roots():
-        if not root.is_dir():
-            continue
-        try:
-            entries = sorted(p for p in root.iterdir() if p.is_dir())
-        except OSError:
-            continue
-        for cand in [root, *entries, *(c for e in entries for c in _safe_dirs(e))]:
-            ck = cand / "checkpoints"
-            if ck.is_dir() and any(ck.glob("*/best.pt")) and ck not in seen:
-                seen.append(ck)
-    return seen
+# 실행 결과 파일 — 작고, 없으면 05 가 시작 직후 KeyError 로 죽는 것들입니다.
+_RUN_FILES = ("stage1_threshold.json", "best_crop.txt", "best_model.json")
+# 훑지 않을 폴더. crops 는 4만 장이라 들어가면 탐색이 하염없이 느려집니다.
+_SKIP_WALK = {"crops", "manifests", ".git", "__pycache__", "site-packages", ".venv"}
 
 
-def _safe_dirs(p: Path) -> list[Path]:
+def _walk_inputs(max_depth: int = 4):
+    """붙어 있는 입력을 얕게 훑습니다. 무거운 폴더와 작업 폴더는 건너뜁니다."""
+    # ⚠️ 작업 폴더 자신은 제외합니다 — 이번 세션이 방금 쓴 파일을
+    #    "이전 실행에서 가져온 것" 으로 착각하면 안 됩니다.
     try:
-        return sorted(d for d in p.iterdir() if d.is_dir())
+        here = env.work_root().resolve()
     except OSError:
-        return []
+        here = None
+    for root in env._search_roots():
+        stack = [(root, 0)]
+        while stack:
+            d, depth = stack.pop()
+            if here is not None and d.resolve() == here:
+                continue
+            yield d
+            if depth >= max_depth:
+                continue
+            try:
+                kids = sorted(p for p in d.iterdir()
+                              if p.is_dir() and p.name not in _SKIP_WALK)
+            except OSError:
+                continue
+            stack += [(k, depth + 1) for k in kids]
+
+
+def find_checkpoint_sources() -> list[Path]:
+    """붙어 있는 입력에서 `checkpoints/<실험>/best.pt` 를 담은 폴더를 찾습니다."""
+    out: list[Path] = []
+    for d in _walk_inputs():
+        ck = d / "checkpoints"
+        if ck.is_dir() and any(ck.glob("*/best.pt")) and ck not in out:
+            out.append(ck)
+    return out
+
+
+def find_run_output_roots() -> list[Path]:
+    """이전 실행이 남긴 결과 파일(`stage1_threshold.json` 등)이 있는 폴더."""
+    out: list[Path] = []
+    for d in _walk_inputs():
+        if d in out:
+            continue
+        has_file = any((d / f).is_file() for f in _RUN_FILES)
+        rep = d / "reports"
+        has_report = rep.is_dir() and any(rep.glob("*.json"))
+        if has_file or has_report:
+            out.append(d)
+    return out
+
+
+def import_run_files(verbose: bool = True) -> list[str]:
+    """이전 실행의 결과 JSON 을 작업 폴더로 가져옵니다.
+
+    ⚠️ **이미 있는 파일은 덮지 않습니다.** 이번 세션에서 방금 만든 결과를
+       예전 입력이 덮어쓰면, 낡은 임계값으로 평가하고도 눈치채지 못합니다.
+    """
+    dst_root = env.work_root()
+    got: list[str] = []
+    for src in find_run_output_roots():
+        pairs = [(src / f, dst_root / f) for f in _RUN_FILES if (src / f).is_file()]
+        pairs += [(p, dst_root / "reports" / p.name)
+                  for p in sorted((src / "reports").glob("*.json"))
+                  if (src / "reports").is_dir()]
+        for s, d in pairs:
+            if d.exists():
+                if verbose:
+                    print(f"  ⏭️  {d.name} — 이미 있어서 건너뜀 (이번 세션 것이 우선)")
+                continue
+            d.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                _copy_atomic(s, d)
+                got.append(d.name)
+            except OSError as exc:
+                print(f"  ⚠️ {d.name} 복사 실패 — {type(exc).__name__}")
+    if verbose:
+        print(f"[train] 실행 결과 {len(got)}개 가져옴" + (f" {got}" if got else ""))
+    return got
+
+
+def import_previous_run(verbose: bool = True) -> dict:
+    """이전 노트북 실행의 **가중치 + 결과 파일**을 한 번에 가져옵니다.
+
+        train.import_previous_run()      # 05 의 첫 셀에서
+
+    붙어 있는 게 없으면 조용히 지나갑니다 — 같은 세션에서 방금 학습했다면
+    가져올 게 없는 게 정상이라, 여기서 멈추면 안 됩니다.
+    """
+    ck = import_checkpoints(verbose=verbose)
+    files = import_run_files(verbose=verbose)
+    if verbose and not ck and not files:
+        print("   03 을 다른 세션에서 돌렸다면 [Add Input → Notebook Output] 으로\n"
+              "   그 출력을 붙이세요. 같은 세션이면 이 메시지는 무시해도 됩니다.")
+    return {"checkpoints": ck, "files": files}
 
 
 def import_checkpoints(src: str | Path | None = None, exps: list[str] | None = None,

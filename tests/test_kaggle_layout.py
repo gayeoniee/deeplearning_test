@@ -447,6 +447,66 @@ def test_checkpoint_search_ignores_half_written_dirs():
         env._search_roots = orig
 
 
+def test_run_files_come_over_too():
+    """가중치만 가져오면 05 는 여전히 죽습니다 — 임계값 JSON 도 넘어와야 합니다."""
+    from src import env, train
+
+    base = _TMP / "run_out"
+    src = base / "dogskin-03-output"
+    _fake_ckpt(src, "stage1_resnet50_full_moderate")
+    (src / "stage1_threshold.json").write_text('{"threshold": 0.2127}')
+    (src / "reports").mkdir(parents=True, exist_ok=True)
+    (src / "reports" / "step4a_summary.json").write_text('{"img_size": 384}')
+    w = fresh_env("runfiles")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        got = train.import_previous_run(verbose=False)
+    finally:
+        env._search_roots = orig
+    check("임계값 JSON 이 넘어온다", (w / "stage1_threshold.json").is_file(),
+          f"{sorted(p.name for p in w.iterdir())}")
+    check("reports/ 도 넘어온다", (w / "reports" / "step4a_summary.json").is_file())
+    check("가중치도 같이 온다", got["checkpoints"] == ["stage1_resnet50_full_moderate"],
+          f"{got}")
+
+
+def test_this_sessions_files_are_not_overwritten():
+    """방금 만든 결과를 예전 입력이 덮으면 낡은 임계값으로 평가하고도 모릅니다."""
+    from src import env, train
+
+    base = _TMP / "run_stale"
+    src = base / "old-output"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "stage1_threshold.json").write_text('{"threshold": 0.9}')
+    w = fresh_env("stale")
+    (w / "stage1_threshold.json").write_text('{"threshold": 0.2127}')   # 이번 세션 것
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        train.import_previous_run(verbose=False)
+    finally:
+        env._search_roots = orig
+    check("이번 세션 파일이 살아남는다",
+          "0.2127" in (w / "stage1_threshold.json").read_text())
+
+
+def test_deep_notebook_output_layout_is_found():
+    """Kaggle 노트북 출력은 한두 단계 더 들어가 있을 수 있습니다."""
+    from src import env, train
+
+    base = _TMP / "run_deep"
+    _fake_ckpt(base / "nb" / "data" / "work", "stage2_resnet50_m2.5_moderate")
+    fresh_env("deepnb")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        found = train.find_checkpoint_sources()
+    finally:
+        env._search_roots = orig
+    check("깊이 3 의 checkpoints/ 도 찾는다", len(found) == 1, f"{found}")
+
+
 def test_notebook05_actually_calls_the_import():
     """코드만 있고 노트북이 안 부르면 소용없습니다."""
     import json as _json
@@ -454,7 +514,7 @@ def test_notebook05_actually_calls_the_import():
     nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
                      .read_text(encoding="utf-8"))
     src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
-    check("05 가 import_checkpoints() 를 부른다", "train.import_checkpoints()" in src)
+    check("05 가 import_previous_run() 을 부른다", "train.import_previous_run()" in src)
 
 
 
@@ -473,6 +533,9 @@ if __name__ == "__main__":
                test_finds_checkpoints_in_notebook_output,
                test_checkpoint_import_is_quiet_when_nothing_attached,
                test_checkpoint_search_ignores_half_written_dirs,
+               test_run_files_come_over_too,
+               test_this_sessions_files_are_not_overwritten,
+               test_deep_notebook_output_layout_is_found,
                test_notebook05_actually_calls_the_import]:
         print(f"\n── {fn.__name__} ──")
         try:
