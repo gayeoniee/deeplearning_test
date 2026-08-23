@@ -445,6 +445,113 @@ def test_finetune_default_is_not_frozen():
     assert trainable > total * 0.9, "기본 설정에서 백본이 학습되지 않습니다"
 
 
+# ──────────────────────────────────────────────────────────────
+# 화질 교란 — "흐리면 정상" 지름길을 잡아내는가
+#
+# 실측: A7 무증상의 선명도 중앙값 50, 병변 274. 정상 사진이 계통적으로 흐립니다.
+# 모델이 그걸 단서로 쓰면 val 점수는 멀쩡한데 개체가 바뀌면 무너집니다
+# (STEP 5: 1단계 AUROC 0.8143 → holdout 0.7412).
+#
+# 그러니 여기서도 **일부러 화질에 의존하는 모델**을 만들어, 검사가 잡는지 봅니다.
+# ──────────────────────────────────────────────────────────────
+def _sharpness(pil) -> float:
+    """인접 픽셀 차이의 분산 — 라플라시안 분산의 값싼 대용."""
+    a = np.asarray(pil.convert("L"), dtype=float)
+    return float(np.var(np.diff(a, axis=0)))
+
+
+def test_blur_view_monotonically_softens():
+    im = _checker(200, 6)
+    vals = [_sharpness(robust.BlurView(IMG, r)(im)) for r in (0.0, 1.0, 2.0, 3.0)]
+    assert vals[0] > vals[1] > vals[2], f"흐림이 단조롭게 안 먹습니다: {vals}"
+    assert all(robust.BlurView(IMG, r)(im).size == (IMG, IMG) for r in (0, 1, 2, 3))
+
+
+class SharpnessReader(nn.Module):
+    """**선명도만** 보고 찍는 모델 — 우리가 의심하는 그 지름길의 축소판.
+
+    또렷하면 B(병변), 흐리면 A(정상). 화질 교란을 걸면 전부 A 로 무너져야 합니다.
+    """
+
+    def __init__(self, thresh: float):
+        super().__init__()
+        self.thresh = float(thresh)
+
+    def forward(self, x):
+        # 세로 인접 픽셀 차이의 분산 = 고주파 성분 (배치별 스칼라)
+        d = x[:, :, 1:, :] - x[:, :, :-1, :]
+        m = d.flatten(1).var(dim=1) - self.thresh
+        return torch.stack([-m, m], dim=1) * 40.0
+
+
+def _sharpness_frame(tmpdir, n=24):
+    """A = 흐린 사진, B = 또렷한 사진. **화질만으로 구분되는** 데이터."""
+    root = Path(tmpdir)
+    rows = []
+    for i in range(n):
+        lab = "A" if i % 2 == 0 else "B"
+        im = _checker(256, 6)
+        if lab == "A":                       # 정상 = 대충 찍어서 흐림
+            from PIL import ImageFilter
+            im = im.filter(ImageFilter.GaussianBlur(radius=3.0))
+        p = root / f"s{i}.png"
+        im.save(p)
+        rows.append({"label": lab, "crop_path": str(p), "image_path": str(p),
+                     "crop_tag": "full", "img_w": 256, "img_h": 256,
+                     "bbox": [64, 64, 192, 192]})
+    return pd.DataFrame(rows)
+
+
+def _fit_sharpness_threshold(df, cfg) -> float:
+    from torchvision import transforms as T
+
+    from src.data import IMAGENET_MEAN, IMAGENET_STD
+
+    tf = T.Compose([robust.BlurView(cfg.img_size, 0.0), T.ToTensor(),
+                    T.Normalize(IMAGENET_MEAN, IMAGENET_STD)])
+    per: dict[str, list[float]] = {}
+    for _, r in df.iterrows():
+        with Image.open(r["crop_path"]) as im:
+            x = tf(im.convert("RGB"))
+        d = x[:, 1:, :] - x[:, :-1, :]
+        per.setdefault(r["label"], []).append(float(d.flatten().var()))
+    means = {k: float(np.mean(v)) for k, v in per.items()}
+    return (means["A"] + means["B"]) / 2
+
+
+def test_blur_stress_flags_a_quality_shortcut():
+    """화질로 찍는 모델은 흐림 교란에서 크게 무너져야 합니다."""
+    with tempfile.TemporaryDirectory() as td:
+        df = _sharpness_frame(td)
+        cfg = _cfg()
+        model = SharpnessReader(_fit_sharpness_threshold(df, cfg))
+        out = robust.blur_stress(model, df, cfg, CLASSES2,
+                                 radii=(0.0, 1.0, 2.0, 3.0), n=len(df), device="cpu")
+        s = out["_summary"]
+        assert s["baseline"] > 0.8, f"기준 조건에서부터 못 맞힙니다: {s}"
+        assert s["rel_drop"] > 0.20, f"화질 지름길인데 하락 {s['rel_drop']:.1%} 뿐입니다"
+
+
+def test_blur_stress_passes_a_quality_independent_model():
+    """화질을 안 쓰는 모델은 통과해야 합니다 (검사가 아무나 잡으면 쓸모없음)."""
+    with tempfile.TemporaryDirectory() as td:
+        df = _size_frame(td)
+        cfg = _cfg()
+        model = SizeReader(_fit_threshold(df, cfg))   # 밝은 면적으로 찍는 모델
+        out = robust.blur_stress(model, df, cfg, CLASSES2,
+                                 radii=(0.0, 1.0, 2.0), n=len(df), device="cpu")
+        s = out["_summary"]
+        assert s["rel_drop"] < 0.15, f"화질과 무관한데 하락 {s['rel_drop']:.1%}"
+
+
+def test_blur_condition_names_are_readable():
+    with tempfile.TemporaryDirectory() as td:
+        df = _size_frame(td, n=8)
+        out = robust.blur_stress(SizeReader(0.0), df, _cfg(), CLASSES2,
+                                 radii=(0.0, 2.0), n=8, device="cpu")
+        assert "원본(선명)" in out and "흐림(r=2)" in out, list(out)
+
+
 if __name__ == "__main__":
     import io
     from contextlib import redirect_stdout

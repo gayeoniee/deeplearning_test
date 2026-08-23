@@ -33,13 +33,16 @@ import types
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-NB = REPO / "notebooks" / "03_학습_베이스라인.ipynb"
+_DEFAULT_NB = "03_학습_베이스라인.ipynb"
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--m15-only", action="store_true",
                 help="m1.5 만 올라간 상태 — 03 이 쓰는 m2.5 가 없어 셀 6 에서 멈춰야 정상")
 ap.add_argument("--stop-at", type=int, default=999, help="이 셀 번호까지만")
+ap.add_argument("--nb", default=_DEFAULT_NB,
+                help="실행할 노트북 파일명 (notebooks/ 안). 예: 03d_1단계_고치기.ipynb")
 args = ap.parse_args()
+NB = REPO / "notebooks" / args.nb
 
 T = Path(tempfile.mkdtemp(prefix="kagsim_"))
 KIN = T / "kaggle" / "input"
@@ -205,6 +208,7 @@ robust.report = lambda m, d, c, cl, n=2000, **k: {
 # ──────────────────────────────────────────────────────────────
 # 4. 노트북 코드 셀을 순서대로 실행
 # ──────────────────────────────────────────────────────────────
+print(f"노트북: {NB.name}")
 nb = json.loads(NB.read_text(encoding="utf-8"))
 cells = nb["cells"]
 

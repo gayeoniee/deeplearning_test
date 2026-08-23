@@ -46,6 +46,7 @@ def train_and_measure(
     subset_frac: float = 1.0,
     n_robust: int = 3000,
     measure_robust: bool = True,
+    measure_blur: bool = False,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """한 설정으로 학습하고 **점수와 견고성을 함께** 돌려줍니다.
@@ -112,6 +113,8 @@ def train_and_measure(
 
     out: dict[str, Any] = {
         "stage": stage, "img_size": img_size, "crop_tag": crop_tag, "aug": aug,
+        # ★ 어떤 백본이었는지 남깁니다 — 2×2 비교(stage1_report)가 이걸로 표를 만듭니다
+        "model_name": model_name,
         "subset_frac": subset_frac, "n_train": len(tr),
         "exp_name": cfg.exp_name, "epochs": epochs, "minutes": minutes,
         "batch_size": cfg.resolved_batch_size(),
@@ -140,6 +143,15 @@ def train_and_measure(
         # 키 이름은 robust.py 가 정합니다: baseline / worst / rel_drop
         out.update(scale_drop=s.get("rel_drop"), scale_worst=s.get("worst"),
                    scale_worst_at=s.get("worst_condition"))
+
+    # ⚠️ 화질 교란은 **1단계 전용**에 가깝습니다. 정상 사진이 계통적으로 흐려서
+    #    (선명도 50 vs 274) 모델이 화질로 맞힐 수 있는데, val 점수만 보면
+    #    그게 안 보입니다. photometric 증강 전후를 이 값으로 비교합니다.
+    if measure_blur:
+        b = robust.blur_stress(model, va, cfg, classes, n=n_robust, device=device)
+        s = b.get("_summary", {})
+        out.update(blur_drop=s.get("rel_drop"), blur_worst=s.get("worst"),
+                   blur_worst_at=s.get("worst_condition"))
 
     del model, dl_tr, dl_va, ds_tr
     gc.collect()
@@ -251,3 +263,178 @@ def augmentation_report(runs: list[dict], *, baseline: str = "default") -> dict[
     하락폭이 크게 줄면 배포에는 그쪽이 낫습니다.
     """
     return _compare(runs, "aug", baseline, "증강 비교", fmt=str)
+
+
+# ──────────────────────────────────────────────────────────────
+# 1단계 2×2 실험 (백본 × 증강)
+# ──────────────────────────────────────────────────────────────
+# STEP 5 에서 1단계가 holdout 에서 무너졌습니다 (AUROC 0.8143 → 0.7412).
+# 용의자가 둘이고, 둘을 한 실행에서 갈라 봅니다:
+#
+#   ① 화질 지름길  — 정상 사진이 계통적으로 흐림 (선명도 50 vs 274)
+#                    → `photometric` 증강으로 막히나?
+#   ② 표현력·사전학습 — resnet50(2015, in1k) 이 약한 건가?
+#                    → in21k 사전학습 백본이면 나은가?
+#
+# ⚠️ **holdout 은 여기서 안 봅니다.** 4개 중에 고르는 데 holdout 을 쓰면
+#    그 순간 holdout 이 오염되어 "처음 보는 데이터" 가 아니게 됩니다.
+#    고른 하나를 풀 데이터로 다시 학습한 뒤에만 엽니다.
+
+# 잡음 폭 — 실측 근거를 달아둡니다 (추정치 금지, 규칙 1)
+AUROC_NOISE = 0.01     # 같은 설정 두 실행: 0.8192(08-21) vs 0.8155(08-22)
+BLUR_NOISE_PP = 0.05   # 교란 검사 일반 (STEP 5 에서 ±3%p → ±5%p 상향)
+
+
+def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
+                  base_aug: str = "default") -> dict[str, Any]:
+    """백본 × 증강 2×2 를 읽고 **미리 정해둔 기준**으로 판정합니다.
+
+    판정 기준 (실험 **전에** 못 박음 — 규칙 2):
+
+      · `photometric` 채택 ← AUROC 가 {AUROC_NOISE} 이상 안 떨어지면서
+                             흐림 하락이 {BLUR_NOISE_PP} 이상 줄어들 때
+      · 백본 교체 채택     ← AUROC 가 {AUROC_NOISE} 이상 오를 때
+      · 둘 다 아니면       → 그 축은 닫고 다음으로
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        return {}
+
+    models_ = sorted({r["model_name"] for r in runs})
+    augs = sorted({r["aug"] for r in runs}, key=lambda a: (a != base_aug, a))
+    get = {(r["model_name"], r["aug"]): r for r in runs}
+
+    def fmt(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>8.1%}" if pct else f"{v:>8.{nd}f}"
+
+    print("\n" + "=" * 74)
+    print(" 1단계 2×2 — 백본 × 증강")
+    print("=" * 74)
+    print(f"  {'백본':<16}{'증강':<14}{'AUROC':>10}{'흐림하락':>10}"
+          f"{'precision':>11}{'분':>6}")
+    for m in models_:
+        for a in augs:
+            r = get.get((m, a))
+            if not r:
+                continue
+            print(f"  {m:<16}{a:<14}{fmt(r.get('auroc'))}{fmt(r.get('blur_drop'), pct=True)}"
+                  f"{fmt(r.get('precision'), nd=3)}{r['minutes']:>6.0f}")
+
+    base = get.get((base_model, base_aug))
+    if base is None:
+        print("\n  ⚠️ 기준 조합을 못 찾아 판정을 생략합니다.")
+        return {"runs": runs}
+
+    verdict: dict[str, Any] = {"baseline": f"{base_model}/{base_aug}"}
+    print(f"\n  기준: {base_model} / {base_aug}  "
+          f"(AUROC {base['auroc']:.4f}, 흐림 하락 {fmt(base.get('blur_drop'), pct=True).strip()})")
+    print(f"  잡음 폭: AUROC ±{AUROC_NOISE} · 흐림 하락 ±{BLUR_NOISE_PP:.0%}")
+
+    # ── 증강 축 ────────────────────────────────────────────────
+    alt_aug = next((a for a in augs if a != base_aug), None)
+    if alt_aug:
+        r = get.get((base_model, alt_aug))
+        if r:
+            d_auroc = r["auroc"] - base["auroc"]
+            d_blur = (r["blur_drop"] - base["blur_drop"]
+                      if r.get("blur_drop") is not None and base.get("blur_drop") is not None
+                      else None)
+            print(f"\n  [증강 축] {base_aug} → {alt_aug}")
+            print(f"    AUROC     {d_auroc:+.4f}")
+            print(f"    흐림 하락  {'못 잼' if d_blur is None else f'{d_blur:+.1%}'}")
+            if d_auroc > -AUROC_NOISE and d_blur is not None and d_blur <= -BLUR_NOISE_PP:
+                verdict["aug"] = alt_aug
+                print(f"    ✅ {alt_aug} 채택 — 점수를 안 깎으면서 화질 의존을 줄였습니다.")
+            elif d_auroc <= -AUROC_NOISE:
+                verdict["aug"] = base_aug
+                print(f"    ❌ {base_aug} 유지 — {alt_aug} 이 점수를 깎습니다 "
+                      "(2단계에서와 같은 이유일 수 있습니다: 신호를 지움).")
+            else:
+                verdict["aug"] = base_aug
+                print(f"    ➖ {base_aug} 유지 — 차이가 잡음 안입니다. 이 축은 닫습니다.")
+
+    # ── 백본 축 ────────────────────────────────────────────────
+    alt_model = next((m for m in models_ if m != base_model), None)
+    if alt_model:
+        r = get.get((alt_model, base_aug))
+        if r:
+            d = r["auroc"] - base["auroc"]
+            print(f"\n  [백본 축] {base_model} → {alt_model}")
+            print(f"    AUROC     {d:+.4f}")
+            if d >= AUROC_NOISE:
+                verdict["model"] = alt_model
+                print(f"    ✅ {alt_model} 채택")
+            elif d <= -AUROC_NOISE:
+                verdict["model"] = base_model
+                print(f"    ❌ {base_model} 유지 — {alt_model} 이 더 나쁩니다.")
+            else:
+                verdict["model"] = base_model
+                print(f"    ➖ {base_model} 유지 — 차이가 잡음 안입니다.")
+
+    # ── 상호작용 ────────────────────────────────────────────────
+    if alt_model and alt_aug:
+        both = get.get((alt_model, alt_aug))
+        if both:
+            best = max(runs, key=lambda r: r["auroc"])
+            print(f"\n  [둘 다]   {alt_model} / {alt_aug}   AUROC {both['auroc']:.4f}")
+            print(f"  가장 높은 조합: {best['model_name']} / {best['aug']} "
+                  f"(AUROC {best['auroc']:.4f})")
+            verdict["best"] = {"model": best["model_name"], "aug": best["aug"],
+                               "auroc": best["auroc"], "exp_name": best["exp_name"]}
+
+    print("\n  ⚠️ 여기서 고른 조합은 **후보**입니다. 서브셋·짧은 에폭이라")
+    print("     절대값은 풀 학습과 다릅니다 (STEP 4B 에서 확인). 풀 학습으로 확정하세요.")
+    print("  ⚠️ holdout 은 아직 안 봤습니다 — 풀 학습 뒤에 한 번만 엽니다.")
+    print("=" * 74)
+    return verdict
+
+
+def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
+                     epochs: int, n_conditions: int | None = None,
+                     device: str | None = None) -> dict[str, Any]:
+    """학습을 시작하기 **전에** 총 예상 시간을 찍습니다.
+
+    "몇 시간 걸릴지 모르고 돌렸다가 뒤통수" 를 여러 번 맞아서 넣었습니다.
+    합성 텐서로 GPU 속도만 재므로 백본당 20초 안쪽입니다.
+
+    ⚠️ 데이터 로딩이 병목이면 실제는 이보다 느립니다. **하한 추정**입니다.
+    """
+    from src import bench
+    from src.config import CFG, MODEL_BY_KEY
+
+    n_conditions = n_conditions or len(model_names)
+    rows, total_min = [], 0.0
+    print("\n" + "=" * 66)
+    print(" 시작 전 시간 추정 (GPU 속도 실측, 백본당 ~20초)")
+    print("=" * 66)
+    for key in model_names:
+        spec = MODEL_BY_KEY[key]
+        cfg = CFG(model_name=spec.timm_name, img_size=img_size)
+        g = bench.gpu_speed(cfg, n_classes=2, steps=20)
+        ips = float(g.get("img_per_sec") or 0.0)
+        # GPU 가 없으면 img_per_sec 이 NaN 입니다 (NaN 은 비교가 전부 False 라 따로 봅니다)
+        if not (ips > 0) or ips != ips:
+            print(f"  {key:<16} 속도를 못 쟀습니다 ({g.get('note', '이유 불명')}) — 추정 생략")
+            continue
+        epoch_min = n_train / ips / 60
+        run_min = epoch_min * epochs
+        rows.append({"model": key, "img_per_sec": ips, "batch": g.get("batch"),
+                     "peak_vram_gb": g.get("peak_vram_gb"),
+                     "epoch_min": epoch_min, "run_min": run_min})
+        total_min += run_min
+        print(f"  {key:<16}{ips:>7.0f} img/s  배치 {g.get('batch', '?'):>3}  "
+              f"VRAM {g.get('peak_vram_gb', 0):>4.1f}GB   "
+              f"1에폭 {epoch_min:>5.1f}분   {epochs}에폭 {run_min:>6.0f}분")
+
+    # 조건 수가 백본 수보다 많으면(2×2 처럼) 백본별로 같은 횟수만큼 돕니다
+    reps = max(1, n_conditions // max(len(rows), 1))
+    total_min *= reps
+    print("-" * 66)
+    print(f"  조건 {n_conditions}개 → 학습 총 예상 **{total_min / 60:.1f}시간**  "
+          f"(+ 교란 검사·크롭 확인 별도)")
+    print("  ⚠️ GPU 속도만 잰 **하한**입니다. 데이터 로딩이 병목이면 더 걸립니다.")
+    print("  → 너무 길면 여기서 멈추고 서브셋을 줄이거나 백본을 바꾸세요.")
+    print("=" * 66)
+    return {"rows": rows, "total_hours": total_min / 60, "n_conditions": n_conditions}

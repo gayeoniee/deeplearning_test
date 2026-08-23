@@ -106,6 +106,44 @@ class ShiftView:
         return F.crop(im, top, left, need, need)
 
 
+class BlurView:
+    """사진을 흐리게 만들어 봅니다 — **화질 지름길**이 있는지 보는 검사.
+
+    왜 필요한가 — 크롭 감사에서 이게 나왔습니다 (VL01 실측):
+
+        A7 무증상(정상)  선명도 중앙값  50   흐린 사진 57.2%
+        병변 6종                      274   흐린 사진 23~50%
+
+    **정상 사진이 계통적으로 흐립니다.** 아픈 데는 신경 써서 가까이 또렷하게 찍고
+    멀쩡한 데는 대충 찍기 때문으로 보입니다. 그러면 1단계가 피부가 아니라
+    "화질" 로 정상/이상을 가를 수 있습니다.
+
+    그건 **배포에 존재하지 않는 신호**입니다 — 보호자는 아픈지 모르는 채로 찍으니까요.
+    실제로 1단계가 holdout 에서 AUROC 0.8143 → 0.7412 로 무너졌고,
+    이 지름길이 유력한 용의자입니다 (STEP 5).
+
+    검사 방법: 같은 사진을 점점 흐리게 해서 점수가 얼마나 떨어지는지 봅니다.
+    화질에 기대고 있다면 조금만 흐려져도 크게 무너집니다.
+
+    ⚠️ 배율·위치 교란과 달리 이건 **한 방향**입니다 (또렷 → 흐림).
+       반대쪽(흐린 걸 또렷하게)은 만들 수 없습니다 — 없는 정보라서요.
+    """
+
+    def __init__(self, img_size: int, radius: float):
+        self.img_size = img_size
+        self.radius = float(radius)
+
+    def __call__(self, pil):
+        from PIL import Image, ImageFilter
+        from torchvision.transforms import functional as F
+
+        im = F.resize(pil, int(round(self.img_size * 1.14)), interpolation=Image.BICUBIC)
+        im = F.center_crop(im, [self.img_size, self.img_size])
+        if self.radius <= 0:
+            return im
+        return im.filter(ImageFilter.GaussianBlur(radius=self.radius))
+
+
 # ──────────────────────────────────────────────────────────────
 # 실행
 # ──────────────────────────────────────────────────────────────
@@ -242,6 +280,35 @@ def shift_stress(model, df, cfg: CFG | None = None, classes: list[str] | None = 
                 "위치 교란 검사 — 병변이 중앙에 없어도 되는가",
                 "→ 학습 증강에 위치 흔들기를 넣으세요 (넓은 rrc_scale 이 함께 해결).",
                 baseline_name=_shift_name(0.0) if 0.0 in tuple(fracs) else None)
+
+def _blur_name(r: float) -> str:
+    return "원본(선명)" if r <= 0 else f"흐림(r={r:g})"
+
+
+def blur_stress(model, df, cfg: CFG | None = None, classes: list[str] | None = None,
+                radii=(0.0, 1.0, 2.0, 3.0), n: int = 3000, seed: int = 0,
+                path_col: str = "crop_path", device: str | None = None) -> dict:
+    """★ 화질 교란 — 모델이 피부를 보는가, **사진 화질**을 보는가.
+
+    1단계 전용 검사에 가깝습니다. 실측에서 정상 사진의 선명도 중앙값이 50,
+    병변이 274 로 **계통적으로 다릅니다**. 모델이 "흐리면 정상" 을 배웠다면
+    조금만 흐리게 해도 점수가 크게 무너집니다.
+
+    ⚠️ 배율·위치 교란과 다른 점 — 이건 **원인이 아니라 증상**을 잽니다.
+       하락이 크다고 흐림 증강을 넣는 게 정답이라는 뜻은 아닙니다.
+       다만 `photometric` 증강 전후로 이 값을 비교하면 지름길이 막혔는지
+       알 수 있습니다 (val 점수만 보면 구분이 안 됩니다).
+    """
+    from src.config import CLASSES
+
+    cfg = cfg or CFG()
+    classes = classes or CLASSES
+    views = [(_blur_name(r), BlurView(cfg.img_size, r)) for r in radii]
+    return _run(model, df, cfg, classes, views, n, seed, path_col, device,
+                "화질 교란 검사 — 흐려져도 버티는가",
+                "→ 학습에 photometric 증강(흐림·노이즈·JPEG)을 넣어 지름길을 막으세요.",
+                baseline_name=_blur_name(0.0) if 0.0 in tuple(radii) else None)
+
 
 
 # ──────────────────────────────────────────────────────────────
