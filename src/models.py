@@ -243,7 +243,22 @@ def load_checkpoint(path: str, spec: ModelSpec | str, n_classes: int,
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
     state = ckpt.get("ema") or ckpt.get("model") or ckpt
     model = build(spec, n_classes, pretrained=False, verbose=False)
-    missing, unexpected = model.load_state_dict(state, strict=False)
+    try:
+        missing, unexpected = model.load_state_dict(state, strict=False)
+    except RuntimeError as exc:
+        # ⚠️ strict=False 는 **키 불일치**만 봐줍니다. 텐서 **모양**이 다르면 터집니다.
+        #    거의 항상 원인은 하나 — 다른 백본의 가중치를 부은 것입니다.
+        #    실제로 effnetv2_s 체크포인트를 resnet50 껍데기에 붓다가 죽었습니다.
+        want = getattr(spec, "key", spec)
+        raise RuntimeError(
+            f"\n체크포인트를 '{want}' 에 못 넣었습니다 — **백본이 다릅니다.**\n"
+            f"  파일: {path}\n\n"
+            "  체크포인트 폴더 이름에 어떤 백본으로 학습했는지 적혀 있습니다:\n"
+            "      stage1_effnetv2_s_full_384_moderate  →  effnetv2_s\n"
+            "      stage2_resnet50_m2.5_384_moderate    →  resnet50\n"
+            "  `train.model_key_from_exp(<폴더이름>)` 이 그걸 읽어 줍니다.\n\n"
+            f"  원본 오류: {str(exc).splitlines()[0]}"
+        ) from exc
     if missing or unexpected:
         warnings.warn(f"state_dict 불일치 — missing={len(missing)}, unexpected={len(unexpected)}")
     return model.to(device).eval()

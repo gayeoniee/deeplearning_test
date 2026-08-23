@@ -419,6 +419,79 @@ def test_empty_crop_dir_does_not_shadow_the_real_one():
           f"m1.5 에서 {n}장 — 빈 03notebook/crops/m1.5 가 이겼습니다")
 
 
+# ──────────────────────────────────────────────────────────────
+# 백본은 체크포인트 **이름**에서 읽는다
+#
+# ⚠️ 실제로 당한 버그입니다. 05 가 "03 의 체크포인트는 항상 resnet50" 으로
+#    하드코딩돼 있었는데 STEP 6 에서 1단계를 effnetv2_s 로 바꾸면서 깨졌습니다.
+#    effnetv2_s 가중치를 resnet50 껍데기에 부으려다 shape mismatch 로 죽었고,
+#    그때는 이미 11분(크롭 세기)을 쓴 뒤였습니다.
+# ──────────────────────────────────────────────────────────────
+def test_backbone_key_is_read_from_the_exp_name():
+    from src import train
+
+    cases = {
+        # ★ 이 이름이 우리를 죽였습니다
+        "stage1_effnetv2_s_full_384_moderate_photometric": "effnetv2_s",
+        "stage2_resnet50_m2.5_384_moderate": "resnet50",
+        "stage1_resnet50_full_384_moderate": "resnet50",
+        "stage2_convnextv2_base_m2.5_384_moderate": "convnextv2_base",
+        "s1_convnextv2_base": "convnextv2_base",      # 04 형식
+        "s2_effnetv2_s": "effnetv2_s",
+        "f320 같은 고정 픽셀": None,
+    }
+    for name, want in cases.items():
+        got = train.model_key_from_exp(name)
+        check(f"{name[:44]:<44} → {want}", got == want, f"got {got}")
+
+    # 고정 픽셀 크롭도 크롭 토큰으로 인식해야 합니다
+    check("f320 크롭도 잘라낸다",
+          train.model_key_from_exp("stage1_effnetv2_s_f320_384_moderate") == "effnetv2_s")
+
+
+def test_every_parsed_key_exists_in_the_model_zoo():
+    """이름에서 읽은 키가 MODEL_ZOO 에 없으면 05 가 KeyError 로 죽습니다."""
+    from src.config import MODEL_BY_KEY
+    from src import train
+
+    for key in MODEL_BY_KEY:
+        for stage, crop in ((1, "full"), (2, "m2.5")):
+            name = f"stage{stage}_{key}_{crop}_384_moderate"
+            got = train.model_key_from_exp(name)
+            check(f"{key} 왕복", got == key, f"{name} → {got}")
+
+
+def test_backbone_mismatch_says_what_is_wrong():
+    """모양이 안 맞으면 원본 RuntimeError 대신 원인을 짚어야 합니다."""
+    import torch
+
+    from src import models
+
+    ck = _TMP / "mismatch.pt"
+    # resnet 은 bn1 이 64채널입니다. 24채널(effnetv2 stem)을 넣어 같은 상황을 만듭니다.
+    torch.save({"model": {"bn1.weight": torch.zeros(24)}}, ck)
+    try:
+        models.load_checkpoint(str(ck), "resnet18", 2, device="cpu")
+    except RuntimeError as exc:
+        msg = str(exc)
+        check("백본이 다르다고 말한다", "백본이 다릅니다" in msg, msg[:200])
+        check("어느 파일인지 알려준다", "mismatch.pt" in msg, msg[:200])
+        check("이름에서 읽는 법을 알려준다", "model_key_from_exp" in msg, msg[:200])
+    else:
+        raise AssertionError("모양이 안 맞는데 그냥 통과했습니다")
+
+
+def test_notebook05_does_not_hardcode_resnet50():
+    import json as _json
+
+    nb = _json.loads((ROOT / "notebooks" / "05_평가_보정_GradCAM.ipynb")
+                     .read_text(encoding="utf-8"))
+    src = "\n".join("".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code")
+    check("resnet50 하드코딩이 없다", 'MODEL_BY_KEY["resnet50"]' not in src)
+    check("이름에서 백본을 읽는다", "model_key_from_exp(name1)" in src)
+    check("두 단계를 따로 읽는다", "model_key_from_exp(name2)" in src)
+
+
 def test_release_zip_keeps_the_folder_structure():
     """Kaggle 은 Output 에서 **폴더 하나만** 못 빼냅니다.
 
@@ -705,6 +778,10 @@ if __name__ == "__main__":
                test_checkpoint_import_is_quiet_when_nothing_attached,
                test_checkpoint_search_ignores_half_written_dirs,
                test_empty_crop_dir_does_not_shadow_the_real_one,
+               test_backbone_key_is_read_from_the_exp_name,
+               test_every_parsed_key_exists_in_the_model_zoo,
+               test_backbone_mismatch_says_what_is_wrong,
+               test_notebook05_does_not_hardcode_resnet50,
                test_release_bundle_is_flat_and_self_describing,
                test_release_zip_keeps_the_folder_structure,
                test_notebook03_exports_a_release,

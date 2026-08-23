@@ -315,6 +315,35 @@ def import_run_files(src: str | Path | None = None, verbose: bool = True) -> lis
     return got
 
 
+def model_key_from_exp(name: str) -> str | None:
+    """실험 이름에서 **백본 키**를 되찾습니다.
+
+    ⚠️ 이게 없어서 05 가 죽었습니다. "03 의 체크포인트는 항상 resnet50" 이라고
+    하드코딩해 뒀는데 STEP 6 에서 1단계를 effnetv2_s 로 바꾸면서 깨졌습니다.
+    effnetv2_s 가중치를 resnet50 껍데기에 부으려다 shape mismatch 로 터졌습니다
+    (bn1 24채널 vs 64채널). **이름에 다 적혀 있으니 이름에서 읽습니다.**
+
+        stage1_effnetv2_s_full_384_moderate_photometric → 'effnetv2_s'
+        stage2_resnet50_m2.5_384_moderate               → 'resnet50'
+        s1_convnextv2_base                              → 'convnextv2_base'  (04 형식)
+    """
+    from src import crop as _crop
+
+    if not isinstance(name, str):
+        return None
+    for pre in ("stage1_", "stage2_"):
+        if name.startswith(pre):
+            toks = name[len(pre):].split("_")
+            # 크롭 태그(full / m2.5 / f320) 앞까지가 모델 이름입니다
+            ci = next((i for i, t in enumerate(toks)
+                       if t == "full" or _crop.margin_of_tag(t) or _crop.fixed_of_tag(t)), None)
+            return "_".join(toks[:ci]) if ci else None
+    for pre in ("s1_", "s2_"):
+        if name.startswith(pre):
+            return name[len(pre):] or None
+    return None
+
+
 def infer_run_settings() -> dict:
     """체크포인트 **폴더 이름**에서 실행 설정을 되살립니다.
 
@@ -352,7 +381,7 @@ def infer_run_settings() -> dict:
                 continue
             out[f"stage{stage}_exp"] = n
             out[f"stage{stage}_crop"] = toks[ci]
-            out[f"stage{stage}_model"] = "_".join(toks[:ci]) or "resnet50"
+            out[f"stage{stage}_model"] = model_key_from_exp(n) or "resnet50"
     return out
 
 
