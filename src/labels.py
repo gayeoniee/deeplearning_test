@@ -753,9 +753,26 @@ def rebase_paths(df: pd.DataFrame) -> pd.DataFrame:
     df["crop_path"] = df["crop_rel"].apply(join)
     missing = df["crop_path"].apply(lambda p: p is not None and not Path(p).exists())
     if missing.any():
-        print(f"⚠️ 크롭 파일 {missing.sum():,}/{len(df):,}개를 찾을 수 없습니다.")
-        print(f"   찾는 위치: {root}")
-        print("   압축을 이 경로로 풀었는지, DOG_SKIN_WORK 환경변수가 맞는지 확인하세요.")
+        n, total = int(missing.sum()), len(df)
+        # ⚠️ 여기서 곧바로 경고를 찍으면 **정상 흐름에서도 겁을 줍니다.**
+        #    로컬에서 만든 매니페스트는 그때 쓴 태그(예: m1.5)를 가리키는데,
+        #    클라우드에는 다른 태그(m2.5, full)가 붙어 있는 게 정상입니다.
+        #    뒤이어 crop.switch_tag() 가 갈아 끼우면서 실제 검사를 다시 합니다.
+        #    실제로 05 로그에서 전량 실종 경고가 뜬 3초 뒤에 같은 파일들이
+        #    switch_tag 로 100.0% 존재 확인됐습니다. 문구도 "X/Y" 대신
+        #    "N장 중 M장" 으로 바꿔 읽는 사람이 반대로 이해하지 않게 했습니다.
+        want = sorted({str(r).replace("\\", "/").split("/")[0]
+                       for r in df.loc[missing, "crop_rel"] if isinstance(r, str)})
+        have = sorted(p.name for p in root.iterdir() if p.is_dir()) if root.exists() else []
+        if n == total and want and not (set(want) & set(have)):
+            print(f"[labels] 매니페스트가 가리키는 크롭 태그 {want} 는 붙어 있지 않습니다 "
+                  f"(붙어 있는 태그: {have or '없음'}).")
+            print("   경로만 다시 조립했습니다 — crop.switch_tag() 가 전환하면 해결됩니다.")
+        else:
+            print(f"⚠️ 크롭 {total:,}장 중 {n:,}장이 없습니다.")
+            print(f"   찾는 위치: {root}")
+            print(f"   붙어 있는 태그: {have or '없음'}")
+            print("   압축을 이 경로로 풀었는지, DOG_SKIN_WORK 환경변수가 맞는지 확인하세요.")
     return df
 
 

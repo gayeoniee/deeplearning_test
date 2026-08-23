@@ -762,6 +762,65 @@ def test_notebook05_actually_calls_the_import():
 
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# rebase_paths 의 경고 — 정상 흐름에서 겁주지 않기
+#
+# 05 로그에서 "⚠️ 크롭 파일 45,885/45,885개를 찾을 수 없습니다" 가 뜬 3초 뒤에
+# 같은 파일들이 switch_tag 로 100.0% 존재 확인됐습니다. 매니페스트가 로컬에서 쓴
+# 태그를 가리키는데 클라우드에는 다른 태그가 붙어 있어서 생긴 **정상 상황**입니다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rebase_output(tmp, crop_rel_tag, linked_tags, n=3):
+    """rebase_paths 를 돌리고 찍힌 문구를 돌려줍니다."""
+    import io, contextlib
+    import pandas as pd
+    from src import env, labels
+
+    work = tmp / "work"
+    (work / "crops").mkdir(parents=True, exist_ok=True)
+    for t in linked_tags:
+        (work / "crops" / t).mkdir(exist_ok=True)
+    old = os.environ.get("DOG_SKIN_WORK")
+    os.environ["DOG_SKIN_WORK"] = str(work)
+    try:
+        env.work_root.cache_clear() if hasattr(env.work_root, "cache_clear") else None
+        df = pd.DataFrame({"crop_rel": [f"{crop_rel_tag}/ab/f{i}.jpg" for i in range(n)]})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            labels.rebase_paths(df)
+        return buf.getvalue()
+    finally:
+        if old is None:
+            os.environ.pop("DOG_SKIN_WORK", None)
+        else:
+            os.environ["DOG_SKIN_WORK"] = old
+        env.work_root.cache_clear() if hasattr(env.work_root, "cache_clear") else None
+
+
+def test_tag_mismatch_is_informational_not_a_warning():
+    """매니페스트 태그가 안 붙어 있으면 안내만 — ⚠️ 를 찍지 않습니다."""
+    with tempfile.TemporaryDirectory() as d:
+        out = _rebase_output(Path(d), crop_rel_tag="m1.5", linked_tags=["m2.5", "full"])
+    check("태그 불일치는 경고가 아니라 안내", "⚠️" not in out and "[labels]" in out)
+    check("어떤 태그를 찾는지 알려준다", "m1.5" in out)
+    check("붙어 있는 태그를 알려준다", "m2.5" in out and "full" in out)
+    check("전환하면 된다고 알려준다", "switch_tag" in out)
+
+
+def test_real_missing_files_still_warn():
+    """태그는 맞는데 파일이 없으면 진짜 경고입니다."""
+    with tempfile.TemporaryDirectory() as d:
+        out = _rebase_output(Path(d), crop_rel_tag="m2.5", linked_tags=["m2.5"])
+    check("태그가 맞는데 파일이 없으면 ⚠️", "⚠️" in out)
+    check("몇 장 중 몇 장인지 헷갈리지 않게", "3장 중 3장이 없습니다" in out)
+
+
+def test_warning_never_reads_as_all_found():
+    """'45,885/45,885개를 찾을 수 없습니다' 같은 애매한 문구를 쓰지 않습니다."""
+    src = (ROOT / "src" / "labels.py").read_text(encoding="utf-8")
+    check("애매한 X/Y 표기를 안 쓴다", "개를 찾을 수 없습니다" not in src)
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
     for fn in [test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
@@ -792,7 +851,10 @@ if __name__ == "__main__":
                test_run_files_come_over_too,
                test_this_sessions_files_are_not_overwritten,
                test_deep_notebook_output_layout_is_found,
-               test_notebook05_actually_calls_the_import]:
+               test_notebook05_actually_calls_the_import,
+               test_tag_mismatch_is_informational_not_a_warning,
+               test_real_missing_files_still_warn,
+               test_warning_never_reads_as_all_found]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()
