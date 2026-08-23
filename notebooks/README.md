@@ -63,11 +63,27 @@
 > `data/work/stage1_threshold.json` 은 안 왔습니다. 무거운 쪽이 오고 가벼운
 > 쪽이 빠졌습니다. 그래서 넘길 것만 골라 **최상위**에 둡니다.
 
-넘기는 법:
+⚠️ **Kaggle 은 Output 에서 폴더 하나만 못 빼냅니다.** 그래서 zip 도 같이 만듭니다.
+
+넘기는 법 — 둘 중 하나:
+
+**① release.zip 만 받아서 올리기** (권장, 가볍습니다)
 ```
-03 노트북 → [Output] 탭 → release 폴더 확인 → [New Dataset] → Private → Create
+03 노트북 → [Output] 탭 → release.zip 다운로드
+        → [New Dataset] 으로 그 zip 업로드 → Private → Create
+   (Kaggle 이 업로드할 때 알아서 풉니다. 폴더 구조가 그대로 살아납니다)
 05 노트북 → [Add Input] → 그 데이터셋
 ```
+
+**② 출력 전체를 데이터셋으로** (간단하지만 1GB 안팎)
+```
+03 노트북 → [Output] 탭 → [New Dataset] → Private → Create
+```
+`import_previous_run()` 이 입력 전체를 깊이 4까지 뒤지므로 이것도 동작합니다.
+다만 `last.pt`(옵티마이저 상태)까지 딸려와 무겁고 붙이는 데 오래 걸립니다.
+
+⚠️ 데이터셋 크기가 **10GB 를 넘으면** 크롭 심볼릭 링크가 실제 파일로 풀린 것입니다.
+그때는 ①번(zip)으로 가세요.
 
 `train.import_previous_run()` 이 경로를 알아서 찾습니다. 못 찾으면 05 첫 셀의
 `PREV_RUN` 에 경로를 직접 적으면 됩니다.

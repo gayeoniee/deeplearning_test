@@ -409,12 +409,32 @@ def export_release(exps: list[str], meta: dict | None = None,
     lines += ["", "체크포인트:"] + [f"  {e}" for e in exps]
     (dst / "READ_ME_FIRST.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    # ★ zip 도 같이 만듭니다 — **Kaggle 은 Output 에서 폴더 하나만 못 빼냅니다.**
+    #   [New Dataset] 은 출력 전체를 가져가고(체크포인트 last.pt 까지 딸려와 1GB+),
+    #   개별 파일 다운로드는 폴더 구조가 깨져서 import 가 못 찾습니다.
+    #   zip 하나면 [Output] 에서 그것만 받아 데이터셋으로 올릴 수 있고,
+    #   Kaggle 이 업로드 시 자동으로 풀어주므로 구조가 그대로 살아납니다.
+    zip_path = root / "release.zip"
+    try:
+        if zip_path.exists():
+            zip_path.unlink()
+        shutil.make_archive(str(root / "release"), "zip", root_dir=dst)
+        zip_mb = zip_path.stat().st_size / 1024**2
+    except OSError as exc:
+        zip_path, zip_mb = None, 0.0
+        print(f"⚠️ [release] zip 생성 실패 — {type(exc).__name__} (폴더는 그대로 씁니다)")
+
     if verbose:
         print(f"\n📦 인계 꾸러미: {dst}  ({total / 1024**2:.0f}MB)")
         for ln in lines:
             if ln.strip():
                 print("   " + ln)
-        print("\n   → [Output] 탭에서 이 release 폴더를 New Dataset (Private) 으로 만드세요.")
+        print("\n   넘기는 법 — 둘 중 하나:")
+        if zip_path:
+            print(f"   ① [Output] 탭에서 **release.zip** ({zip_mb:.0f}MB) 하나만 받아")
+            print("      [New Dataset] 으로 업로드 (Private). Kaggle 이 알아서 풉니다 ← 권장")
+        print("   ② [Output] 탭 → [New Dataset] 으로 **출력 전체**를 데이터셋으로")
+        print("      (폴더 하나만 고르는 건 Kaggle 이 지원하지 않습니다. 전체도 동작합니다)")
     return dst
 
 

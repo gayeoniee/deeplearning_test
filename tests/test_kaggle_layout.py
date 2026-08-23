@@ -419,6 +419,48 @@ def test_empty_crop_dir_does_not_shadow_the_real_one():
           f"m1.5 에서 {n}장 — 빈 03notebook/crops/m1.5 가 이겼습니다")
 
 
+def test_release_zip_keeps_the_folder_structure():
+    """Kaggle 은 Output 에서 **폴더 하나만** 못 빼냅니다.
+
+    [New Dataset] 은 출력 전체를 가져가고, 개별 파일 다운로드는 구조가 깨져
+    checkpoints/<실험>/best.pt 배치가 사라집니다 → import 가 못 찾습니다.
+    zip 하나면 그것만 받아 올릴 수 있고 Kaggle 이 풀 때 구조가 살아납니다.
+    """
+    import zipfile
+
+    from src import env, train
+
+    fresh_env("relzip")
+    d = train.ckpt_dir("stage1_effnetv2_s_full_384_moderate")
+    (d / "best.pt").write_bytes(b"w" * 2048)
+    rel = train.export_release(
+        ["stage1_effnetv2_s_full_384_moderate"],
+        meta={"1단계 크롭": "full"},
+        files={"stage1_threshold.json": {"threshold": 0.2706}}, verbose=False)
+    z = rel.parent / "release.zip"
+    check("release.zip 이 만들어진다", z.is_file())
+    names = zipfile.ZipFile(z).namelist() if z.is_file() else []
+    check("가중치가 실험 폴더 안에 그대로",
+          "checkpoints/stage1_effnetv2_s_full_384_moderate/best.pt" in names, f"{names}")
+    check("임계값 JSON 도 들어간다", "stage1_threshold.json" in names, f"{names}")
+    check("사람이 볼 확인표도", "READ_ME_FIRST.txt" in names, f"{names}")
+
+    # ★ 풀어서 붙이면 인계가 되는지 — Kaggle 이 업로드 때 하는 일 그대로
+    base = _TMP / "relzip_input" / "ds"
+    base.mkdir(parents=True, exist_ok=True)
+    zipfile.ZipFile(z).extractall(base)
+    w2 = fresh_env("relzip_in")
+    orig = env._search_roots
+    env._search_roots = lambda: [base.parent]
+    try:
+        got = train.import_previous_run(verbose=False)
+    finally:
+        env._search_roots = orig
+    check("zip 을 푼 것만으로 가중치가 온다",
+          got["checkpoints"] == ["stage1_effnetv2_s_full_384_moderate"], f"{got}")
+    check("JSON 도 온다", (w2 / "stage1_threshold.json").is_file())
+
+
 def test_release_bundle_is_flat_and_self_describing():
     """넘길 것만 최상위 한 폴더에. 안쪽에 두면 데이터셋으로 만들 때 빠집니다."""
     from src import env, train
@@ -664,6 +706,7 @@ if __name__ == "__main__":
                test_checkpoint_search_ignores_half_written_dirs,
                test_empty_crop_dir_does_not_shadow_the_real_one,
                test_release_bundle_is_flat_and_self_describing,
+               test_release_zip_keeps_the_folder_structure,
                test_notebook03_exports_a_release,
                test_notebook05_validates_before_the_slow_part,
                test_settings_recovered_from_checkpoint_names,
