@@ -217,8 +217,7 @@ deeplearning_test/
 │   ├── basics/                딥러닝 기초 10편 (ML 경험자용)
 │   ├── cautions/              주의사항 9편
 │   ├── data/DATASET_CARD.md   실물 스키마
-│   ├── results/               ★ 실측 기록 — 숫자는 전부 여기
-│   └── daily/                 ★ 데일리 로그 — 과정의 기록 + 「오늘의 스킬」
+│   └── results/               ★ 실측 기록 — 숫자는 전부 여기
 └── data/                      (gitignore. 이미지·매니페스트·가중치는 커밋 금지)
 ```
 
@@ -237,7 +236,6 @@ uv run python tests/test_stages.py        # 잘 깔렸는지 확인
 
 읽는 순서: [`CLAUDE.md`](CLAUDE.md) (작업 규칙·현재 상태) →
 [`docs/00_로드맵.md`](docs/00_로드맵.md) →
-[`docs/daily/`](docs/daily/) (**어떻게 여기까지 왔는지** — Day 5 부터 거꾸로 읽기를 권합니다) →
 [`docs/results/`](docs/results/) (지금까지 나온 숫자) →
 관심 있는 `src/` 파일 (전부 한국어 주석)
 
