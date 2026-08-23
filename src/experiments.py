@@ -373,16 +373,33 @@ def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
                 verdict["model"] = base_model
                 print(f"    ➖ {base_model} 유지 — 차이가 잡음 안입니다.")
 
-    # ── 상호작용 ────────────────────────────────────────────────
-    if alt_model and alt_aug:
-        both = get.get((alt_model, alt_aug))
-        if both:
-            best = max(runs, key=lambda r: r["auroc"])
-            print(f"\n  [둘 다]   {alt_model} / {alt_aug}   AUROC {both['auroc']:.4f}")
-            print(f"  가장 높은 조합: {best['model_name']} / {best['aug']} "
-                  f"(AUROC {best['auroc']:.4f})")
-            verdict["best"] = {"model": best["model_name"], "aug": best["aug"],
-                               "auroc": best["auroc"], "exp_name": best["exp_name"]}
+    # ── 채택 조합 ──────────────────────────────────────────────
+    # ⚠️ **val AUROC 가 가장 높은 조합을 고르면 안 됩니다.** 그게 바로 우리가
+    #    당한 실수입니다 — val 0.8143 로 골랐는데 holdout 에서 0.7412 였습니다.
+    #    val 점수는 지름길을 쓰는 모델도 높게 나옵니다. 그래서 **두 축의 판정을
+    #    그대로 합친 조합**을 채택합니다. 판정에는 흐림 하락이 들어갑니다.
+    pick_m, pick_a = verdict.get("model", base_model), verdict.get("aug", base_aug)
+    picked = get.get((pick_m, pick_a))
+    if picked:
+        verdict["best"] = {"model": pick_m, "aug": pick_a,
+                           "auroc": picked["auroc"], "blur_drop": picked.get("blur_drop"),
+                           "exp_name": picked["exp_name"]}
+        print(f"\n  ★ 채택: {pick_m} / {pick_a}   "
+              f"AUROC {picked['auroc']:.4f} · 흐림 하락 "
+              f"{fmt(picked.get('blur_drop'), pct=True).strip()}")
+
+    top = max(runs, key=lambda r: r["auroc"])
+    if picked and (top["model_name"], top["aug"]) != (pick_m, pick_a):
+        print(f"\n  ⚠️ val AUROC 가 가장 높은 건 {top['model_name']} / {top['aug']} "
+              f"({top['auroc']:.4f}) 이지만 채택하지 않습니다.")
+        print(f"     흐림 하락이 {fmt(top.get('blur_drop'), pct=True).strip()} 로 "
+              f"지름길에 기대고 있습니다 (채택안 "
+              f"{fmt(picked.get('blur_drop'), pct=True).strip()}).")
+        print(f"     AUROC 차이 {top['auroc'] - picked['auroc']:+.4f} 는 "
+              f"잡음(±{AUROC_NOISE}) 안입니다."
+              if abs(top["auroc"] - picked["auroc"]) < AUROC_NOISE else
+              f"     ⚠️ AUROC 차이 {top['auroc'] - picked['auroc']:+.4f} 는 잡음 밖입니다 "
+              "— 어느 쪽을 택할지 사람이 판단하세요.")
 
     print("\n  ⚠️ 여기서 고른 조합은 **후보**입니다. 서브셋·짧은 에폭이라")
     print("     절대값은 풀 학습과 다릅니다 (STEP 4B 에서 확인). 풀 학습으로 확정하세요.")
