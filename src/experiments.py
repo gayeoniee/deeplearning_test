@@ -415,6 +415,106 @@ def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
     return verdict
 
 
+# ──────────────────────────────────────────────────────────────
+# 2단계 백본 비교 (STEP 9)
+# ──────────────────────────────────────────────────────────────
+# 2단계는 지금까지 resnet50 하나로만 돌았습니다. **한 번도 비교한 적이 없습니다.**
+# 1단계는 STEP 6 에서 effnetv2_s 로 바꿨지만, 그 결과를 2단계에 옮겨 적으면
+# 안 됩니다 — 같은 `photometric` 증강이 1단계에는 약이고 2단계에는 독이었습니다.
+
+# macro-F1 잡음 폭 — 실측 근거 (추정치 금지, 규칙 1)
+#   같은 설정 두 실행: m2.5 0.5395 / 0.5313 (Δ0.008), m1.5 0.5697 / 0.5536 (Δ0.016)
+#   부트스트랩 95% CI 반폭: 0.5456 → 0.5243~0.5663 (±0.021)
+# 둘을 합쳐 ±0.02 로 잡습니다.
+F1_NOISE = 0.02
+
+
+def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[str, Any]:
+    """2단계 백본 비교를 **미리 정해둔 기준**으로 판정합니다.
+
+    판정 기준 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------------
+    1. macro-F1 이 기준선보다 **+0.02(F1_NOISE) 넘게** 높아야 교체 후보입니다.
+       그 안이면 "구분 불가" 이고, 구분 불가일 때는 **기준선을 유지**합니다
+       (바꿀 이유가 없으면 안 바꿉니다 — 바꾸면 비교 이력이 끊깁니다).
+    2. 점수가 올라도 **배율 하락이 8%p 넘게 나빠지면** 채택하지 않습니다.
+       STEP 5·6 에서 val 최고점을 골랐다가 holdout 에서 무너진 실패를
+       반복하지 않기 위해서입니다.
+    3. 1·2 를 모두 만족하는 후보가 여럿이면 **macro-F1 이 가장 높은 것**.
+
+    ⚠️ 여기서 고른 건 **후보**입니다. 서브셋·짧은 에폭 결과라 절대값이
+       풀 학습과 다릅니다. 확정은 풀 학습으로 다시 합니다.
+    ⚠️ holdout 은 여기서 안 봅니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+
+    base = next((r for r in runs if r.get("model_name") == base_model), None)
+    if base is None:
+        print(f"⚠️ 기준선 '{base_model}' 실행이 없어 상대 비교를 못 합니다.")
+        base = max(runs, key=lambda r: r["score"])
+        print(f"   가장 높은 '{base['model_name']}' 를 임시 기준선으로 씁니다.")
+
+    print("\n" + "=" * 78)
+    print(" 2단계 백본 비교 — 판정")
+    print("=" * 78)
+    print(f"  {'백본':<18}{'해상도':>7}{'macro-F1':>10}{'기준선대비':>11}"
+          f"{'배율하락':>10}{'분':>7}   수렴")
+    for r in sorted(runs, key=lambda r: -r["score"]):
+        d = r["score"] - base["score"]
+        drop = r.get("scale_drop")
+        ds = f"{drop:>9.1%}" if drop is not None else f"{'—':>10}"
+        mark = "  ← 기준선" if r is base else ""
+        print(f"  {r['model_name']:<18}{r['img_size']:>6}p{r['score']:>10.4f}"
+              f"{d:>+11.4f}{ds}{r['minutes']:>7.0f}   "
+              f"{'수렴' if r['converged'] else '더 필요'}{mark}")
+
+    base_drop = base.get("scale_drop")
+    ok, rejected = [], []
+    for r in runs:
+        if r is base:
+            continue
+        gain = r["score"] - base["score"]
+        drop = r.get("scale_drop")
+        worse = (drop is not None and base_drop is not None
+                 and drop - base_drop > BLUR_NOISE_PP + 0.03)   # 8%p
+        if gain <= F1_NOISE:
+            rejected.append((r, f"macro-F1 차이 {gain:+.4f} 가 잡음(±{F1_NOISE}) 안"))
+        elif worse:
+            rejected.append((r, f"배율 하락이 {drop - base_drop:+.1%}p 나빠짐"))
+        else:
+            ok.append(r)
+
+    print("\n" + "-" * 78)
+    for r, why in rejected:
+        print(f"  ✗ {r['model_name']:<18} {why}")
+
+    verdict: dict[str, Any] = {"baseline": base, "candidates": ok, "rejected": rejected}
+    if ok:
+        best = max(ok, key=lambda r: r["score"])
+        verdict["best"] = best
+        print(f"\n  ✅ 채택 후보: **{best['model_name']}** "
+              f"(macro-F1 {best['score']:.4f}, 기준선 {base['score']:.4f} 대비 "
+              f"{best['score'] - base['score']:+.4f})")
+    else:
+        verdict["best"] = base
+        print(f"\n  ◐ 기준선 **{base_model}** 유지 — 잡음 밖으로 이긴 백본이 없습니다.")
+        print("     바꿀 이유가 없으면 안 바꿉니다 (비교 이력이 끊깁니다).")
+
+    top = max(runs, key=lambda r: r["score"])
+    if top is not verdict["best"]:
+        print(f"\n  ⚠️ macro-F1 이 가장 높은 건 {top['model_name']} ({top['score']:.4f}) 인데")
+        print("     위 기준에서 걸러졌습니다. val 최고점을 그냥 고르지 않습니다"
+              " (STEP 5·6 의 실패).")
+
+    print("\n  ⚠️ 서브셋·짧은 에폭 결과입니다. 순위가 풀 학습과 같다는 보장은 없습니다.")
+    print("  ⚠️ holdout 은 아직 안 봤습니다 — 풀 학습 뒤 05 에서 한 번만 엽니다.")
+    print("=" * 78)
+    return verdict
+
+
 def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
                      epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
