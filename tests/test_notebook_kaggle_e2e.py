@@ -220,13 +220,17 @@ print(f"노트북: {NB.name}")
 nb = json.loads(NB.read_text(encoding="utf-8"))
 cells = nb["cells"]
 
+# ⚠️ preamble 은 **1번 셀(git clone + pip)이 실제로 정의하는 것만** 넣습니다.
+#    예전에는 여기서 labels/split/crop/train/… 을 전부 미리 import 했는데,
+#    그러면 노트북 셀 안에 import 가 빠져 있어도 절대 안 걸립니다.
+#    실제로 06 의 3번 셀이 `train` 을 import 없이 써서 Kaggle 에서 NameError
+#    로 죽었는데, 이 테스트는 통과했습니다. 그래서 1번 셀과 같은 이름만 둡니다.
 ns: dict = {}
-exec("import os, sys, json\n"
-     "import numpy as np, pandas as pd, torch\n"
+exec("import os, sys, json, subprocess\n"
      "import matplotlib; matplotlib.use('Agg')\n"
      "import matplotlib.pyplot as plt\n"
-     "from src import env, labels, split, crop, data, models, train, evaluate, stages\n"
-     "from src.config import CFG, CLASSES, CLASS_KO, CLASSES_STAGE1, NORMAL_LABEL\n"
+     "from src import env\n"
+     "from src.config import CFG, CLASSES, CLASS_KO\n"
      "E = env.describe()\n"
      "env.set_seed(42)\n", ns)
 
