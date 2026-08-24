@@ -90,7 +90,13 @@ def build_dataset(n_animals: int = 40, per: int = 4) -> pd.DataFrame:
         for k in range(per):
             lab = (NORMAL_LABEL if (a + k) % 3 == 0
                    else CLASSES[(a * per + k) % len(CLASSES)])
-            side = int(rng.integers(60, 300))
+            # ⚠️ **정상 박스를 병변보다 작게** 만듭니다 — 실측 배율 격차를 재현합니다.
+            #    실물: 정상 bbox 면적 중앙값 0.71% vs 병변 1.25% (비 0.57배).
+            #    예전 픽스처는 둘이 같은 분포라 격차가 1.0 이었고, 그래서
+            #    crop.choose_stage1_tag() 의 '지름길 있음' 분기가 **한 번도 안 밟혔습니다.**
+            #    그 상태로 e2e 가 통과해서 1단계 크롭 버그를 못 잡았습니다.
+            side = (int(rng.integers(60, 160)) if lab == NORMAL_LABEL
+                    else int(rng.integers(140, 300)))
             x = int(rng.integers(0, W - side)); y = int(rng.integers(0, H - side))
             name = f"IMG_{aid}_{k}.jpg"
             # ⚠️ 실제 매니페스트 스키마 그대로: bbox 는 [x1,y1,x2,y2], 컬럼은 area_ratio
@@ -144,7 +150,9 @@ print(f"작업 폴더: {T}")
 df0 = build_dataset()
 DS.mkdir(parents=True)
 # 03 은 m2.5 를 씁니다 (STEP 4C). m1.5·full 도 같이 둬서 태그 전환 경로까지 밟습니다.
-df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only else ["m2.5", "m1.5", "full"])
+# f320 도 만듭니다 — 06(확정 재학습)의 1단계가 f320 을 씁니다 (STEP 9-A).
+df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only
+                  else ["m2.5", "m1.5", "full", "f320"])
 (DS / "manifests").mkdir(parents=True, exist_ok=True)
 df0.to_parquet(DS / "manifests" / "manifest_final.parquet")
 if not args.m15_only:
