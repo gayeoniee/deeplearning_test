@@ -402,6 +402,7 @@ def export_release(exps: list[str], meta: dict | None = None,
           stage1_threshold.json
           reports/step4a_summary.json
           checkpoints/<실험>/best.pt
+          checkpoints/<실험>/result.json        ← 안 바뀐 단계를 건너뛰게 해줍니다
 
     폴더 구조가 원본과 같으므로 `import_previous_run()` 이 그대로 찾습니다.
     `READ_ME_FIRST.txt` 는 **크롭과 점수를 적어둡니다** — 데이터셋을 만들 때
@@ -423,6 +424,19 @@ def export_release(exps: list[str], meta: dict | None = None,
         out.mkdir(parents=True, exist_ok=True)
         _copy_atomic(src, out / "best.pt")
         total += src.stat().st_size
+        # ★ result.json 도 같이 넘깁니다 (2KB 정도).
+        #   이게 없으면 training_state() 가 "완료" 를 못 읽어서, 바뀐 것이 없는
+        #   단계도 다음 실행에서 **처음부터 다시 학습합니다.** 실제로 1단계만
+        #   바꾸는 실행에서 2단계 25에폭(~1.5시간)이 통째로 다시 돌 뻔했습니다.
+        #   더 중요한 건 시간이 아니라 비교입니다 — 안 바꾼 단계를 다시 학습하면
+        #   가중치가 미묘하게 달라져서, 파이프라인 숫자 변화에 "바꾼 단계의 효과"
+        #   와 "안 바꾼 단계의 잡음" 이 섞입니다.
+        rj = ckpt_dir(exp) / "result.json"
+        if rj.exists():
+            _copy_atomic(rj, out / "result.json")
+        else:
+            print(f"⚠️ [release] '{exp}/result.json' 이 없습니다 — "
+                  "다음 노트북이 이 단계를 다시 학습합니다.")
 
     for name, payload in (files or {}).items():
         f = dst / name

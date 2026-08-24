@@ -571,6 +571,68 @@ def test_release_bundle_is_flat_and_self_describing():
     check("release 폴더만으로 JSON 도 온다", (w2 / "stage1_threshold.json").is_file())
 
 
+def test_release_carries_the_completion_record():
+    """안 바꾼 단계를 다시 학습하지 않도록 result.json 도 넘어가야 합니다.
+
+    이게 빠지면 training_state() 가 "완료" 를 못 읽어서, 1단계만 바꾸는 실행에서
+    2단계 25에폭(~1.5시간)이 통째로 다시 돕니다. 시간보다 더 나쁜 건 비교입니다 —
+    안 바꾼 단계를 재학습하면 가중치가 미묘하게 달라져서, 파이프라인 숫자 변화에
+    "바꾼 단계의 효과" 와 "안 바꾼 단계의 잡음" 이 섞입니다.
+    """
+    import json as _json
+
+    from src import env, train
+
+    exp = "stage2_resnet50_m2.5_384_moderate"
+    fresh_env("release_done")
+    d = train.ckpt_dir(exp)
+    (d / "best.pt").write_bytes(b"weights")
+    (d / "result.json").write_text(_json.dumps({
+        "completed": True, "best_score": 0.5457, "best_epoch": 20,
+        "target_epochs": 25, "early_stopped": True,
+        "history": [{"epoch": i} for i in range(25)],
+    }), encoding="utf-8")
+
+    rel = train.export_release([exp], meta={"2단계 크롭": "m2.5"}, verbose=False)
+    check("완료 기록이 꾸러미에 들어간다",
+          (rel / "checkpoints" / exp / "result.json").is_file())
+
+    # ★ 핵심 — 붙여 넣은 쪽에서 "이미 끝났다" 로 읽혀야 합니다
+    base = _TMP / "release_done_input"
+    shutil.rmtree(base, ignore_errors=True)
+    base.mkdir(parents=True)
+    shutil.copytree(rel, base / "ds" / "release", dirs_exist_ok=True)
+    fresh_env("release_done_in")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        train.import_previous_run(verbose=False)
+    finally:
+        env._search_roots = orig
+
+    st = train.training_state(exp, check_persist=False)
+    check("다음 실행이 '이미 끝남' 으로 읽는다", st["completed"] and st["has_best"], f"{st}")
+    check("목표 에폭도 살아 있다", st["target_epochs"] == 25, f"{st}")
+    check("조기 종료 사실도 살아 있다", st["early_stopped"], f"{st}")
+
+
+def test_missing_completion_record_is_announced():
+    """result.json 이 없으면 조용히 넘어가지 말고 알려야 합니다."""
+    import contextlib
+    import io
+
+    from src import train
+
+    exp = "stage2_resnet50_m2.5_384_moderate"
+    fresh_env("release_norec")
+    (train.ckpt_dir(exp) / "best.pt").write_bytes(b"weights")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        train.export_release([exp], verbose=False)
+    out = buf.getvalue()
+    check("완료 기록이 없으면 경고한다", "result.json" in out and "다시 학습" in out, out)
+
+
 def test_notebook03_exports_a_release():
     import json as _json
 
@@ -854,7 +916,9 @@ if __name__ == "__main__":
                test_notebook05_actually_calls_the_import,
                test_tag_mismatch_is_informational_not_a_warning,
                test_real_missing_files_still_warn,
-               test_warning_never_reads_as_all_found]:
+               test_warning_never_reads_as_all_found,
+               test_release_carries_the_completion_record,
+               test_missing_completion_record_is_announced]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()

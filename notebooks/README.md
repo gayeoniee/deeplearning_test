@@ -32,7 +32,8 @@
 
 | 노트북 | 붙일 것 |
 |---|---|
-| 03 | **`dogskin-f320`**, `dogskin-m25` (1단계 f320 확정 — STEP 9-A) |
+| 03 | **`dogskin-f320`**, `dogskin-m25`, (선택) **이전 release** |
+| | ↳ 1단계 f320 확정(STEP 9-A). release 를 붙이면 **안 바꾼 2단계를 건너뜁니다** |
 | 03b / 03c | `dogskin-m15`, `dogskin-m25` |
 | 03d | `dogskin-full` (1단계는 full 크롭을 씁니다) |
 | 04 | `dogskin-m25` (2단계 백본 비교 — 1단계는 안 건드림) |
