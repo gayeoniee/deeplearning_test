@@ -105,8 +105,12 @@ def train_and_measure(
         print(f"{'━' * 66}")
         print(f"  train {len(tr):,} / val {len(va):,}")
 
+    # ⚠️ img_size 를 넘깁니다. CNN 은 해상도가 자유로워 무시되지만, ViT 계열은
+    #    위치 임베딩 크기가 고정이라 안 넘기면 **학습 도중에** shape 오류가 납니다.
+    #    (models.build 는 필요할 때만 timm 에 전달합니다)
     model = models.build(model_name, n_classes=len(classes),
-                         pretrained=True, drop_rate=cfg.drop_rate)
+                         pretrained=True, drop_rate=cfg.drop_rate,
+                         img_size=img_size)
     dl_tr, dl_va, ds_tr, _ = data.build_loaders(tr, va, cfg, model=model, classes=classes)
 
     t0 = time.time()
