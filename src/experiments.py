@@ -432,6 +432,22 @@ def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
 # 둘을 합쳐 ±0.02 로 잡습니다.
 F1_NOISE = 0.02
 
+# 배율 하락으로 후보를 떨어뜨릴 때 쓰는 문턱.
+#
+# 원래 8%p 였습니다 (BLUR_NOISE_PP + 0.03). 그런데 우리가 **따로** 잰 교란 검사
+# 잡음이 그것보다 큽니다:
+#   · 설정을 하나도 안 바꾼 2단계를 일곱 번 재서 배율 하락 15.4% ~ 25.0% (폭 9.6%p)
+#   · STEP 10 한 실행 안에서 표본 수만 2,000 → 3,000 으로 바꿨더니
+#     위치 하락이 9.3% → 20.2% (10.9%p)
+#
+# 즉 8%p 짜리 문턱은 **잡음만으로도 걸립니다.** 실제로 STEP 9 에서
+# convnextv2_base 가 +8.1%p 로 탈락했는데, 그건 판정이 아니라 동전 던지기였습니다.
+#
+# ⚠️ 이 값을 STEP 9 결과를 **보고 나서** 올리는 게 아닙니다. 근거는 STEP 10
+#    (다른 실험)에서 나온 잡음 측정이고, 04 를 다시 돌리기 **전에** 못 박습니다
+#    (규칙 2). 이 사이 구간은 탈락도 통과도 아닌 **구분 불가**로 적습니다.
+SCALE_DROP_REJECT_PP = 0.12
+
 
 def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[str, Any]:
     """2단계 백본 비교를 **미리 정해둔 기준**으로 판정합니다.
@@ -441,9 +457,11 @@ def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[s
     1. macro-F1 이 기준선보다 **+0.02(F1_NOISE) 넘게** 높아야 교체 후보입니다.
        그 안이면 "구분 불가" 이고, 구분 불가일 때는 **기준선을 유지**합니다
        (바꿀 이유가 없으면 안 바꿉니다 — 바꾸면 비교 이력이 끊깁니다).
-    2. 점수가 올라도 **배율 하락이 8%p 넘게 나빠지면** 채택하지 않습니다.
-       STEP 5·6 에서 val 최고점을 골랐다가 holdout 에서 무너진 실패를
-       반복하지 않기 위해서입니다.
+    2. 점수가 올라도 **배율 하락이 12%p(SCALE_DROP_REJECT_PP) 넘게 나빠지면**
+       채택하지 않습니다. STEP 5·6 에서 val 최고점을 골랐다가 holdout 에서
+       무너진 실패를 반복하지 않기 위해서입니다.
+       5~12%p 사이는 **구분 불가**로 적고 판정하지 않습니다 — 우리가 잰
+       교란 검사 잡음이 그만큼 큽니다 (아래 상수 주석 참고).
     3. 1·2 를 모두 만족하는 후보가 여럿이면 **macro-F1 이 가장 높은 것**.
 
     ⚠️ 여기서 고른 건 **후보**입니다. 서브셋·짧은 에폭 결과라 절대값이
@@ -489,24 +507,31 @@ def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[s
               f"{'수렴' if r['converged'] else '더 필요'}{mark}")
 
     base_drop = base.get("scale_drop")
-    ok, rejected = [], []
+    ok, rejected, unclear = [], [], []
     for r in runs:
         if r is base:
             continue
         gain = r["score"] - base["score"]
         drop = r.get("scale_drop")
-        worse = (drop is not None and base_drop is not None
-                 and drop - base_drop > BLUR_NOISE_PP + 0.03)   # 8%p
+        gap = (drop - base_drop) if (drop is not None and base_drop is not None) else None
         if gain <= F1_NOISE:
             rejected.append((r, f"macro-F1 차이 {gain:+.4f} 가 잡음(±{F1_NOISE}) 안"))
-        elif worse:
-            rejected.append((r, f"배율 하락이 {drop - base_drop:+.1%}p 나빠짐"))
+        elif gap is not None and gap > SCALE_DROP_REJECT_PP:
+            rejected.append((r, f"배율 하락이 {gap:+.1%}p 나빠짐 "
+                                f"(문턱 {SCALE_DROP_REJECT_PP:.0%}p)"))
         else:
+            if gap is not None and gap > BLUR_NOISE_PP:
+                unclear.append((r, gap))
             ok.append(r)
 
     print("\n" + "-" * 78)
     for r, why in rejected:
         print(f"  ✗ {r['model_name']:<18} {why}")
+    # 잡음보다는 크고 탈락 문턱보다는 작은 구간 — 판정하지 말고 그대로 적습니다.
+    for r, gap in unclear:
+        print(f"  ◐ {r['model_name']:<18} 배율 하락 {gap:+.1%}p — 잡음(±{BLUR_NOISE_PP:.0%}p)"
+              f"보다 크지만 탈락 문턱({SCALE_DROP_REJECT_PP:.0%}p)에는 못 미칩니다. "
+              "구분 불가로 적고 풀 학습에서 다시 재세요.")
 
     verdict: dict[str, Any] = {"baseline": base, "candidates": ok, "rejected": rejected}
     if ok:
