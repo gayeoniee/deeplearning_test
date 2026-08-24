@@ -65,6 +65,26 @@ def expand_box(
             min(int(round(nx2)), img_w), min(int(round(ny2)), img_h))
 
 
+def _box4(bbox) -> list[float] | None:
+    """bbox 를 길이 4 실수 리스트로 정규화합니다. 아니면 None.
+
+    ⚠️ **`if bbox:` 를 직접 쓰면 안 됩니다.** 매니페스트를 parquet 으로 저장했다가
+    다시 읽으면 bbox 가 `numpy.ndarray` 로 돌아옵니다. 배열에 `if` 를 걸면
+    `ValueError: truth value of an array is ambiguous` 가 납니다.
+    `_crop_one` 이 예외를 삼키기 때문에 **전량 실패인데 조용히 넘어갑니다** —
+    실제로 `--recrop` 을 만들다 6/6 실패를 성공으로 보고하는 걸 잡았습니다.
+    """
+    if bbox is None:
+        return None
+    try:
+        vals = [float(v) for v in bbox]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 4 or any(v != v for v in vals):    # NaN 포함
+        return None
+    return vals
+
+
 def fixed_box(bbox, img_w: int, img_h: int, side: int) -> tuple[int, int, int, int]:
     """병변 중심에서 **항상 같은 픽셀 크기**의 정사각형을 잘라냅니다.
 
@@ -77,8 +97,9 @@ def fixed_box(bbox, img_w: int, img_h: int, side: int) -> tuple[int, int, int, i
       고정 픽셀 창은 그 경로를 막습니다. 피부 1mm 가 항상 같은 픽셀 수입니다.
       대신 큰 병변은 창을 넘어 잘립니다 — 그건 감수하는 대가입니다.
     """
-    if bbox and len(bbox) == 4:
-        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    box = _box4(bbox)
+    if box:
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     else:
         cx, cy = img_w / 2, img_h / 2
 
@@ -109,8 +130,9 @@ def _window(bbox, img_w: int, img_h: int, margin: float = 0.0,
     """
     if fixed_px > 0:
         return fixed_box(bbox, img_w, img_h, fixed_px)
-    if bbox and len(bbox) == 4 and margin > 0:
-        return expand_box(bbox, img_w, img_h, margin=margin, min_px=min_px)
+    box = _box4(bbox)
+    if box and margin > 0:
+        return expand_box(box, img_w, img_h, margin=margin, min_px=min_px)
     # 박스가 없거나 margin 이 없으면 중앙 정사각 (전체이미지 실험군)
     s = min(img_w, img_h)
     x1, y1 = (img_w - s) // 2, (img_h - s) // 2
@@ -192,6 +214,7 @@ def run(
     tag: str | None = None,
     workers: int = 8,
     verbose: bool = True,
+    allow_partial: bool = False,
 ) -> pd.DataFrame:
     """크롭을 만들고 `crop_path` 컬럼을 붙입니다.
 
@@ -245,10 +268,29 @@ def run(
         lambda p: Path(p).relative_to(out_dir).as_posix() if isinstance(p, str) else None
     )
 
-    failed = out["crop_path"].isna().sum()
+    failed = int(out["crop_path"].isna().sum())
+    made = len(out) - failed
     if verbose:
         size = sum(f.stat().st_size for f in (out_dir / tag).rglob("*.jpg")) / 1024**3
         print(f"[crop] 완료 — 실패 {failed:,}건, 저장 용량 {size:.2f} GB")
+
+    # ⚠️ 실패를 세어 찍기만 하고 넘어가면 **전량 실패도 성공처럼 보입니다.**
+    #    `_crop_one` 이 모든 예외를 삼키기 때문에, 원인이 무엇이든 결과는 "0장 저장"
+    #    인데 로그에는 한 줄만 지나갑니다. 실제로 6/6 실패를 "✅ 완료" 로 보고하는 걸
+    #    잡았습니다 (parquet 에서 읽은 bbox 가 ndarray 라 판정문에서 터진 경우).
+    #    부분 업로드 게이트(MIN_CROP_COVERAGE)와 같은 이유로 여기서 멈춥니다.
+    cover = made / max(len(out), 1)
+    if not allow_partial and cover < MIN_CROP_COVERAGE:
+        raise RuntimeError(
+            f"\n크롭이 {made:,}/{len(out):,}장만 만들어졌습니다 ({cover:.1%}).\n"
+            f"  태그: {tag}   저장 위치: {out_dir / tag}\n\n"
+            "  흔한 원인:\n"
+            "   · 원본을 못 엽니다 (경로가 바뀌었거나 zip 이 없음)\n"
+            "   · bbox 형식이 예상과 다릅니다 (parquet 에서 읽으면 ndarray 입니다)\n"
+            "   · 디스크가 찼습니다\n\n"
+            "  일부만 만들어도 괜찮은 상황이면 allow_partial=True 로 부르세요."
+        )
+
     if failed:
         out = out[out["crop_path"].notna()].reset_index(drop=True)
         if verbose:

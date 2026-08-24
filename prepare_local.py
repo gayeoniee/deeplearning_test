@@ -205,6 +205,116 @@ def step_finalize(cfg_margins: list[float]) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
+def step_recrop(tag: str, raw_root: str | None = None, workers: int = 8) -> None:
+    """★ 분할을 건드리지 않고 **크롭 태그 하나만** 추가로 만듭니다.
+
+    `--chunk` 와 결정적으로 다른 점: **매니페스트를 다시 만들지 않습니다.**
+
+    왜 전용 명령이 필요한가
+    -----------------------
+    나중에 새 크롭(예: f320)이 필요해졌을 때 `--chunk` 를 다시 돌리면
+    스캔·중복제거·분할이 전부 다시 돌아갑니다. 그러면 **어떤 개체가 holdout 에
+    가는지가 바뀔 수 있고**, 그 순간 지금까지 잰 숫자와 비교가 불가능해집니다.
+    holdout 에 있던 개체가 학습셋으로 넘어가면 시험지 자체가 오염됩니다.
+
+    이 명령은 `manifest_final.parquet` 을 **읽기만** 하고, 거기 적힌 경로로
+    크롭 파일만 새로 만듭니다.
+
+    경로가 바뀌어도 되는 이유
+    -------------------------
+    크롭 파일 이름은 `md5(image_path)` 이고, 실제 읽기는 `zip_path`+`zip_member`
+    가 담당합니다. 둘이 분리돼 있어서, 재다운로드가 다른 폴더에 떨어져도
+    `--raw` 로 zip 위치만 알려주면 **파일 이름은 예전 그대로** 나옵니다.
+    이미 있는 full/m1.5/m2.5 와 짝이 맞습니다.
+    """
+    import pandas as pd
+
+    from src import crop, env
+    from src.config import CFG
+
+    mdir = env.work_root() / "manifests"
+    mf = mdir / "manifest_final.parquet"
+    if not mf.exists():
+        _die(f"분할이 끝난 매니페스트가 없습니다: {mf}\n"
+             "   --recrop 은 기존 분할을 재사용하는 명령입니다.\n"
+             "   아직 --finalize 를 한 번도 안 돌렸다면 --chunk 부터 하세요.")
+
+    fixed_px, margin = crop.fixed_of_tag(tag), crop.margin_of_tag(tag)
+    if not fixed_px and not margin and tag != "full":
+        _die(f"모르는 크롭 태그 '{tag}'. 예: f320, m2.5, full")
+
+    print("\n" + "=" * 68)
+    print(f" RECROP — 태그 '{tag}' 만 추가 (분할은 그대로)")
+    print("=" * 68)
+
+    before = _tag_counts()
+    df = pd.read_parquet(mf)
+    print(f"\n[매니페스트] {len(df):,}행 / 개체 {df['animal_id'].nunique():,}마리 (읽기 전용)")
+    if tag in before:
+        print(f"⚠️ 태그 '{tag}' 가 이미 {before[tag]:,}장 있습니다. 있는 건 건너뜁니다.")
+
+    # ── zip 위치 갈아끼우기 (파일 이름의 근거인 image_path 는 절대 안 건드립니다)
+    if raw_root:
+        new_root = Path(raw_root).resolve()
+        if "zip_path" not in df.columns:
+            _die("이 매니페스트는 zip 방식이 아니라 --raw 로 위치를 옮길 수 없습니다.\n"
+                 "   원본을 매니페스트에 적힌 경로 그대로 되돌려 놓으세요.")
+        def _rebase(old: str) -> str:
+            return str(new_root / Path(str(old)).name)
+        df = df.copy()
+        df["zip_path"] = df["zip_path"].apply(_rebase)
+        print(f"[재지정] zip 위치 → {new_root}  (image_path 는 그대로 두므로 파일 이름이 안 바뀝니다)")
+
+    # ── 먼저 열어봅니다. 몇 시간 크롭한 뒤에 전부 실패했다는 걸 알면 늦습니다.
+    print("\n[사전 확인] 원본이 실제로 열리는지 확인합니다 …")
+    sample = df.sample(min(20, len(df)), random_state=0)
+    ok = 0
+    first_err = None
+    for _, row in sample.iterrows():
+        try:
+            crop._open_source(row).close()
+            ok += 1
+        except Exception as exc:                                  # noqa: BLE001
+            first_err = first_err or f"{type(exc).__name__}: {exc}"
+    print(f"   표본 {len(sample)}장 중 {ok}장 열림")
+    if ok < len(sample):
+        _die("원본을 못 엽니다. 크롭을 시작하지 않았습니다.\n"
+             f"   첫 오류: {first_err}\n"
+             f"   매니페스트가 기대하는 zip: {df['zip_path'].iloc[0]}\n"
+             "   재다운로드한 위치가 다르면 --raw <폴더> 로 알려주세요.")
+
+    cfg = CFG()
+    if fixed_px:
+        crop.run(df, cfg, fixed_px=fixed_px, workers=workers)
+    else:
+        crop.run(df, cfg, margin=margin, tag=tag, workers=workers)
+
+    # ── 기존 태그가 그대로인지, 분할 파일이 안 바뀌었는지 확인합니다
+    after = _tag_counts()
+    print("\n[대조] 크롭 태그별 장수")
+    for k in sorted(set(before) | set(after)):
+        b, a2 = before.get(k, 0), after.get(k, 0)
+        mark = "  ← 새로 만듦" if k == tag else (" ✅" if b == a2 else "  ⚠️ 바뀌었습니다")
+        print(f"   {k:<8} {b:>7,} → {a2:>7,}{mark}")
+
+    lost = [k for k in before if after.get(k, 0) < before[k]]
+    if lost:
+        _die(f"기존 크롭이 줄었습니다: {lost}. 확인이 필요합니다.")
+    print(f"\n✅ '{tag}' 완료. manifest_final.parquet 은 건드리지 않았습니다.")
+    print(f"   다음: py prepare_local.py --package --tags {tag} --out dogskin_{tag}.zip")
+
+
+def _tag_counts() -> dict[str, int]:
+    """크롭 폴더의 태그별 파일 수."""
+    from src import env
+
+    d = env.work_root() / "crops"
+    if not d.exists():
+        return {}
+    return {p.name: sum(1 for _ in p.rglob("*.jpg")) for p in sorted(d.iterdir()) if p.is_dir()}
+
+
+# ──────────────────────────────────────────────────────────────
 def step_download(filekeys: list[str]) -> None:
     from src import aihub, env
 
@@ -337,6 +447,11 @@ def main() -> None:
     p.add_argument("--margins", default="1.5,2.5,0,-320",
                    help="크롭 방식 목록. 양수=margin 배율(m1.5), 0=중앙 정사각(full), "
                         "음수=고정 픽셀 창(-320 → f320, 배율이 일정해 지름길 차단)")
+    p.add_argument("--recrop", metavar="태그",
+                   help="★ 분할을 건드리지 않고 크롭 태그 하나만 추가 (예: f320). "
+                        "매니페스트를 다시 만들지 않으므로 holdout 이 오염되지 않습니다")
+    p.add_argument("--raw", metavar="폴더", default=None,
+                   help="--recrop 전용. 재다운로드한 zip 이 예전과 다른 폴더면 그 위치")
     p.add_argument("--keep-raw", action="store_true", help="원본을 지우지 않음")
     p.add_argument("--mode", choices=["zip", "extract"], default="zip",
                    help="zip: 압축을 풀지 않고 바로 읽음 (디스크 최소, 기본값) / "
@@ -344,7 +459,7 @@ def main() -> None:
     p.add_argument("--out", default="dogskin_prepared.zip")
     a = p.parse_args()
 
-    if not any([a.all, a.chunk, a.finalize, a.package, a.download, a.scan]):
+    if not any([a.all, a.chunk, a.finalize, a.package, a.download, a.scan, a.recrop]):
         p.print_help()
         sys.exit(0)
 
@@ -370,6 +485,14 @@ def main() -> None:
             step_scan()
         if a.chunk:
             step_chunk(a.chunk, margins, a.keep_raw, a.mode)
+        if a.recrop:
+            # ⚠️ --recrop 과 --finalize 를 같이 쓰면 분할이 다시 계산돼
+            #    기존 크롭·기존 측정값과의 짝이 깨집니다. 애초에 못 쓰게 막습니다.
+            if a.finalize:
+                _die("--recrop 과 --finalize 는 같이 쓸 수 없습니다.\n"
+                     "   --recrop 은 '기존 분할을 그대로 두고 크롭만 추가' 하는 명령이고,\n"
+                     "   --finalize 는 그 분할을 다시 계산합니다. 목적이 정반대입니다.")
+            step_recrop(a.recrop, a.raw)
         if a.finalize:
             step_finalize(margins)
         if a.package:
