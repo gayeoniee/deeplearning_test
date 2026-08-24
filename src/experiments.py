@@ -532,6 +532,96 @@ def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[s
     return verdict
 
 
+def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str, Any]:
+    """1단계 입력(크롭 태그) 비교를 **미리 정해둔 기준**으로 판정합니다.
+
+    STEP 8 에서 남은 위험: 1단계가 `full`(강아지 전신)로 학습했는데, 배포에서
+    보호자는 촬영 가이드대로 병변에 다가가서 찍습니다. `f320`(고정 픽셀 창)은
+    창 크기가 병변 크기와 무관해 창 크기 지름길이 없고, 구도도 근접 사진에
+    가깝습니다. 여기서는 **모델·증강은 STEP 6·7 이 정한 대로 고정**하고
+    (`effnetv2_s` + `photometric`) 입력만 바꿔 비교합니다.
+
+    판정 기준 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------------
+    1. AUROC 가 {AUROC_NOISE} 이상 오르거나, 최소한 안 떨어져야 후보입니다.
+       (holdout 변별력 부족이 STEP 8 의 핵심 문제라 AUROC 를 우선합니다)
+    2. 흐림 하락이 {BLUR_NOISE_PP} 넘게 나빠지면 탈락합니다 — f320 이 화질
+       지름길을 다시 열면 안 됩니다.
+    3. 스크리닝 recall 이 얼마나 나오는지는 여기서 안 봅니다. 임계값은
+       val 로 다시 잡아야 하는 값이라, 이 비교 단계에서는 신호가 아닙니다.
+
+    ⚠️ 여기서 고른 건 **후보**입니다. holdout 은 안 봅니다 — 풀 학습 뒤 05 에서
+    한 번만 엽니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def fmt(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>8.1%}" if pct else f"{v:>8.{nd}f}"
+
+    print("\n" + "=" * 74)
+    print(" 1단계 입력 비교 — full vs f320")
+    print("=" * 74)
+    print(f"  {'크롭':<12}{'AUROC':>10}{'흐림하락':>10}{'precision':>11}{'분':>6}   수렴")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<12}{fmt(r.get('auroc'))}{fmt(r.get('blur_drop'), pct=True)}"
+              f"{fmt(r.get('precision'), nd=3)}{r['minutes']:>6.0f}   "
+              f"{'수렴' if r['converged'] else '더 필요'}")
+
+    if not base.get("converged", True):
+        print(f"\n  ⚠️ 기준 '{base_crop}' 이 수렴하지 않았습니다. 이 비교는 재확인이 "
+              "필요합니다 (STEP 9 의 2단계 백본 비교와 같은 함정).")
+
+    verdict: dict[str, Any] = {"baseline": base}
+    print(f"\n  기준: {base_crop}  (AUROC {base['auroc']:.4f}, "
+          f"흐림 하락 {fmt(base.get('blur_drop'), pct=True).strip()})")
+    print(f"  잡음 폭: AUROC ±{AUROC_NOISE} · 흐림 하락 ±{BLUR_NOISE_PP:.0%}")
+
+    candidates = []
+    for r in runs:
+        if r is base:
+            continue
+        d_auroc = r["auroc"] - base["auroc"]
+        d_blur = (r["blur_drop"] - base["blur_drop"]
+                  if r.get("blur_drop") is not None and base.get("blur_drop") is not None
+                  else None)
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    AUROC     {d_auroc:+.4f}")
+        print(f"    흐림 하락  {'못 잼' if d_blur is None else f'{d_blur:+.1%}'}")
+        worse_blur = d_blur is not None and d_blur > BLUR_NOISE_PP
+        if d_auroc >= -AUROC_NOISE and not worse_blur:
+            candidates.append(r)
+            print(f"    ✅ {r['crop_tag']} 후보 — AUROC 를 깎지 않으면서 화질 의존을 "
+                  "늘리지 않았습니다.")
+        elif d_auroc < -AUROC_NOISE:
+            print(f"    ❌ 탈락 — AUROC 가 잡음 밖으로 떨어졌습니다.")
+        else:
+            print(f"    ❌ 탈락 — 흐림 하락이 {d_blur:+.1%}p 나빠졌습니다.")
+
+    if candidates:
+        best = max(candidates, key=lambda r: r["auroc"])
+        verdict["best"] = best
+        print(f"\n  ✅ 채택 후보: **{best['crop_tag']}** (AUROC {best['auroc']:.4f}, "
+              f"기준 {base['auroc']:.4f} 대비 {best['auroc'] - base['auroc']:+.4f})")
+    else:
+        verdict["best"] = base
+        print(f"\n  ◐ 기준 **{base_crop}** 유지 — 후보가 없습니다.")
+
+    print("\n  ⚠️ 서브셋·짧은 에폭 결과입니다. 순위가 풀 학습과 같다는 보장은 없습니다.")
+    print("  ⚠️ holdout 은 아직 안 봤습니다 — 풀 학습 뒤 05 에서 한 번만 엽니다.")
+    print("=" * 74)
+    return verdict
+
+
 def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
                      epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
