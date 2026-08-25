@@ -245,10 +245,14 @@ class ScreeningAgent:
         """
         import json
 
-        root = Path(release)
+        root = Path(release).expanduser()
         ck = root / "checkpoints"
         if not ck.is_dir():
-            ck = root                       # checkpoints/ 를 직접 준 경우
+            # 압축을 풀면 한 겹 더 감싸져 있는 일이 흔합니다
+            # (Downloads/release/release/checkpoints/… 또는 archive/release/…).
+            # 그래서 아래로 훑어서 stage1_…/best.pt 를 찾아 그 부모를 씁니다.
+            hit = next((q for q in sorted(root.glob("**/stage1_*/best.pt"))), None)
+            ck = hit.parent.parent if hit else root
         found: dict[str, Path] = {}
         for d in sorted(ck.iterdir() if ck.is_dir() else []):
             if not (d / "best.pt").exists():
@@ -273,9 +277,10 @@ class ScreeningAgent:
                 "1단계만 돌리려면 stage1_only=True (CLI 는 --stage1-only).")
 
         thr = None
-        for c in (root / "stage1_threshold.json", ck.parent / "stage1_threshold.json"):
+        for c in (root / "stage1_threshold.json", ck.parent / "stage1_threshold.json",
+                  *sorted(root.glob("**/stage1_threshold.json"))):
             if c.exists():
-                thr = json.loads(c.read_text())["threshold"]
+                thr = json.loads(c.read_text(encoding="utf-8"))["threshold"]
                 break
         return cls.load(found["stage1"], found.get("stage2"), thr, device,
                         stage1_only=stage1_only)
