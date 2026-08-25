@@ -128,10 +128,6 @@ def gpu_speed(cfg: CFG, n_classes: int = 6, steps: int = 30) -> dict:
     crit = torch.nn.CrossEntropyLoss()
     bs = cfg.resolved_batch_size()
 
-    x = torch.randn(bs, 3, cfg.img_size, cfg.img_size, device=dev
-                    ).to(memory_format=torch.channels_last)
-    y = torch.randint(0, n_classes, (bs,), device=dev)
-
     amp_dtype = torch.bfloat16 if env.device_info().bf16 else torch.float16
     scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and amp_dtype is torch.float16)
 
@@ -144,8 +140,30 @@ def gpu_speed(cfg: CFG, n_classes: int = 6, steps: int = 30) -> dict:
         else:
             loss.backward(); opt.step()
 
-    for _ in range(5):                    # warmup (cudnn 알고리즘 선택 포함)
-        one()
+    # ⚠️ 추천 배치가 안 들어가면 **여기서 알아야 합니다.** 학습 3시간째에 OOM 으로
+    #    죽는 것보다 20초짜리 추정에서 배치를 낮춰 잡는 게 낫습니다.
+    #    실제로 판 B 에서 swinv2_base 가 배치 32 로 OOM 났습니다.
+    x = y = None
+    for attempt in range(4):
+        try:
+            x = torch.randn(bs, 3, cfg.img_size, cfg.img_size, device=dev
+                            ).to(memory_format=torch.channels_last)
+            y = torch.randint(0, n_classes, (bs,), device=dev)
+            for _ in range(5):            # warmup (cudnn 알고리즘 선택 포함)
+                one()
+            break
+        except torch.cuda.OutOfMemoryError:
+            del x, y
+            x = y = None
+            opt.zero_grad(set_to_none=True)
+            torch.cuda.empty_cache()
+            if bs <= 4 or attempt == 3:
+                return {"img_per_sec": float("nan"),
+                        "note": f"배치 {bs} 로도 VRAM 부족"}
+            bs = max(4, bs // 2)
+            print(f"    [bench] VRAM 부족 → 배치를 {bs} 로 낮춰 다시 잽니다")
+    # 실패한 시도의 최대치가 섞이지 않게 여기서 초기화합니다
+    torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     for _ in range(steps):

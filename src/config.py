@@ -187,7 +187,13 @@ class CFG:
         from src import env
 
         scale = _infer_scale(self.model_name)
-        return env.suggest_batch_size(self.img_size, scale)
+        # 백본별 메모리 보정 — timm 이름으로 MODEL_ZOO 를 되짚습니다
+        mf = 1.0
+        for spec in MODEL_ZOO:
+            if spec.timm_name == self.model_name or spec.key == self.model_name:
+                mf = spec.mem_factor
+                break
+        return env.suggest_batch_size(self.img_size, scale, mem_factor=mf)
 
     def resolved_num_workers(self) -> int:
         """-1 이면 CPU 코어 수에 맞춰 정합니다."""
@@ -421,6 +427,14 @@ class ModelSpec:
     fallbacks: list[str] = field(default_factory=list)
     img_size: int = 288
     scale: str = "base"
+    # 배치 추천을 몇 배로 줄일지. env.suggest_batch_size 의 공식이 **ResNet 기준**
+    # 이라 트랜스포머 계열의 활성값 메모리를 모릅니다. 실측으로 정했습니다:
+    #   T4(14.6GB) · 256px · 배치 32 에서
+    #     swinv2_base   → OOM
+    #     siglip2_base  → 14.3GB (98%, EMA 붙으면 터짐)
+    #   같은 조건의 convnextv2_base 는 384px 배치 12 에서 8.9GB 로 멀쩡했습니다.
+    # 그래서 어텐션 계열은 0.4 로 잡습니다 (32 → 12).
+    mem_factor: float = 1.0
     note: str = ""
 
 
@@ -451,6 +465,7 @@ MODEL_ZOO: list[ModelSpec] = [
         timm_name="swinv2_base_window12to16_192to256.ms_in22k_ft_in1k",
         fallbacks=["swinv2_base_window8_256.ms_in1k", "swin_base_patch4_window7_224.ms_in22k_ft_in1k"],
         img_size=256, scale="base",
+        mem_factor=0.4,
         note="계층적 ViT. 지역 패턴 + 전역 문맥을 같이 봄.",
     ),
     ModelSpec(
@@ -458,6 +473,7 @@ MODEL_ZOO: list[ModelSpec] = [
         timm_name="eva02_base_patch14_448.mim_in22k_ft_in22k_in1k",
         fallbacks=["eva02_small_patch14_336.mim_in22k_ft_in1k", "vit_base_patch16_224.augreg2_in21k_ft_in1k"],
         img_size=336, scale="base",
+        mem_factor=0.4,
         note="정확도 상한 확인용. T4 에서는 무거우니 배치 작게 + grad_accum 사용.",
     ),
     ModelSpec(
@@ -465,6 +481,7 @@ MODEL_ZOO: list[ModelSpec] = [
         timm_name="vit_base_patch16_siglip_256.v2_webli",
         fallbacks=["vit_base_patch16_siglip_224.webli", "vit_base_patch16_clip_224.openai"],
         img_size=256, scale="base",
+        mem_factor=0.4,
         note="대규모 이미지-텍스트 사전학습 백본. 소량 데이터에서 특히 강한 편.",
     ),
 ]

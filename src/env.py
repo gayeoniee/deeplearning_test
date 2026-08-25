@@ -346,7 +346,8 @@ def device_info() -> Device:
     return Device(kind="cpu")
 
 
-def suggest_batch_size(img_size: int, model_scale: str = "base") -> int:
+def suggest_batch_size(img_size: int, model_scale: str = "base",
+                       mem_factor: float = 1.0) -> int:
     """VRAM 과 입력 해상도로 배치 크기를 대충 추천합니다.
 
     보수적으로 잡습니다 — OOM 으로 3시간짜리 학습이 죽는 것보다
@@ -361,7 +362,9 @@ def suggest_batch_size(img_size: int, model_scale: str = "base") -> int:
     # (ResNet50@224 를 AMP 로 돌리면 배치 48 이 8GB 남짓입니다. 여전히 보수적입니다)
     scale_factor = {"tiny": 2.0, "small": 1.4, "base": 1.0, "large": 0.5}.get(model_scale, 1.0)
     px_factor = (224 / max(img_size, 64)) ** 2
-    bs = 48 * (vram / 16) * scale_factor * px_factor
+    # mem_factor: 백본별 보정 (ModelSpec.mem_factor). 이 공식은 ResNet 기준이라
+    # 어텐션 계열의 활성값 메모리를 과소평가합니다 — 실측으로 0.4 를 씁니다.
+    bs = 48 * (vram / 16) * scale_factor * px_factor * mem_factor
 
     # ⚠️ 2의 거듭제곱으로 내림하면 최대 절반을 버립니다.
     #    실제로 T4(14.7GB)에서 계산값 44 가 32 도 아닌 **16** 이 됐습니다
