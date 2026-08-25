@@ -219,6 +219,7 @@ class ScreeningAgent:
 
     def __init__(self, stage1, stage2, threshold: float,
                  stage1_tag: str = STAGE1_TAG, stage2_tag: str = STAGE2_TAG):
+        # stage2 가 None 이면 **1단계만** 돕니다 (정상/이상까지).
         self.s1, self.s2, self.thr = stage1, stage2, float(threshold)
         self.tag1, self.tag2 = stage1_tag, stage2_tag
         from src.stages import ABNORMAL_LABEL
@@ -230,8 +231,52 @@ class ScreeningAgent:
             )
 
     @classmethod
-    def load(cls, ckpt1: str | Path, ckpt2: str | Path,
-             threshold: float | None = None, device: str | None = None) -> "ScreeningAgent":
+    def from_release(cls, release: str | Path, device: str | None = None,
+                     stage1_only: bool = False) -> "ScreeningAgent":
+        """노트북 06 이 만든 `release/` 폴더 하나만 주면 알아서 찾습니다.
+
+            release/
+              stage1_threshold.json
+              checkpoints/stage1_effnetv2_s_f320_.../best.pt
+              checkpoints/stage2_convnextv2_base_m2.5_.../best.pt
+
+        어느 파일이 1단계인지 사람이 고를 필요가 없습니다 —
+        **이름에 다 적혀 있습니다** (`train.infer_run_settings` 와 같은 규칙).
+        """
+        import json
+
+        root = Path(release)
+        ck = root / "checkpoints"
+        if not ck.is_dir():
+            ck = root                       # checkpoints/ 를 직접 준 경우
+        found: dict[str, Path] = {}
+        for d in sorted(ck.iterdir() if ck.is_dir() else []):
+            if not (d / "best.pt").exists():
+                continue
+            for st in ("stage1", "stage2"):
+                if d.name.startswith(st + "_"):
+                    found[st] = d / "best.pt"
+        if "stage1" not in found:
+            raise FileNotFoundError(
+                f"{ck} 안에서 'stage1_…/best.pt' 를 못 찾았습니다. "
+                "노트북 06 의 Output 에서 release 폴더를 통째로 받으셨나요?")
+        if not stage1_only and "stage2" not in found:
+            raise FileNotFoundError(
+                f"{ck} 안에서 'stage2_…/best.pt' 를 못 찾았습니다. "
+                "1단계만 돌리려면 stage1_only=True (CLI 는 --stage1-only).")
+
+        thr = None
+        for c in (root / "stage1_threshold.json", ck.parent / "stage1_threshold.json"):
+            if c.exists():
+                thr = json.loads(c.read_text())["threshold"]
+                break
+        return cls.load(found["stage1"], found.get("stage2"), thr, device,
+                        stage1_only=stage1_only)
+
+    @classmethod
+    def load(cls, ckpt1: str | Path, ckpt2: str | Path | None = None,
+             threshold: float | None = None, device: str | None = None,
+             stage1_only: bool = False) -> "ScreeningAgent":
         """체크포인트 두 개로 에이전트를 세웁니다.
 
         threshold 를 안 주면 1단계 체크포인트 옆의 `stage1_threshold.json` 을 찾습니다
@@ -257,6 +302,11 @@ class ScreeningAgent:
                 "1단계 임계값을 못 찾았습니다. `stage1_threshold.json` 을 체크포인트 옆에 두거나 "
                 "threshold= 로 직접 주세요. 기본값을 쓰면 recall 이 조용히 무너집니다."
             )
+        if stage1_only or ckpt2 is None:
+            # 1단계만. "이상" 까지만 말하고 병변 분포는 안 냅니다 —
+            # 멘토 피드백대로 이름은 어차피 안 말하므로 이것만으로도 제품이 됩니다.
+            return cls(Engine.load(ckpt1, device=device), None, threshold,
+                       crop_tag_from_exp(Path(ckpt1).parent.name) or STAGE1_TAG)
         return cls(Engine.load(ckpt1, device=device),
                    Engine.load(ckpt2, device=device), threshold,
                    crop_tag_from_exp(Path(ckpt1).parent.name) or STAGE1_TAG,
@@ -314,6 +364,14 @@ class ScreeningAgent:
                 meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 return contract("normal", abnormal_p=abnormal, threshold=self.thr,
                                 text=compose_screening_message(pred), meta=meta)
+
+            if self.s2 is None:                       # 1단계만 돌리는 구성
+                pred = Prediction(topk=[], stage1_abnormal=abnormal,
+                                  confidence_band=band(abnormal))
+                meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                meta["stage2_crop"] = None
+                return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
+                                text=compose_screening_message(pred, abnormal), meta=meta)
 
             p2 = Path(td) / "s2.jpg"
             crop_for(im, bbox, self.tag2).save(p2, quality=95)

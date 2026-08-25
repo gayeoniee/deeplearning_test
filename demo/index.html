@@ -208,6 +208,12 @@ pre{background:var(--pink-faint); border-radius:9px; padding:10px; overflow-x:au
 .pick button:hover{background:var(--pink-soft)}
 .pick button svg{width:21px;height:21px}
 .pick button small{font-weight:400; font-size:11px; color:var(--muted)}
+.sample{
+  width:100%; margin-top:8px; font-family:inherit; font-size:12.5px; font-weight:500;
+  cursor:pointer; border:1px dashed var(--pink-soft); border-radius:12px; padding:10px;
+  background:transparent; color:var(--muted);
+}
+.sample:hover{background:var(--pink-faint); color:var(--pink-deep)}
 
 /* 카메라 */
 .cam{position:relative; border-radius:15px; overflow:hidden; margin-top:10px;
@@ -413,9 +419,52 @@ function pickStep() {
               stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/>
            <path d="M3 16l5-5 4 4 3-3 6 6"/><circle cx="8.5" cy="9.5" r="1.4"/></svg>
          앨범에서 고르기<small>끌어놓기·붙여넣기도 돼</small></button>
-     </div>`, {raw: true});
+     </div>
+     <button class="sample" id="pSample">사진 없이 샘플로 해볼래</button>`, {raw: true});
   w.querySelector('#pAlbum').addEventListener('click', () => { w.remove(); $('#fileAlbum').click(); });
   w.querySelector('#pCam').addEventListener('click', () => { w.remove(); cameraStep(); });
+  w.querySelector('#pSample').addEventListener('click', () => { w.remove(); sampleStep(); });
+}
+
+/* ── 샘플 — 파일 선택이 막힌 곳에서도 동선을 다 볼 수 있게 ──
+   ⚠️ AI Hub 데이터는 재배포 금지라 실제 사진을 넣을 수 없습니다.
+      그래서 **그려낸 그림**입니다. 진짜 피부 사진이 아닙니다. */
+function drawSample(seed) {
+  const c = document.createElement('canvas');
+  c.width = 1200; c.height = 900;
+  const g = c.getContext('2d');
+  let r = seed * 9301 + 49297;
+  const rnd = () => ((r = (r * 9301 + 49297) % 233280) / 233280);
+
+  const grd = g.createLinearGradient(0, 0, 1200, 900);
+  grd.addColorStop(0, '#F2D9C4'); grd.addColorStop(1, '#D9B69B');
+  g.fillStyle = grd; g.fillRect(0, 0, 1200, 900);
+  for (let i = 0; i < 2600; i++) {                    // 털 결
+    g.strokeStyle = `rgba(${140 + rnd() * 60 | 0},${105 + rnd() * 45 | 0},80,.16)`;
+    g.lineWidth = 1 + rnd() * 2;
+    const x = rnd() * 1200, y = rnd() * 900, a = rnd() * 6.28, len = 14 + rnd() * 26;
+    g.beginPath(); g.moveTo(x, y);
+    g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len); g.stroke();
+  }
+  const cx = 600, cy = 450, R = 130 + rnd() * 90;     // 가운데 병변 비슷한 자국
+  for (let i = 0; i < 40; i++) {
+    const a = rnd() * 6.28, d = rnd() * R;
+    g.fillStyle = `rgba(${180 + rnd() * 50 | 0},${90 + rnd() * 40 | 0},${80 + rnd() * 30 | 0},.5)`;
+    g.beginPath();
+    g.ellipse(cx + Math.cos(a) * d, cy + Math.sin(a) * d,
+              18 + rnd() * 36, 14 + rnd() * 30, rnd() * 3.14, 0, 6.28);
+    g.fill();
+  }
+  return new Promise(res => c.toBlob(b =>
+    res(new File([b], `sample${seed}.jpg`, {type: 'image/jpeg'})), 'image/jpeg', 0.9));
+}
+
+async function sampleStep() {
+  bubble('bot',
+    '<p>샘플 사진으로 해볼게 🎨</p>' +
+    '<p style="font-size:12.5px;color:#A79089">이건 <b>그려낸 그림</b>이야 — 진짜 피부 사진이 아니야. ' +
+    '학습에 쓴 데이터는 재배포가 안 돼서 넣을 수 없거든.</p>');
+  frameStep(await drawSample(1 + Math.floor(Math.random() * 900)));
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -495,8 +544,16 @@ async function cameraStep() {
       {video: {facingMode: 'environment', width: {ideal: 1920}}, audio: false});
   } catch (err) {
     // 브라우저가 카메라를 안 주면 (권한 거부·HTTP·데스크톱) 파일 입력으로 물러섭니다.
-    bubble('bot', '<p>카메라를 못 열었어 — 대신 사진첩을 열어줄게 📷</p>');
-    $('#fileCam').click();
+    // 이 페이지가 iframe 안이면 카메라 권한이 아예 막혀 있을 수 있습니다.
+    // 그때는 조용히 실패하지 말고 **다른 길**을 알려줍니다.
+    const w2 = bubble('bot',
+      '<p>여기선 카메라를 못 열어 😢 <span style="font-size:12.5px;color:#A79089">' +
+      '(브라우저가 막았어)</span></p><p>대신 이렇게 해볼래?</p>' +
+      `<div class="pick" style="margin-top:9px">
+         <button id="fb1">앨범에서 고르기</button>
+         <button id="fb2">샘플로 해보기</button></div>`, {raw: true});
+    w2.querySelector('#fb1').addEventListener('click', () => $('#fileCam').click());
+    w2.querySelector('#fb2').addEventListener('click', () => { w2.remove(); sampleStep(); });
     return;
   }
 

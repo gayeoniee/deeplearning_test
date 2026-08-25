@@ -6,10 +6,11 @@
     # 가중치 없이 화면만 (torch 불필요)
     uv run --extra serve python serve.py --mock
 
-    # 진짜 모델로
-    uv run --extra train --extra serve python serve.py \
-        --ckpt1 runs/stage1_.../best.pt \
-        --ckpt2 runs/stage2_.../best.pt
+    # 진짜 모델로 — 노트북 06 이 만든 release 폴더만 주면 됩니다
+    uv run --extra train --extra serve python serve.py --release ~/Downloads/release
+
+    # 1단계(정상/이상)만
+    uv run --extra train --extra serve python serve.py --release ~/Downloads/release --stage1-only
 
     http://127.0.0.1:8000/          데모 화면
     http://127.0.0.1:8000/docs      API 문서 (FastAPI 자동 생성)
@@ -109,8 +110,11 @@ def build_app(agent, mock: bool):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--release", help="노트북 06 이 만든 release 폴더 (이것만 주면 알아서 찾습니다)")
     ap.add_argument("--ckpt1", help="1단계(정상/이상) 체크포인트")
     ap.add_argument("--ckpt2", help="2단계(병변 6종) 체크포인트")
+    ap.add_argument("--stage1-only", action="store_true",
+                    help="1단계만. 정상/이상까지만 말하고 병변 분포는 안 냅니다")
     ap.add_argument("--threshold", type=float, default=None,
                     help="1단계 임계값. 생략하면 stage1_threshold.json 을 찾습니다")
     ap.add_argument("--mock", action="store_true",
@@ -125,13 +129,25 @@ def main(argv=None):
         agent = MockAgent(a.threshold or 0.1823)
         print("⚠️  mock 모드입니다 — 숫자는 모델이 낸 것이 아닙니다.")
     else:
-        if not (a.ckpt1 and a.ckpt2):
-            ap.error("--ckpt1 과 --ckpt2 가 필요합니다 (또는 --mock).")
         from src.agent import ScreeningAgent
 
-        agent = ScreeningAgent.load(a.ckpt1, a.ckpt2, a.threshold)
-        print(f"✅ 1단계 {Path(a.ckpt1).parent.name} / 2단계 {Path(a.ckpt2).parent.name} "
-              f"/ 임계값 {agent.thr:.4f}")
+        if a.release:
+            agent = ScreeningAgent.from_release(a.release, stage1_only=a.stage1_only)
+        elif a.ckpt1 and (a.ckpt2 or a.stage1_only):
+            agent = ScreeningAgent.load(a.ckpt1, a.ckpt2, a.threshold,
+                                        stage1_only=a.stage1_only)
+        else:
+            ap.error("--release 를 주거나, --ckpt1 (+ --ckpt2 또는 --stage1-only) 를 주세요. "
+                     "화면만 볼 거면 --mock.")
+
+        import torch
+
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"✅ 1단계 {agent.s1.classes} · 크롭 {agent.tag1} / "
+              f"2단계 {'없음 (--stage1-only)' if agent.s2 is None else agent.tag2} / "
+              f"임계값 {agent.thr:.4f} / {dev}")
+        if dev == "cpu":
+            print("   ℹ️ CPU 로 돕니다 — 사진 한 장에 1~3초쯤 걸립니다. 데모에는 충분합니다.")
 
     import uvicorn
 

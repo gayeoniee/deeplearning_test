@@ -273,6 +273,70 @@ check("요약이 건너뛴 장수를 셈", "건너뜀 1" in sm, sm.split("\n")[0
 check("요약이 병명 정확도가 아님을 밝힘", "병명 정확도가 아닙니다" in sm)
 check("표본이 없으면 그렇게 말함", "쓸 수 있는 표본이 없습니다" in be.summarize([]))
 
+# ── 9. release 폴더 자동 탐색 + 1단계만 구성 ────────────────
+print("\n[9] 가중치 붙이기")
+import json as _json                                             # noqa: E402
+import tempfile                                                  # noqa: E402
+
+with tempfile.TemporaryDirectory() as td:
+    rel = Path(td) / "release"
+    s1 = rel / "checkpoints" / "stage1_effnetv2_s_f320_384_moderate_photometric"
+    s2 = rel / "checkpoints" / "stage2_convnextv2_base_m2.5_384_moderate"
+    for d in (s1, s2):
+        d.mkdir(parents=True); (d / "best.pt").touch()
+    (rel / "stage1_threshold.json").write_text(_json.dumps({"threshold": 0.1823}))
+
+    seen: dict = {}
+    real = agent.ScreeningAgent.load
+    agent.ScreeningAgent.load = classmethod(
+        lambda cls, c1, c2=None, thr=None, dev=None, stage1_only=False:
+        seen.update(c1=Path(c1).parent.name, c2=(Path(c2).parent.name if c2 else None),
+                    thr=thr, only=stage1_only))
+    try:
+        agent.ScreeningAgent.from_release(rel)
+        check("release 에서 1단계를 이름으로 찾음", seen["c1"].startswith("stage1_"), str(seen))
+        check("release 에서 2단계를 이름으로 찾음", seen["c2"].startswith("stage2_"), str(seen))
+        check("stage1_threshold.json 을 같이 읽음", seen["thr"] == 0.1823, str(seen["thr"]))
+
+        seen.clear()
+        agent.ScreeningAgent.from_release(rel, stage1_only=True)
+        check("--stage1-only 를 전달함", seen["only"] is True)
+
+        import shutil                                            # noqa: E402
+        shutil.rmtree(s2)
+        try:
+            agent.ScreeningAgent.from_release(rel)
+            check("2단계가 없으면 에러", False, "안 막힘")
+        except FileNotFoundError as e:
+            check("2단계가 없으면 에러 + --stage1-only 를 안내", "--stage1-only" in str(e))
+        seen.clear()
+        agent.ScreeningAgent.from_release(rel, stage1_only=True)
+        check("2단계가 없어도 1단계만은 뜸", seen["c1"].startswith("stage1_"))
+
+        shutil.rmtree(s1)
+        try:
+            agent.ScreeningAgent.from_release(rel, stage1_only=True)
+            check("1단계도 없으면 에러", False, "안 막힘")
+        except FileNotFoundError:
+            check("1단계도 없으면 에러", True)
+    finally:
+        agent.ScreeningAgent.load = real
+
+# 1단계만일 때의 문구
+from src import message as _msg                                  # noqa: E402
+
+only_txt = _msg.compose_screening_message(
+    _msg.Prediction(topk=[], stage1_abnormal=0.62, confidence_band="보통"))
+check("1단계만이어도 재촬영으로 안 보냄", "판단이 어려운 사진" not in only_txt)
+check("1단계만도 이상을 말함", "이상 소견이 보입니다" in only_txt)
+check("1단계만도 확률을 보여줌", "62%" in only_txt)
+check("1단계만도 진료를 권함", "수의사 진료를 받아보시기를 권합니다" in only_txt)
+check("1단계만이면 병변 이름이 하나도 안 나옴",
+      not any(CLASS_KO[c] in only_txt for c in CLASSES))
+check("진짜 거절은 그대로 재촬영",
+      "판단이 어려운 사진" in _msg.compose_screening_message(
+          _msg.Prediction(topk=[], abstain=True)))
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

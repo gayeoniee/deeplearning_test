@@ -152,6 +152,22 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     """
     L: list[str] = []
 
+    if abnormal_p is None:
+        abnormal_p = pred.stage1_abnormal
+
+    # ★ 1단계만 돌리는 구성 — 2단계 없이 "이상" 까지만 말합니다.
+    #   분포가 없다고 재촬영으로 보내면 안 됩니다. 1단계는 판정을 냈으니까요.
+    #   (멘토 피드백대로 어차피 이름은 안 말하므로 이것만으로도 제품이 됩니다)
+    if not pred.abstain and not pred.topk and abnormal_p is not None:
+        L.append("🔎 **피부에 이상 소견이 보입니다.**" + f" (이상 가능성 {abnormal_p:.0%})")
+        L.append("")
+        L.append("**어떤 병변인지는 판단하지 않습니다.** 이 사진만으로는 알 수 없습니다.")
+        L.append("")
+        L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
+        L.append("")
+        L.append(f"_{DISCLAIMER}_")
+        return "\n".join(L)
+
     if pred.abstain or not pred.topk:
         return compose_message(pred)          # "다시 찍어주세요" 는 그대로
 
@@ -166,9 +182,6 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         L.append("")
         L.append(f"_{DISCLAIMER}_")
         return "\n".join(L)
-
-    if abnormal_p is None:
-        abnormal_p = pred.stage1_abnormal
 
     head = "🔎 **피부에 이상 소견이 보입니다.**"
     if abnormal_p is not None:
