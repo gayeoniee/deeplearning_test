@@ -99,6 +99,26 @@ check("빈 df 는 None (죽지 않음)",
 check("경로가 전부 None 이어도 None",
       errors.contact_sheet(pd.DataFrame({"crop_path": [None, None]}), show=False) is None)
 
+print("\n[6] by_group — 부위별로 쪼개기")
+gdf = pd.DataFrame({
+    # 발바닥 10장 중 8장이 헛알림, 등 10장 중 1장
+    "label_orig": ["A7"] * 20 + ["A2"] * 5,
+    "pred": (["A2"] * 8 + ["A7"] * 2) + (["A2"] * 1 + ["A7"] * 9) + ["A2"] * 5,
+    "region": ["발바닥"] * 10 + ["등"] * 10 + ["등"] * 5,
+})
+r = errors.by_group(gdf, col="region", show=True)
+check("전체 헛알림률 9/20", abs(r["baseline"] - 9 / 20) < 1e-9, str(r["baseline"]))
+tbl = {d["region"]: d for d in r["table"]}
+check("발바닥 8/10", (tbl["발바닥"]["헛알림"], tbl["발바닥"]["n"]) == (8, 10), str(tbl["발바닥"]))
+check("등 1/10 (병변 5장은 안 셈)", (tbl["등"]["헛알림"], tbl["등"]["n"]) == (1, 10),
+      str(tbl["등"]))
+check("전체대비 = 비율 − 기준", abs(tbl["발바닥"]["전체대비"] - (0.8 - 0.45)) < 1e-9)
+check("헛알림 많은 순", [d["region"] for d in r["table"]] == ["발바닥", "등"])
+check("컬럼이 없으면 빈 dict", errors.by_group(gdf.drop(columns=["region"]),
+                                              col="region") == {})
+check("값이 전부 비어도 빈 dict",
+      errors.by_group(gdf.assign(region=""), col="region") == {})
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

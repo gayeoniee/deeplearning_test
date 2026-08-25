@@ -168,3 +168,56 @@ def contact_sheet(df, *, path_col: str = "crop_path", n: int = 30, cols: int = 6
     else:
         plt.close(fig)
     return picks
+
+def by_group(df, col: str = "region", *, normal: str = "A7", top: int = 12,
+             show: bool = True) -> dict:
+    """오답을 **부위 같은 메타 컬럼**으로 쪼갭니다.
+
+    왜 필요한가 — STEP 11 에서 헛알림 사진 30장을 눈으로 보니 발바닥 패드와 코가
+    유난히 많았습니다. 그런데 "많아 보인다" 는 인상이지 숫자가 아닙니다. 부위별로
+    헛알림 비율을 재면 그게 **정말 그 부위 문제인지**, 아니면 원래 그 부위 사진이
+    많아서 그렇게 보이는 것인지 갈립니다.
+
+    df 에 `label_orig`(정답), `pred`(예측), 그리고 `col` 이 있어야 합니다.
+    돌려주는 것: 부위별 n / 헛알림 수 / 헛알림률, 전체 평균과의 차이.
+    """
+    import pandas as pd
+
+    if col not in df.columns:
+        print(f"[errors] '{col}' 컬럼이 없습니다 — 건너뜁니다 "
+              f"(있는 것: {sorted(df.columns)[:12]}…)")
+        return {}
+    sub = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
+    if len(sub) == 0:
+        print(f"[errors] '{col}' 이 전부 비어 있습니다 — 원본 JSON 에 값이 없는 듯합니다")
+        return {}
+
+    norm = sub[sub["label_orig"] == normal]
+    if len(norm) == 0:
+        print(f"[errors] 정답이 '{normal}' 인 행이 없습니다")
+        return {}
+    base = float((norm["pred"] != normal).mean())
+
+    g = norm.groupby(col, observed=True).agg(
+        n=("pred", "size"), 헛알림=("pred", lambda v: int((v != normal).sum())))
+    g["헛알림률"] = g["헛알림"] / g["n"]
+    g["전체대비"] = g["헛알림률"] - base
+    g = g.sort_values("헛알림", ascending=False)
+
+    if show:
+        from src.evaluate import pad_ko
+
+        print("\n" + "=" * 74)
+        print(f" 부위별 헛알림 — 정답 '{normal}' {len(norm):,}장, 전체 헛알림률 {base:.1%}")
+        print("=" * 74)
+        print(f"  {pad_ko(str(col), 24)}{'n':>7}{'헛알림':>8}{'비율':>8}{'전체대비':>10}")
+        for k, r in g.head(top).iterrows():
+            mark = " ←" if abs(r["전체대비"]) > 0.10 else ""
+            print(f"  {pad_ko(str(k), 24)}{int(r['n']):>7,}{int(r['헛알림']):>8,}"
+                  f"{r['헛알림률']:>8.1%}{r['전체대비']:>+10.1%}{mark}")
+        if len(g) > top:
+            print(f"  … 그 밖에 {len(g) - top}개 부위")
+        print("=" * 74)
+        print("  💡 '전체대비' 가 크게 +인 부위 = 그 부위가 유난히 헛알림이 납니다.")
+        print("     n 이 작으면 흔들리니 n 도 같이 보세요.")
+    return {"baseline": base, "table": g.reset_index().to_dict("records")}
