@@ -47,5 +47,29 @@ for k, row in tab.head(20).iterrows():
 if len(tab) > 20:
     print(f"  … 그 밖에 {len(tab) - 20}개")
 
+# ── 부위 코드가 무엇을 뜻하는지 해독 ─────────────────────────────
+# ⚠️ A/B/H/L 을 추측으로 풀면 안 됩니다. 이 프로젝트에서 스키마를 추측했다가
+#    세 번 틀렸고, 셋 다 에러 없이 그럴듯한 값을 만들어냈습니다.
+#    원본에 남아 있는 문자열(경로·파일명)에서 읽습니다.
+print("\n── 부위 코드 해독 단서 ──")
+cand = [c for c in ("symptom_meta", "image_name", "crop_rel", "image_path")
+        if c in sub.columns]
+if not cand:
+    print("  단서가 될 컬럼이 없습니다")
+for code in tab.index:
+    rows = sub[sub["부위"] == code]
+    print(f"\n  [{code}]  {len(rows):,}장")
+    for c in cand:
+        vals = rows[c].dropna().astype(str)
+        vals = vals[vals.str.strip() != ""]
+        if len(vals) == 0:
+            continue
+        uniq = vals.nunique()
+        print(f"    {c:<14} 고유 {uniq:,}개")
+        for v in vals.drop_duplicates().head(3):
+            print(f"      {v[:110]}")
+
+print("\n💡 위 문자열에 한글 부위명(머리/등/배/다리 …)이 보이면 그게 답입니다.")
+print("   안 보이면 AI Hub 데이터 설명서를 확인해야 합니다 — 추측하지 마세요.")
 print("\n💡 정상 사진이 몰려 있는 부위가 곧 헛알림 후보입니다.")
 print("   실제 헛알림률은 노트북 07 의 4-b 절(errors.by_group)이 잽니다.")
