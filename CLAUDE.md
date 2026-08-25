@@ -153,6 +153,9 @@ deeplearning_test/
 │   ├── calibrate.py           온도 보정 · ECE · coverage-risk
 │   ├── explain.py             Grad-CAM 정렬도 (배경 보는지 **수치로**)
 │   └── infer.py               단일 사진 추론 + 안전 문구
+│                              ⚠️ 문구 함수가 **둘**입니다 — `compose_message`
+│                              (단일 모델, 이름을 말함) / `compose_screening_message`
+│                              (★ 2단계 파이프라인, **이름을 말하지 않음**)
 │
 ├── tests/                     200+ 검사. `uv run python tests/<파일>`
 │   ├── test_notebook_kaggle_e2e.py  ★ Kaggle 환경을 통째로 흉내 내 03 전 셀 실행
@@ -162,6 +165,7 @@ deeplearning_test/
 │   ├── test_robust.py               교란 뷰
 │   ├── test_stages.py               2단계 분할 공유
 │   ├── test_windows_encoding.py     cp949 회귀 (같은 버그로 3번 막혔음)
+│   ├── test_screening_message.py    ★ 최종 출력이 병변 이름을 단정하지 않는가
 │   ├── test_capture_guide.py        촬영 가이드 밴드 계산
 │   └── test_notebook_names.py       노트북 셀의 이름·인자 오타 (실행 없이)
 │
@@ -235,6 +239,9 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
 | 임계값에 여유를 둬야 하나 | **아니오** — 변별력을 고치면 임계값이 따라옵니다. holdout 최적값과의 차이 0.0539 → 0.0126 | STEP 10 |
 | 헛알림을 줄일 수 있나 | **예** — 59.2% → 33.3%. 같은 recall 에서 | STEP 10 |
 | 2단계는 holdout 에서 val 보다 잘 나오나 | **계속 그렇습니다** — 0.5263 → 0.5645. 네 번 다 같은 방향 | STEP 5·8·10 |
+| 화면에 병변 이름을 띄워도 되나 | **아니오 (2026-08-26 확정)** — holdout 에서 그 이름이 **56.6%** 틀립니다. 2단계는 계속 돌리되 **확률 분포만** 보여주고 "판단 불가 → 진료 권함" 으로 끝냅니다 | 멘토링 · STEP 11 |
+| 거절로 이름의 정확도를 살릴 수 있나 | **아니오** — 오답률 20% 를 맞추려면 커버리지가 **18.2%** 로 떨어집니다. 그 곡선은 헛알림 1,233건을 뺀 것이라 실제는 더 나쁩니다 | STEP 11 |
+| 2단계 백본을 더 갈면 이름이 맞나 | **아니오 — 데이터 한계.** CNN(convnextv2 0.5744)과 어텐션(swinv2 0.5718)이 **0.0026** 차이로 겹칩니다 | STEP 12·13 |
 
 각 결론이 **언제 어떻게** 나왔는지는 [`HISTORY.md`](HISTORY.md) 에,
 원본 숫자는 [`docs/results/`](docs/results/) 에 있습니다.
@@ -248,6 +255,10 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
 * **`Path.rglob` 는 심볼릭 링크 하위로 안 들어갑니다** (두 번 당함)
 * **부분 업로드**: 크롭이 30%만 올라간 채로 조용히 학습됐습니다 →
   `crop.MIN_CROP_COVERAGE = 0.95` 미만이면 에러
+* **`Prediction.topk` 를 화면에 그대로 띄우면 안 됩니다.** 2단계 파이프라인에서
+  이 값은 1단계 확률을 곱해 낮춰둔 **거절 판정용**입니다. 보호자에게 보여줄 분포는
+  깎기 전 원본인 `Prediction.stage2_probs` (합 = 1) 입니다 — 깎은 값을 띄우면
+  여섯 개가 다 작아져 "다 낮네, 별 거 아닌가" 로 읽힙니다
 * **두 단계가 서로 다른 백본을 쓸 수 있습니다** — 1단계 effnetv2_s / 2단계 resnet50.
   05 가 "체크포인트는 항상 resnet50" 으로 하드코딩돼 있다가 shape mismatch 로
   죽었습니다 (bn1 24 vs 64). 백본은 **폴더 이름에서** 읽습니다

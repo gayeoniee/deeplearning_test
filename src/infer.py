@@ -9,6 +9,13 @@
   2. 확신이 낮으면 답을 만들어내지 말고 "판단 어려움"으로 돌린다.
   3. 어떤 결과가 나오든 수의사 진료 안내를 함께 준다.
   4. "정상"이라는 판정도 단정하지 않는다 — 놓쳤을 수 있다.
+  5. ★ 2단계 파이프라인은 **병변 형태 이름도 단정하지 않는다.**
+     여섯 개 확률을 전부 보여주고 "판단 불가 → 진료 권함" 으로 끝낸다.
+     (2026-08-26 멘토 피드백. 근거는 `compose_screening_message` 의 docstring)
+
+문구를 만드는 함수가 둘입니다 — 섞어 쓰지 마세요:
+  · `compose_message`            — 단일 모델(Engine) 용. 1등 이름을 말합니다
+  · `compose_screening_message`  — ★ 2단계 파이프라인 용. 이름을 말하지 않습니다
 
     from src import infer
     engine = infer.Engine.load("checkpoints/convnextv2_base/best.pt")
@@ -42,6 +49,13 @@ class Prediction:
     confidence_band: str = ""      # "높음" | "보통" | "낮음"
     image: str = ""
 
+    # ── 2단계 파이프라인에서만 채워집니다 ──
+    # topk 는 1단계 이상확률을 곱해 **보수적으로 깎은** 값입니다 (거절 판정용).
+    # 화면에 띄우는 분포는 깎기 전 원본이어야 합니다 — 합이 1 이 아니면
+    # 사람은 "다 낮네, 별 거 아닌가" 로 읽습니다. 그래서 둘을 따로 들고 다닙니다.
+    stage1_abnormal: float | None = None                          # 1단계 '이상' 확률
+    stage2_probs: list[tuple[str, float]] | None = None           # 2단계 원본 (합 = 1)
+
     @property
     def top1(self) -> tuple[str, float] | None:
         return self.topk[0] if self.topk else None
@@ -54,8 +68,29 @@ class Prediction:
             "topk": [{"class": c, "name_ko": CLASS_KO.get(c, c),
                       "name_en": CLASS_EN.get(c, c), "prob": round(p, 4)}
                      for c, p in self.topk],
+            "stage1_abnormal": (None if self.stage1_abnormal is None
+                                else round(self.stage1_abnormal, 4)),
+            "stage2_probs": (None if self.stage2_probs is None else
+                             [{"class": c, "name_ko": CLASS_KO.get(c, c),
+                               "name_en": CLASS_EN.get(c, c), "prob": round(p, 4)}
+                              for c, p in self.stage2_probs]),
             "disclaimer": DISCLAIMER,
         }
+
+
+def _cells(text: str) -> int:
+    """터미널에서 차지하는 칸 수. 한글은 두 칸입니다.
+
+    `len("비듬")` 은 2 지만 화면에서는 4 칸을 먹습니다. 이걸 안 맞추면
+    확률 막대가 클래스마다 다른 위치에서 시작해 표로 안 읽힙니다.
+    """
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def _pad(text: str, width: int) -> str:
+    return text + " " * max(0, width - _cells(text))
 
 
 def band(p: float) -> str:
@@ -105,6 +140,76 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
         L.append("")
         L.append("_신뢰도가 낮습니다. 사진을 더 선명하게 다시 찍으면 결과가 달라질 수 있습니다._")
 
+    L.append("")
+    L.append(f"_{DISCLAIMER}_")
+    return "\n".join(L)
+
+
+def compose_screening_message(pred: Prediction, abnormal_p: float | None = None) -> str:
+    """★ 확정된 출력 형식 (2026-08-26, 멘토 피드백).
+
+    **병변 이름을 단정하지 않습니다.** 1단계가 '이상' 이라고 하면 2단계 확률을
+    **여섯 개 전부** 보여주고, 어느 쪽인지는 판단할 수 없다고 말한 뒤 진료를 권합니다.
+
+    왜 단정하지 않나 — holdout 실측:
+      · 화면에 뜬 병변 이름이 틀린 비율 **56.6%** (병원 보낸 4,478건 중 2,534건)
+      · A6(결절·종괴)를 A2(비듬)로 부른 것 56장. 종괴를 비듬이라 하면 병원을 미룹니다
+      · 서로 다른 아키텍처(convnextv2 0.5744 / swinv2 0.5718)가 0.0026 차이로 겹침
+        → 모델이 아니라 데이터가 한계. 백본을 더 바꿔도 안 넘습니다
+
+    왜 그래도 숫자를 보여주나 — 참고 정보로서의 값은 있고, **여섯 개를 다 보여주면**
+    "확실하지 않다" 가 눈에 보입니다.
+
+    ⚠️ 그래서 표시 규칙이 중요합니다:
+      · 1등만 뽑아 굵게 쓰지 않습니다. 그러면 사람은 그걸 답으로 읽습니다
+      · 클래스별 긴급도 문구(URGENCY_HINT)를 붙이지 않습니다 — 이름을 단정하는 셈입니다
+      · "판단할 수 없습니다" 를 숫자보다 **위에** 씁니다
+    """
+    L: list[str] = []
+
+    if pred.abstain or not pred.topk:
+        return compose_message(pred)          # "다시 찍어주세요" 는 그대로
+
+    c0 = pred.topk[0][0]
+    if c0 == NORMAL_LABEL:
+        p_norm = pred.topk[0][1]
+        L.append(f"🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
+        L.append("")
+        L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
+        L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
+                 "결과와 무관하게 병원에 가보시는 것을 권합니다.")
+        L.append("")
+        L.append(f"_{DISCLAIMER}_")
+        return "\n".join(L)
+
+    if abnormal_p is None:
+        abnormal_p = pred.stage1_abnormal
+
+    head = "🔎 **피부에 이상 소견이 보입니다.**"
+    if abnormal_p is not None:
+        head += f" (이상 가능성 {abnormal_p:.0%})"
+    L.append(head)
+    L.append("")
+    L.append("**어떤 병변인지는 이 사진만으로 판단할 수 없습니다.** "
+             "아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다.")
+    L.append("")
+
+    # 깎기 전 원본 분포를 씁니다 (합 = 1). pred.topk 는 1단계 확률을 곱해
+    # 낮춰둔 값이라, 그걸 그대로 띄우면 여섯 개가 다 작아져 분포로 안 읽힙니다.
+    dist = pred.stage2_probs if pred.stage2_probs else pred.topk
+
+    # ★ 여섯 개를 **전부** 보여줍니다. 상위 몇 개만 자르면 그게 답처럼 읽힙니다.
+    width = max((_cells(CLASS_KO.get(cc, cc)) for cc, _ in dist), default=10)
+    for cc, pp in dist:
+        name = _pad(CLASS_KO.get(cc, cc), width)
+        bar = "█" * max(0, round(pp * 20))
+        L.append(f"    {name}  {pp:>4.0%}  {bar}")
+
+    L.append("")
+    L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
+    if pred.confidence_band == "낮음":
+        L.append("")
+        L.append("_사진을 더 선명하게 다시 찍으면 결과가 달라질 수 있습니다._")
     L.append("")
     L.append(f"_{DISCLAIMER}_")
     return "\n".join(L)
@@ -220,7 +325,10 @@ class Engine:
             ax[1].text(0.5, 0.5, f"CAM 실패\n{str(exc)[:50]}", ha="center", fontsize=8)
         ax[1].axis("off")
         plt.tight_layout(); plt.show()
-        print(compose_message(pred, self.cfg.topk_report))
+        # 2단계 파이프라인이 넘겨준 판정이면(= 1단계 확률이 붙어 있으면)
+        # 이름을 단정하지 않는 스크리닝 문구를 씁니다.
+        print(compose_screening_message(pred) if pred.stage1_abnormal is not None
+              else compose_message(pred, self.cfg.topk_report))
 
 
 # ──────────────────────────────────────────────────────────────
@@ -230,7 +338,11 @@ class TwoStageEngine:
     """1단계에서 '이상'으로 걸러진 것만 2단계 병변 분류로 넘깁니다.
 
         사진 → 1단계 ─ 이상확률 < threshold → "정상으로 보입니다" (2단계 안 봄)
-                      └ threshold 이상 ────→ 2단계 → "A2 소견이 의심됩니다"
+                      └ threshold 이상 ────→ 2단계 → 병변 6종 **확률 분포를 통째로**
+
+    ⚠️ 2단계의 1등을 병변 이름으로 **단정하지 않습니다.** holdout 에서 그 이름이
+    틀린 비율이 56.6% 였습니다. 여섯 개를 다 보여주고 "판단 불가 → 진료 권함" 으로
+    끝냅니다 (`compose_screening_message` 에 근거를 적어뒀습니다).
 
     threshold 는 재현율 우선으로 잡습니다 — 놓치는 것이 오탐보다 나쁘므로.
     노트북 03 이 `stage1_threshold.json` 에 저장한 값을 쓰세요.
@@ -261,18 +373,27 @@ class TwoStageEngine:
         if abnormal < self.thr:
             # ⚠️ "정상" 도 단정하지 않습니다 — 놓쳤을 수 있으므로 문구가 그 한계를 말합니다
             return Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)], abstain=False,
-                              confidence_band=band(1 - abnormal), image=path)
+                              confidence_band=band(1 - abnormal), image=path,
+                              stage1_abnormal=abnormal)
 
         p2 = self.s2.predict(path)
+        # 화면에 띄울 분포는 **깎기 전** 원본입니다 (합 = 1).
+        p2.stage2_probs = list(p2.topk)
+        p2.stage1_abnormal = abnormal
         # 2단계 확률에 1단계의 '이상' 확률을 곱해 전체 신뢰도를 보수적으로 유지합니다.
         # (1단계가 애매하게 통과시킨 사진에 2단계가 90% 라고 말하면 과신입니다)
+        # 이 값은 **거절 판정용**이고, 사람에게 보여주는 숫자가 아닙니다.
         p2.topk = [(c, p * abnormal) for c, p in p2.topk]
         p2.confidence_band = band(p2.topk[0][1]) if p2.topk else "낮음"
         p2.abstain = bool(p2.topk) and p2.topk[0][1] < self.s2.cfg.abstain_threshold
         return p2
 
     def explain(self, path: str) -> str:
-        return compose_message(self.predict(path))
+        """★ 최종 출력. 병변 **이름을 단정하지 않고** 2단계 분포를 통째로 보여줍니다.
+
+        (2026-08-26 멘토 피드백. 근거는 `compose_screening_message` 참고)
+        """
+        return compose_screening_message(self.predict(path))
 
     def show(self, path: str) -> None:
         """이미지 + CAM + 최종 문구. 1단계에서 걸러지면 CAM 은 생략합니다."""
@@ -286,6 +407,6 @@ class TwoStageEngine:
                 plt.imshow(im.convert("RGB")); plt.axis("off")
                 plt.title("1단계: 정상으로 판단 (2단계 미실행)")
                 plt.tight_layout(); plt.show()
-            print(compose_message(pred))
+            print(compose_screening_message(pred))
             return
         self.s2.show(path, pred)          # CAM 은 2단계 모델, 문구는 파이프라인 확률로
