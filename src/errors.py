@@ -168,21 +168,3 @@ def contact_sheet(df, *, path_col: str = "crop_path", n: int = 30, cols: int = 6
     else:
         plt.close(fig)
     return picks
-
-def subsample(df, n: int | None, *, by: str = "label_orig", seed: int = 0,
-              verbose: bool = True):
-    """클래스 비율을 지키며 최대 n 장으로 줄입니다 (GPU 없이 돌릴 때).
-
-    ⚠️ 줄이면 **드문 클래스의 칸 수가 부정확해집니다.** A6 은 holdout 에 263장뿐이라
-       3,000장으로 줄이면 100장 남짓이 됩니다. "헛알림이 어디로 가나" 같은 큰
-       흐름은 그대로 보이지만, 칸 하나의 정확한 장수를 보고할 거면 전체로 돌리세요.
-    """
-    if n is None or len(df) <= n:
-        return df
-    frac = n / len(df)
-    out = (df.loc[df.groupby(by, observed=True).sample(frac=frac, random_state=seed).index]
-             .reset_index(drop=True))
-    if verbose:
-        print(f"  [축소] {len(df):,} → {len(out):,}장 ({frac:.0%}, '{by}' 비율 유지)")
-        print("         ⚠️ 드문 클래스의 칸 수는 이 비율만큼 부정확해집니다")
-    return out
