@@ -257,9 +257,16 @@ class ScreeningAgent:
                 if d.name.startswith(st + "_"):
                     found[st] = d / "best.pt"
         if "stage1" not in found:
+            # 못 찾았을 때 **뭐가 있는지 보여줍니다.** "못 찾았습니다" 만 던지면
+            # 폴더를 잘못 준 건지 다운로드가 덜 된 건지 알 수가 없습니다.
+            here = ([f"  {d.name}/" + ("  ← best.pt 있음" if (d / "best.pt").exists() else "")
+                     for d in sorted(ck.iterdir())] if ck.is_dir()
+                    else [f"  (폴더가 아닙니다: {ck})"])
             raise FileNotFoundError(
-                f"{ck} 안에서 'stage1_…/best.pt' 를 못 찾았습니다. "
-                "노트북 06 의 Output 에서 release 폴더를 통째로 받으셨나요?")
+                f"{ck} 안에서 'stage1_…/best.pt' 를 못 찾았습니다.\n"
+                "거기 있는 것:\n" + ("\n".join(here[:20]) or "  (비어 있음)") +
+                "\n\n노트북 06 의 Output 에서 `release` 폴더를 통째로 받으셨나요? "
+                "안에 checkpoints/stage1_…/best.pt 가 있어야 합니다.")
         if not stage1_only and "stage2" not in found:
             raise FileNotFoundError(
                 f"{ck} 안에서 'stage2_…/best.pt' 를 못 찾았습니다. "
