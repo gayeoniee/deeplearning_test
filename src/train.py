@@ -438,6 +438,15 @@ def export_release(exps: list[str], meta: dict | None = None,
             print(f"⚠️ [release] '{exp}/result.json' 이 없습니다 — "
                   "다음 노트북이 이 단계를 다시 학습합니다.")
 
+        # ★ 온도 보정값. 이게 빠지면 `Engine.load` 가 조용히 T=1.0 으로 돌아가
+        #   **보정 안 된 확률을 보호자에게 보여줍니다.** 실제로 빠져 있었습니다.
+        tj = ckpt_dir(exp) / "temperature.json"
+        if tj.exists():
+            _copy_atomic(tj, out / "temperature.json")
+        else:
+            print(f"⚠️ [release] '{exp}/temperature.json' 이 없습니다 — "
+                  "이 단계는 **보정 안 된 확률**로 서빙됩니다.")
+
     for name, payload in (files or {}).items():
         f = dst / name
         f.parent.mkdir(parents=True, exist_ok=True)

@@ -156,7 +156,7 @@ def _dist(probs: list[tuple[str, float]]) -> list[dict]:
 
 
 def contract(verdict: str, *, abnormal_p: float | None = None,
-             threshold: float | None = None,
+             threshold: float | None = None, calibrated: bool = False,
              stage2: list[tuple[str, float]] | None = None,
              text: str = "", meta: dict | None = None) -> dict:
     """앱이 받는 JSON. **여기에 "1등" 필드를 추가하지 마세요.**
@@ -199,9 +199,9 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
             "abnormal_prob": None if abnormal_p is None else round(float(abnormal_p), 4),
             "abnormal_percent": None if abnormal_p is None else round(float(abnormal_p) * 100, 1),
             "threshold": None if threshold is None else round(float(threshold), 4),
-            # ⚠️ 1단계는 온도 보정을 한 적이 없습니다 (2단계만 T=1.1063).
-            #    이 확률을 사람에게 보여주는 이상 보정이 필요합니다 — STATUS.md 열린 문제 6번.
-            "calibrated": False,
+            # ⚠️ **하드코딩하지 마세요.** 엔진이 실제로 물고 있는 T 를 보고 정합니다.
+            #    보정 안 된 확률을 "보정됨" 으로 내보내면 앱이 그걸 믿고 띄웁니다.
+            "calibrated": bool(calibrated),
         },
         # 병변 6종 분포. verdict != "abnormal" 이면 비어 있습니다.
         "stage2": {"shown": bool(stage2), "distribution": _dist(stage2 or [])},
@@ -346,7 +346,9 @@ class ScreeningAgent:
         except Exception as exc:
             return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
 
+        cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0)
         meta = {"mock": False, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
+                "stage1_temperature": getattr(self.s1, "T", 1.0),
                 "box_source": "user" if box is not None else "center",
                 "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
 
@@ -358,7 +360,8 @@ class ScreeningAgent:
             meta["guide"] = g
             if not g["ok"]:
                 meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-                return contract("retake", text="", meta={**meta, "retake_reason": g["reason"]})
+                return contract("retake", text="", calibrated=cal1,
+                                meta={**meta, "retake_reason": g["reason"]})
 
         im = to_train_space(im)                       # 짧은 변 1080 = 학습 픽셀 공간
         bbox = box_to_px(box, *im.size) if box is not None else None
@@ -375,6 +378,7 @@ class ScreeningAgent:
                                   stage1_abnormal=abnormal)
                 meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 return contract("normal", abnormal_p=abnormal, threshold=self.thr,
+                                calibrated=cal1,
                                 text=compose_screening_message(pred), meta=meta)
 
             if self.s2 is None:                       # 1단계만 돌리는 구성
@@ -383,6 +387,7 @@ class ScreeningAgent:
                 meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
                 meta["stage2_crop"] = None
                 return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
+                                calibrated=cal1,
                                 text=compose_screening_message(pred, abnormal), meta=meta)
 
             p2 = Path(td) / "s2.jpg"
@@ -399,9 +404,11 @@ class ScreeningAgent:
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         if pred.abstain:
             return contract("retake", abnormal_p=abnormal, threshold=self.thr,
+                            calibrated=cal1,
                             text=compose_screening_message(pred), meta=meta)
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
-                        stage2=raw, text=compose_screening_message(pred), meta=meta)
+                        calibrated=cal1, stage2=raw,
+                        text=compose_screening_message(pred), meta=meta)
 
 
 def crop_tag_from_exp(name: str) -> str | None:

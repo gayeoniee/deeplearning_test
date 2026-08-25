@@ -176,6 +176,7 @@ deeplearning_test/
 │   ├── test_stages.py               2단계 분할 공유
 │   ├── test_windows_encoding.py     cp949 회귀 (같은 버그로 3번 막혔음)
 │   ├── test_screening_message.py    ★ 최종 출력이 병변 이름을 단정하지 않는가
+│   ├── test_calibration_wiring.py   ★ 보정값이 서빙까지 도착하는가
 │   ├── test_agent.py                ★ 앱 계약에 "1등 병변" 필드가 생기는지 감시
 │   ├── test_capture_guide.py        촬영 가이드 밴드 계산
 │   └── test_notebook_names.py       노트북 셀의 이름·인자 오타 (실행 없이)
@@ -287,6 +288,14 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
 * **`serve.py` 에 `from __future__ import annotations` 를 넣지 마세요.**
   `UploadFile` 이 문자열 어노테이션이 되는데 라우트가 `build_app` 안에 있어
   pydantic 이 이름을 못 찾고 **500** 으로 죽습니다 (실제로 당했습니다)
+* **`calibrate.apply()` 는 확률을 돌려줍니다 — logits 가 아닙니다.** 거기에
+  `stages.stage1_scores()` 를 걸면 softmax 가 **두 번** 먹어 전부 0.5 로 뭉개집니다.
+  ECE 가 0.03 → 0.20 으로 나빠져서 잡았습니다. 보정된 점수가 필요하면
+  **`logits / T` 를 넘기세요**
+* **`export_release` 에서 빠진 파일은 조용히 기본값이 됩니다.** `temperature.json`
+  이 안 실려서 릴리스로 서빙하면 `Engine.load` 가 T=1.0 으로 물러섰습니다 —
+  보정 안 된 확률이 보호자에게 갑니다. 에러도 안 납니다.
+  `tests/test_calibration_wiring.py` 가 감시합니다
 * **`Prediction.topk` 를 화면에 그대로 띄우면 안 됩니다.** 2단계 파이프라인에서
   이 값은 1단계 확률을 곱해 낮춰둔 **거절 판정용**입니다. 보호자에게 보여줄 분포는
   깎기 전 원본인 `Prediction.stage2_probs` (합 = 1) 입니다 — 깎은 값을 띄우면
