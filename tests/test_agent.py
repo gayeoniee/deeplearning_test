@@ -241,6 +241,38 @@ check("밴드 밖이면 모델을 돌리기 전에 돌려보냄",
       src_screen.index("check_guide") < src_screen.index("self.s1.predict"))
 check("학습 픽셀 공간으로 먼저 맞춤", "to_train_space" in src_screen)
 
+# ── 8. 네모 오차 → 이미 잰 교란으로 환산 (tools/box_error.py) ──
+print("\n[8] 네모 오차 환산")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import box_error as be                                          # noqa: E402
+
+T = [0.45, 0.45, 0.55, 0.55]          # 정답: 가운데 0.10 크기
+check("딱 맞으면 줌 1.0", abs(be.to_perturbation([.45, .45, .10, .10], T)["zoom"] - 1) < 1e-9)
+check("네모를 2배로 그리면 줌 0.5 (크롭이 넓어짐)",
+      abs(be.to_perturbation([.40, .40, .20, .20], T)["zoom"] - 0.5) < 1e-9)
+check("네모를 절반으로 그리면 줌 2.0",
+      abs(be.to_perturbation([.475, .475, .05, .05], T)["zoom"] - 2.0) < 1e-9)
+check("중심만 어긋나면 크기비는 1",
+      abs(be.to_perturbation([.50, .50, .10, .10], T)["size_ratio"] - 1) < 1e-9)
+check("중심 어긋남은 2단계 크롭 폭 기준",
+      abs(be.to_perturbation([.50, .50, .10, .10], T)["shift_frac"]
+          - (0.05 * 2 ** .5) / 0.25) < 1e-6)
+check("빈 네모는 빈 dict", be.to_perturbation([.5, .5, 0, 0], T) == {})
+
+check("네모 허용 밴드는 줌 밴드의 역수",
+      abs(be.BOX_ALLOW[0] - 1 / be.ZOOM_ALLOW[1]) < 1e-9
+      and abs(be.BOX_ALLOW[1] - 1 / be.ZOOM_ALLOW[0]) < 1e-9)
+check("밴드 값이 agent 와 같은 실측에서 옴",
+      be.SHIFT_MAX == agent.GUIDE_CENTER_MAX)
+check("1.5배로 그리면 허용 밖 (0.59~1.43배)",
+      not (be.BOX_ALLOW[0] <= 1.5 <= be.BOX_ALLOW[1]))
+check("1.3배는 허용 안", be.BOX_ALLOW[0] <= 1.3 <= be.BOX_ALLOW[1])
+
+sm = be.summarize([be.to_perturbation([.45, .45, .10, .10], T), {"user": None}])
+check("요약이 건너뛴 장수를 셈", "건너뜀 1" in sm, sm.split("\n")[0])
+check("요약이 병명 정확도가 아님을 밝힘", "병명 정확도가 아닙니다" in sm)
+check("표본이 없으면 그렇게 말함", "쓸 수 있는 표본이 없습니다" in be.summarize([]))
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)
