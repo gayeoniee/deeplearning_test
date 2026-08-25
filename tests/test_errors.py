@@ -99,6 +99,23 @@ check("빈 df 는 None (죽지 않음)",
 check("경로가 전부 None 이어도 None",
       errors.contact_sheet(pd.DataFrame({"crop_path": [None, None]}), show=False) is None)
 
+print("\n[6] subsample — GPU 없이 돌릴 때 표본 줄이기")
+big = pd.DataFrame({"label_orig": (["A7"] * 600 + ["A1"] * 300 + ["A6"] * 100),
+                    "x": range(1000)})
+small = errors.subsample(big, 300, verbose=False)
+check("300장 근처로 줄었습니다", 290 <= len(small) <= 310, str(len(small)))
+_share = (small["label_orig"].value_counts(normalize=True)
+          - big["label_orig"].value_counts(normalize=True)).abs().max()
+check("클래스 비율이 유지됩니다 (오차 2%p 이내)", _share < 0.02, f"{_share:.3f}")
+check("n=None 이면 그대로", errors.subsample(big, None, verbose=False) is big)
+check("이미 작으면 그대로", errors.subsample(big, 5000, verbose=False) is big)
+check("같은 seed 면 같은 표본",
+      errors.subsample(big, 300, verbose=False)["x"].tolist()
+      == errors.subsample(big, 300, verbose=False)["x"].tolist())
+check("seed 가 다르면 다른 표본",
+      errors.subsample(big, 300, seed=1, verbose=False)["x"].tolist()
+      != errors.subsample(big, 300, seed=2, verbose=False)["x"].tolist())
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)
