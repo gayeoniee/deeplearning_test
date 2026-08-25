@@ -119,8 +119,20 @@ holdout 7,134장 (정상 3,703 / 병변 3,431), 임계값 0.1823
 않았습니다** — 계약만 먼저 못 박아 양쪽이 동시에 작업할 수 있게 한 것입니다.
 
 ```bash
-uv run --extra serve python serve.py --mock      # 가중치 없이 화면만
+uv run --extra serve python serve.py --mock                          # 화면만
+uv run --extra train --extra serve python serve.py --release <폴더>   # 진짜 모델
+uv run … python serve.py --release <폴더> --stage1-only               # 1단계만
 ```
+
+★ **진짜 모델은 지금 붙일 수 있습니다 — 재학습 필요 없습니다.**
+STEP 10(노트북 06)이 만든 Kaggle Output 의 `release/` 폴더를 받아 `--release` 로
+주면 끝입니다. 폴더 하나면 되고 GPU 도 필요 없습니다 (CPU 로 한 장에 1~3초).
+남은 06 재실행은 **더 좋은 2단계 백본**을 쓰려는 것이지, 지금 돌릴 모델이
+없어서가 아닙니다.
+
+`--stage1-only` 는 정상/이상까지만 말하고 병변 분포를 안 냅니다. 어차피 병변
+이름은 안 말하기로 했으므로 이것만으로도 제품이 되고, 1단계가 이 프로젝트에서
+가장 잘 되는 부분입니다 (holdout AUROC 0.9304).
 
 | 무엇 | 어디 |
 |---|---|
