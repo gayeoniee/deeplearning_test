@@ -46,16 +46,25 @@ class _Names(ast.NodeVisitor):
         name = n.asname or n.name.split(".")[0]
         self.bound.add(name)
 
+    def _bind_args(self, a: ast.arguments) -> None:
+        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs,
+                    *([a.vararg] if a.vararg else []),
+                    *([a.kwarg] if a.kwarg else [])]:
+            self.bound.add(arg.arg)
+
     def _fn(self, n) -> None:
         self.bound.add(n.name)
-        a = n.args
-        for arg in [*a.posonlyargs, *a.args, *a.kwonlyargs,
-                    *( [a.vararg] if a.vararg else []),
-                    *( [a.kwarg] if a.kwarg else [])]:
-            self.bound.add(arg.arg)
+        self._bind_args(n.args)
         self.generic_visit(n)
 
     visit_FunctionDef = visit_AsyncFunctionDef = _fn
+
+    # ⚠️ lambda 인자도 묶어야 합니다. 안 그러면
+    #       sorted(d.items(), key=lambda kv: -kv[1])
+    #    의 `kv` 가 "정의되지 않은 이름" 으로 잡힙니다 (07 에서 실제로 걸렸습니다).
+    def visit_Lambda(self, n: ast.Lambda) -> None:
+        self._bind_args(n.args)
+        self.generic_visit(n)
 
     def visit_ClassDef(self, n: ast.ClassDef) -> None:
         self.bound.add(n.name)

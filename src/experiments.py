@@ -105,8 +105,12 @@ def train_and_measure(
         print(f"{'━' * 66}")
         print(f"  train {len(tr):,} / val {len(va):,}")
 
+    # ⚠️ img_size 를 넘깁니다. CNN 은 해상도가 자유로워 무시되지만, ViT 계열은
+    #    위치 임베딩 크기가 고정이라 안 넘기면 **학습 도중에** shape 오류가 납니다.
+    #    (models.build 는 필요할 때만 timm 에 전달합니다)
     model = models.build(model_name, n_classes=len(classes),
-                         pretrained=True, drop_rate=cfg.drop_rate)
+                         pretrained=True, drop_rate=cfg.drop_rate,
+                         img_size=img_size)
     dl_tr, dl_va, ds_tr, _ = data.build_loaders(tr, va, cfg, model=model, classes=classes)
 
     t0 = time.time()
@@ -415,28 +419,268 @@ def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
     return verdict
 
 
-def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
-                     epochs: int, n_conditions: int | None = None,
+# ──────────────────────────────────────────────────────────────
+# 2단계 백본 비교 (STEP 9)
+# ──────────────────────────────────────────────────────────────
+# 2단계는 지금까지 resnet50 하나로만 돌았습니다. **한 번도 비교한 적이 없습니다.**
+# 1단계는 STEP 6 에서 effnetv2_s 로 바꿨지만, 그 결과를 2단계에 옮겨 적으면
+# 안 됩니다 — 같은 `photometric` 증강이 1단계에는 약이고 2단계에는 독이었습니다.
+
+# macro-F1 잡음 폭 — 실측 근거 (추정치 금지, 규칙 1)
+#   같은 설정 두 실행: m2.5 0.5395 / 0.5313 (Δ0.008), m1.5 0.5697 / 0.5536 (Δ0.016)
+#   부트스트랩 95% CI 반폭: 0.5456 → 0.5243~0.5663 (±0.021)
+# 둘을 합쳐 ±0.02 로 잡습니다.
+F1_NOISE = 0.02
+
+# 배율 하락으로 후보를 떨어뜨릴 때 쓰는 문턱.
+#
+# 원래 8%p 였습니다 (BLUR_NOISE_PP + 0.03). 그런데 우리가 **따로** 잰 교란 검사
+# 잡음이 그것보다 큽니다:
+#   · 설정을 하나도 안 바꾼 2단계를 일곱 번 재서 배율 하락 15.4% ~ 25.0% (폭 9.6%p)
+#   · STEP 10 한 실행 안에서 표본 수만 2,000 → 3,000 으로 바꿨더니
+#     위치 하락이 9.3% → 20.2% (10.9%p)
+#
+# 즉 8%p 짜리 문턱은 **잡음만으로도 걸립니다.** 실제로 STEP 9 에서
+# convnextv2_base 가 +8.1%p 로 탈락했는데, 그건 판정이 아니라 동전 던지기였습니다.
+#
+# ⚠️ 이 값을 STEP 9 결과를 **보고 나서** 올리는 게 아닙니다. 근거는 STEP 10
+#    (다른 실험)에서 나온 잡음 측정이고, 04 를 다시 돌리기 **전에** 못 박습니다
+#    (규칙 2). 이 사이 구간은 탈락도 통과도 아닌 **구분 불가**로 적습니다.
+SCALE_DROP_REJECT_PP = 0.12
+
+
+def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[str, Any]:
+    """2단계 백본 비교를 **미리 정해둔 기준**으로 판정합니다.
+
+    판정 기준 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------------
+    1. macro-F1 이 기준선보다 **+0.02(F1_NOISE) 넘게** 높아야 교체 후보입니다.
+       그 안이면 "구분 불가" 이고, 구분 불가일 때는 **기준선을 유지**합니다
+       (바꿀 이유가 없으면 안 바꿉니다 — 바꾸면 비교 이력이 끊깁니다).
+    2. 점수가 올라도 **배율 하락이 12%p(SCALE_DROP_REJECT_PP) 넘게 나빠지면**
+       채택하지 않습니다. STEP 5·6 에서 val 최고점을 골랐다가 holdout 에서
+       무너진 실패를 반복하지 않기 위해서입니다.
+       5~12%p 사이는 **구분 불가**로 적고 판정하지 않습니다 — 우리가 잰
+       교란 검사 잡음이 그만큼 큽니다 (아래 상수 주석 참고).
+    3. 1·2 를 모두 만족하는 후보가 여럿이면 **macro-F1 이 가장 높은 것**.
+
+    ⚠️ 여기서 고른 건 **후보**입니다. 서브셋·짧은 에폭 결과라 절대값이
+       풀 학습과 다릅니다. 확정은 풀 학습으로 다시 합니다.
+    ⚠️ holdout 은 여기서 안 봅니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+
+    base = next((r for r in runs if r.get("model_name") == base_model), None)
+    if base is None:
+        print(f"⚠️ 기준선 '{base_model}' 실행이 없어 상대 비교를 못 합니다.")
+        base = max(runs, key=lambda r: r["score"])
+        print(f"   가장 높은 '{base['model_name']}' 를 임시 기준선으로 씁니다.")
+
+    # ⚠️ 기준선이 수렴하지 않았으면 이 비교 전체가 흔들립니다.
+    #    "서브셋 하락률을 풀에 대입해도 되나 → 아니오 — 약한 모델은 잃을 것도 적어
+    #    덜 떨어집니다" (CLAUDE.md) 와 같은 함정입니다. 덜 학습된 기준선은 배운 게
+    #    적어 교란 검사에서 잃을 것도 적고, 그래서 배율 하락이 실제보다 낮게 나와
+    #    다른 백본이 부당하게 나빠 보입니다. 실제로 04 첫 실행에서 resnet50 이
+    #    12에폭에서도 계속 오르는 중이었고, 그 배율 하락(12.2%)이 이 프로젝트의
+    #    다른 풀 학습 실행들(23.8~25.0%)과 안 맞았습니다.
+    if not base.get("converged", True):
+        print(f"\n  ⚠️ 기준선 '{base['model_name']}' 이 수렴하지 않았습니다 "
+              "(마지막 에폭이 최고였습니다). 덜 학습된 기준선은 교란 검사에서 잃을 게 "
+              "적어 배율 하락이 실제보다 낮게 나옵니다. 이 비교의 '탈락' 판정은 "
+              "재확인이 필요합니다 — 기준선을 더 학습시키거나 풀 데이터로 다시 재세요.")
+
+    print("\n" + "=" * 78)
+    print(" 2단계 백본 비교 — 판정")
+    print("=" * 78)
+    print(f"  {'백본':<18}{'해상도':>7}{'macro-F1':>10}{'기준선대비':>11}"
+          f"{'배율하락':>10}{'분':>7}   수렴")
+    for r in sorted(runs, key=lambda r: -r["score"]):
+        d = r["score"] - base["score"]
+        drop = r.get("scale_drop")
+        ds = f"{drop:>9.1%}" if drop is not None else f"{'—':>10}"
+        mark = "  ← 기준선" if r is base else ""
+        print(f"  {r['model_name']:<18}{r['img_size']:>6}p{r['score']:>10.4f}"
+              f"{d:>+11.4f}{ds}{r['minutes']:>7.0f}   "
+              f"{'수렴' if r['converged'] else '더 필요'}{mark}")
+
+    base_drop = base.get("scale_drop")
+    ok, rejected, unclear = [], [], []
+    for r in runs:
+        if r is base:
+            continue
+        gain = r["score"] - base["score"]
+        drop = r.get("scale_drop")
+        gap = (drop - base_drop) if (drop is not None and base_drop is not None) else None
+        if gain <= F1_NOISE:
+            rejected.append((r, f"macro-F1 차이 {gain:+.4f} 가 잡음(±{F1_NOISE}) 안"))
+        elif gap is not None and gap > SCALE_DROP_REJECT_PP:
+            rejected.append((r, f"배율 하락이 {gap:+.1%}p 나빠짐 "
+                                f"(문턱 {SCALE_DROP_REJECT_PP:.0%}p)"))
+        else:
+            if gap is not None and gap > BLUR_NOISE_PP:
+                unclear.append((r, gap))
+            ok.append(r)
+
+    print("\n" + "-" * 78)
+    for r, why in rejected:
+        print(f"  ✗ {r['model_name']:<18} {why}")
+    # 잡음보다는 크고 탈락 문턱보다는 작은 구간 — 판정하지 말고 그대로 적습니다.
+    for r, gap in unclear:
+        print(f"  ◐ {r['model_name']:<18} 배율 하락 {gap:+.1%}p — 잡음(±{BLUR_NOISE_PP:.0%}p)"
+              f"보다 크지만 탈락 문턱({SCALE_DROP_REJECT_PP:.0%}p)에는 못 미칩니다. "
+              "구분 불가로 적고 풀 학습에서 다시 재세요.")
+
+    verdict: dict[str, Any] = {"baseline": base, "candidates": ok, "rejected": rejected}
+    if ok:
+        best = max(ok, key=lambda r: r["score"])
+        verdict["best"] = best
+        print(f"\n  ✅ 채택 후보: **{best['model_name']}** "
+              f"(macro-F1 {best['score']:.4f}, 기준선 {base['score']:.4f} 대비 "
+              f"{best['score'] - base['score']:+.4f})")
+    else:
+        verdict["best"] = base
+        print(f"\n  ◐ 기준선 **{base_model}** 유지 — 잡음 밖으로 이긴 백본이 없습니다.")
+        print("     바꿀 이유가 없으면 안 바꿉니다 (비교 이력이 끊깁니다).")
+
+    top = max(runs, key=lambda r: r["score"])
+    if top is not verdict["best"]:
+        print(f"\n  ⚠️ macro-F1 이 가장 높은 건 {top['model_name']} ({top['score']:.4f}) 인데")
+        print("     위 기준에서 걸러졌습니다. val 최고점을 그냥 고르지 않습니다"
+              " (STEP 5·6 의 실패).")
+
+    print("\n  ⚠️ 서브셋·짧은 에폭 결과입니다. 순위가 풀 학습과 같다는 보장은 없습니다.")
+    print("  ⚠️ holdout 은 아직 안 봤습니다 — 풀 학습 뒤 05 에서 한 번만 엽니다.")
+    print("=" * 78)
+    return verdict
+
+
+def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str, Any]:
+    """1단계 입력(크롭 태그) 비교를 **미리 정해둔 기준**으로 판정합니다.
+
+    STEP 8 에서 남은 위험: 1단계가 `full`(강아지 전신)로 학습했는데, 배포에서
+    보호자는 촬영 가이드대로 병변에 다가가서 찍습니다. `f320`(고정 픽셀 창)은
+    창 크기가 병변 크기와 무관해 창 크기 지름길이 없고, 구도도 근접 사진에
+    가깝습니다. 여기서는 **모델·증강은 STEP 6·7 이 정한 대로 고정**하고
+    (`effnetv2_s` + `photometric`) 입력만 바꿔 비교합니다.
+
+    판정 기준 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------------
+    1. AUROC 가 {AUROC_NOISE} 이상 오르거나, 최소한 안 떨어져야 후보입니다.
+       (holdout 변별력 부족이 STEP 8 의 핵심 문제라 AUROC 를 우선합니다)
+    2. 흐림 하락이 {BLUR_NOISE_PP} 넘게 나빠지면 탈락합니다 — f320 이 화질
+       지름길을 다시 열면 안 됩니다.
+    3. 스크리닝 recall 이 얼마나 나오는지는 여기서 안 봅니다. 임계값은
+       val 로 다시 잡아야 하는 값이라, 이 비교 단계에서는 신호가 아닙니다.
+
+    ⚠️ 여기서 고른 건 **후보**입니다. holdout 은 안 봅니다 — 풀 학습 뒤 05 에서
+    한 번만 엽니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def fmt(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>8.1%}" if pct else f"{v:>8.{nd}f}"
+
+    print("\n" + "=" * 74)
+    print(" 1단계 입력 비교 — full vs f320")
+    print("=" * 74)
+    print(f"  {'크롭':<12}{'AUROC':>10}{'흐림하락':>10}{'precision':>11}{'분':>6}   수렴")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<12}{fmt(r.get('auroc'))}{fmt(r.get('blur_drop'), pct=True)}"
+              f"{fmt(r.get('precision'), nd=3)}{r['minutes']:>6.0f}   "
+              f"{'수렴' if r['converged'] else '더 필요'}")
+
+    if not base.get("converged", True):
+        print(f"\n  ⚠️ 기준 '{base_crop}' 이 수렴하지 않았습니다. 이 비교는 재확인이 "
+              "필요합니다 (STEP 9 의 2단계 백본 비교와 같은 함정).")
+
+    verdict: dict[str, Any] = {"baseline": base}
+    print(f"\n  기준: {base_crop}  (AUROC {base['auroc']:.4f}, "
+          f"흐림 하락 {fmt(base.get('blur_drop'), pct=True).strip()})")
+    print(f"  잡음 폭: AUROC ±{AUROC_NOISE} · 흐림 하락 ±{BLUR_NOISE_PP:.0%}")
+
+    candidates = []
+    for r in runs:
+        if r is base:
+            continue
+        d_auroc = r["auroc"] - base["auroc"]
+        d_blur = (r["blur_drop"] - base["blur_drop"]
+                  if r.get("blur_drop") is not None and base.get("blur_drop") is not None
+                  else None)
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    AUROC     {d_auroc:+.4f}")
+        print(f"    흐림 하락  {'못 잼' if d_blur is None else f'{d_blur:+.1%}'}")
+        worse_blur = d_blur is not None and d_blur > BLUR_NOISE_PP
+        if d_auroc >= -AUROC_NOISE and not worse_blur:
+            candidates.append(r)
+            print(f"    ✅ {r['crop_tag']} 후보 — AUROC 를 깎지 않으면서 화질 의존을 "
+                  "늘리지 않았습니다.")
+        elif d_auroc < -AUROC_NOISE:
+            print(f"    ❌ 탈락 — AUROC 가 잡음 밖으로 떨어졌습니다.")
+        else:
+            print(f"    ❌ 탈락 — 흐림 하락이 {d_blur:+.1%}p 나빠졌습니다.")
+
+    if candidates:
+        best = max(candidates, key=lambda r: r["auroc"])
+        verdict["best"] = best
+        print(f"\n  ✅ 채택 후보: **{best['crop_tag']}** (AUROC {best['auroc']:.4f}, "
+              f"기준 {base['auroc']:.4f} 대비 {best['auroc'] - base['auroc']:+.4f})")
+    else:
+        verdict["best"] = base
+        print(f"\n  ◐ 기준 **{base_crop}** 유지 — 후보가 없습니다.")
+
+    print("\n  ⚠️ 서브셋·짧은 에폭 결과입니다. 순위가 풀 학습과 같다는 보장은 없습니다.")
+    print("  ⚠️ holdout 은 아직 안 봤습니다 — 풀 학습 뒤 05 에서 한 번만 엽니다.")
+    print("=" * 74)
+    return verdict
+
+
+def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: int,
+                     n_train: int, epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
     """학습을 시작하기 **전에** 총 예상 시간을 찍습니다.
 
     "몇 시간 걸릴지 모르고 돌렸다가 뒤통수" 를 여러 번 맞아서 넣었습니다.
     합성 텐서로 GPU 속도만 재므로 백본당 20초 안쪽입니다.
 
+    `model_names` 는 이름 목록이거나 **(이름, 해상도) 목록**입니다. 뒤엣것을 쓰면
+    백본마다 다른 해상도로 잽니다 — ViT 계열은 해상도가 고정이라 CNN 과 같은
+    384 로 재면 안 됩니다 (판 B 가 그 경우입니다).
+
     ⚠️ 데이터 로딩이 병목이면 실제는 이보다 느립니다. **하한 추정**입니다.
     """
     from src import bench
     from src.config import CFG, MODEL_BY_KEY
 
-    n_conditions = n_conditions or len(model_names)
+    pairs = [(m, img_size) if isinstance(m, str) else (m[0], m[1]) for m in model_names]
+    n_conditions = n_conditions or len(pairs)
     rows, total_min = [], 0.0
     print("\n" + "=" * 66)
     print(" 시작 전 시간 추정 (GPU 속도 실측, 백본당 ~20초)")
     print("=" * 66)
-    for key in model_names:
+    for key, size in pairs:
         spec = MODEL_BY_KEY[key]
-        cfg = CFG(model_name=spec.timm_name, img_size=img_size)
-        g = bench.gpu_speed(cfg, n_classes=2, steps=20)
+        cfg = CFG(model_name=spec.timm_name, img_size=size)
+        # ⚠️ 하나가 터져도 나머지 추정은 보여줘야 합니다. 추정하다 죽으면
+        #    정작 돌 수 있는 백본들의 시간도 못 보고 셀이 멈춥니다.
+        try:
+            g = bench.gpu_speed(cfg, n_classes=2, steps=20)
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"  {key:<16} 속도 측정 실패 ({type(exc).__name__}: "
+                  f"{str(exc).splitlines()[0][:60]}) — 추정 생략")
+            continue
         ips = float(g.get("img_per_sec") or 0.0)
         # GPU 가 없으면 img_per_sec 이 NaN 입니다 (NaN 은 비교가 전부 False 라 따로 봅니다)
         if not (ips > 0) or ips != ips:
@@ -444,11 +688,12 @@ def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
             continue
         epoch_min = n_train / ips / 60
         run_min = epoch_min * epochs
-        rows.append({"model": key, "img_per_sec": ips, "batch": g.get("batch"),
+        rows.append({"model": key, "img_size": size, "img_per_sec": ips,
+                     "batch": g.get("batch"),
                      "peak_vram_gb": g.get("peak_vram_gb"),
                      "epoch_min": epoch_min, "run_min": run_min})
         total_min += run_min
-        print(f"  {key:<16}{ips:>7.0f} img/s  배치 {g.get('batch', '?'):>3}  "
+        print(f"  {key:<16}{size:>4}px{ips:>7.0f} img/s  배치 {g.get('batch', '?'):>3}  "
               f"VRAM {g.get('peak_vram_gb', 0):>4.1f}GB   "
               f"1에폭 {epoch_min:>5.1f}분   {epochs}에폭 {run_min:>6.0f}분")
 

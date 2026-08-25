@@ -41,6 +41,9 @@ ap.add_argument("--m15-only", action="store_true",
 ap.add_argument("--stop-at", type=int, default=999, help="이 셀 번호까지만")
 ap.add_argument("--nb", default=_DEFAULT_NB,
                 help="실행할 노트북 파일명 (notebooks/ 안). 예: 03d_1단계_고치기.ipynb")
+ap.add_argument("--seed-release", action="store_true",
+                help="이전 실행(release)이 붙어 있는 상태를 흉내 냅니다. "
+                     "07 처럼 **학습을 안 하고 가중치만 받아 쓰는** 노트북에 필요합니다")
 args = ap.parse_args()
 NB = REPO / "notebooks" / args.nb
 
@@ -90,7 +93,13 @@ def build_dataset(n_animals: int = 40, per: int = 4) -> pd.DataFrame:
         for k in range(per):
             lab = (NORMAL_LABEL if (a + k) % 3 == 0
                    else CLASSES[(a * per + k) % len(CLASSES)])
-            side = int(rng.integers(60, 300))
+            # ⚠️ **정상 박스를 병변보다 작게** 만듭니다 — 실측 배율 격차를 재현합니다.
+            #    실물: 정상 bbox 면적 중앙값 0.71% vs 병변 1.25% (비 0.57배).
+            #    예전 픽스처는 둘이 같은 분포라 격차가 1.0 이었고, 그래서
+            #    crop.choose_stage1_tag() 의 '지름길 있음' 분기가 **한 번도 안 밟혔습니다.**
+            #    그 상태로 e2e 가 통과해서 1단계 크롭 버그를 못 잡았습니다.
+            side = (int(rng.integers(60, 160)) if lab == NORMAL_LABEL
+                    else int(rng.integers(140, 300)))
             x = int(rng.integers(0, W - side)); y = int(rng.integers(0, H - side))
             name = f"IMG_{aid}_{k}.jpg"
             # ⚠️ 실제 매니페스트 스키마 그대로: bbox 는 [x1,y1,x2,y2], 컬럼은 area_ratio
@@ -144,7 +153,9 @@ print(f"작업 폴더: {T}")
 df0 = build_dataset()
 DS.mkdir(parents=True)
 # 03 은 m2.5 를 씁니다 (STEP 4C). m1.5·full 도 같이 둬서 태그 전환 경로까지 밟습니다.
-df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only else ["m2.5", "m1.5", "full"])
+# f320 도 만듭니다 — 06(확정 재학습)의 1단계가 f320 을 씁니다 (STEP 9-A).
+df0 = write_crops(df0, DS, ["m1.5"] if args.m15_only
+                  else ["m2.5", "m1.5", "full", "f320"])
 (DS / "manifests").mkdir(parents=True, exist_ok=True)
 df0.to_parquet(DS / "manifests" / "manifest_final.parquet")
 if not args.m15_only:
@@ -199,6 +210,43 @@ class TinyNet(nn.Module):
 
 
 models.build = lambda spec, n_classes, **k: TinyNet(n_classes)
+
+
+def _seed_release() -> None:
+    """06 이 남긴 release 가 붙어 있는 상태를 만듭니다.
+
+    07 은 학습을 안 하고 가중치를 **받아서만** 씁니다. 그래서 release 없이는
+    시작조차 못 하는 게 정상이고(그 자체가 설계), 그 뒤 셀들을 확인하려면
+    여기서 흉내를 내야 합니다.
+
+    checkpoints/<exp>/best.pt 와 stage1_threshold.json 을 실제 형식으로 씁니다.
+    (models.load_checkpoint 가 ckpt["ema"] → ckpt["model"] 순으로 읽습니다)
+    """
+    from src.config import CLASSES, CLASSES_STAGE1
+
+    # ★ 작업 폴더가 아니라 **/kaggle/input 아래**에 둡니다 —
+    #   그래야 train.import_previous_run() 이 실제로 하는 일까지 확인됩니다.
+    rel = KIN / "datasets" / "gayoniee" / "dogskin-06" / "release"
+    (rel / "checkpoints").mkdir(parents=True, exist_ok=True)
+    exp1 = "stage1_effnetv2_s_f320_384_moderate_photometric"
+    exp2 = "stage2_resnet50_m2.5_384_moderate"
+    for exp, n in ((exp1, len(CLASSES_STAGE1)), (exp2, len(CLASSES))):
+        d = rel / "checkpoints" / exp
+        d.mkdir(parents=True, exist_ok=True)
+        torch.save({"model": TinyNet(n).state_dict(), "epoch": 1,
+                    "best": 0.5}, d / "best.pt")
+        (d / "result.json").write_text(json.dumps(
+            {"completed": True, "best_score": 0.5, "best_epoch": 0,
+             "history": [{}], "target_epochs": 1}), encoding="utf-8")
+    (rel / "stage1_threshold.json").write_text(json.dumps({
+        "threshold": 0.1823, "stage1_crop": "f320", "stage2_crop": "m2.5",
+        "stage1_exp": exp1, "stage2_exp": exp2, "img_size": 32,
+    }, ensure_ascii=False), encoding="utf-8")
+    print(f"[sim] release 를 입력에 심었습니다: {rel}")
+
+
+if args.seed_release:
+    _seed_release()
 bench.gpu_speed = lambda cfg, n_classes=6, steps=30: {
     "batch": 8, "img_per_sec": 500.0, "sec": 0.1, "peak_vram_gb": 0.1, "amp_dtype": "fp16"}
 env.require_gpu = lambda hard=True: env.device_info()      # GPU 없는 환경이므로 통과
@@ -212,13 +260,17 @@ print(f"노트북: {NB.name}")
 nb = json.loads(NB.read_text(encoding="utf-8"))
 cells = nb["cells"]
 
+# ⚠️ preamble 은 **1번 셀(git clone + pip)이 실제로 정의하는 것만** 넣습니다.
+#    예전에는 여기서 labels/split/crop/train/… 을 전부 미리 import 했는데,
+#    그러면 노트북 셀 안에 import 가 빠져 있어도 절대 안 걸립니다.
+#    실제로 06 의 3번 셀이 `train` 을 import 없이 써서 Kaggle 에서 NameError
+#    로 죽었는데, 이 테스트는 통과했습니다. 그래서 1번 셀과 같은 이름만 둡니다.
 ns: dict = {}
-exec("import os, sys, json\n"
-     "import numpy as np, pandas as pd, torch\n"
+exec("import os, sys, json, subprocess\n"
      "import matplotlib; matplotlib.use('Agg')\n"
      "import matplotlib.pyplot as plt\n"
-     "from src import env, labels, split, crop, data, models, train, evaluate, stages\n"
-     "from src.config import CFG, CLASSES, CLASS_KO, CLASSES_STAGE1, NORMAL_LABEL\n"
+     "from src import env\n"
+     "from src.config import CFG, CLASSES, CLASS_KO\n"
      "E = env.describe()\n"
      "env.set_seed(42)\n", ns)
 
