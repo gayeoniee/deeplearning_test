@@ -41,6 +41,9 @@ ap.add_argument("--m15-only", action="store_true",
 ap.add_argument("--stop-at", type=int, default=999, help="이 셀 번호까지만")
 ap.add_argument("--nb", default=_DEFAULT_NB,
                 help="실행할 노트북 파일명 (notebooks/ 안). 예: 03d_1단계_고치기.ipynb")
+ap.add_argument("--seed-release", action="store_true",
+                help="이전 실행(release)이 붙어 있는 상태를 흉내 냅니다. "
+                     "07 처럼 **학습을 안 하고 가중치만 받아 쓰는** 노트북에 필요합니다")
 args = ap.parse_args()
 NB = REPO / "notebooks" / args.nb
 
@@ -207,6 +210,43 @@ class TinyNet(nn.Module):
 
 
 models.build = lambda spec, n_classes, **k: TinyNet(n_classes)
+
+
+def _seed_release() -> None:
+    """06 이 남긴 release 가 붙어 있는 상태를 만듭니다.
+
+    07 은 학습을 안 하고 가중치를 **받아서만** 씁니다. 그래서 release 없이는
+    시작조차 못 하는 게 정상이고(그 자체가 설계), 그 뒤 셀들을 확인하려면
+    여기서 흉내를 내야 합니다.
+
+    checkpoints/<exp>/best.pt 와 stage1_threshold.json 을 실제 형식으로 씁니다.
+    (models.load_checkpoint 가 ckpt["ema"] → ckpt["model"] 순으로 읽습니다)
+    """
+    from src.config import CLASSES, CLASSES_STAGE1
+
+    # ★ 작업 폴더가 아니라 **/kaggle/input 아래**에 둡니다 —
+    #   그래야 train.import_previous_run() 이 실제로 하는 일까지 확인됩니다.
+    rel = KIN / "datasets" / "gayoniee" / "dogskin-06" / "release"
+    (rel / "checkpoints").mkdir(parents=True, exist_ok=True)
+    exp1 = "stage1_effnetv2_s_f320_384_moderate_photometric"
+    exp2 = "stage2_resnet50_m2.5_384_moderate"
+    for exp, n in ((exp1, len(CLASSES_STAGE1)), (exp2, len(CLASSES))):
+        d = rel / "checkpoints" / exp
+        d.mkdir(parents=True, exist_ok=True)
+        torch.save({"model": TinyNet(n).state_dict(), "epoch": 1,
+                    "best": 0.5}, d / "best.pt")
+        (d / "result.json").write_text(json.dumps(
+            {"completed": True, "best_score": 0.5, "best_epoch": 0,
+             "history": [{}], "target_epochs": 1}), encoding="utf-8")
+    (rel / "stage1_threshold.json").write_text(json.dumps({
+        "threshold": 0.1823, "stage1_crop": "f320", "stage2_crop": "m2.5",
+        "stage1_exp": exp1, "stage2_exp": exp2, "img_size": 32,
+    }, ensure_ascii=False), encoding="utf-8")
+    print(f"[sim] release 를 입력에 심었습니다: {rel}")
+
+
+if args.seed_release:
+    _seed_release()
 bench.gpu_speed = lambda cfg, n_classes=6, steps=30: {
     "batch": 8, "img_per_sec": 500.0, "sec": 0.1, "peak_vram_gb": 0.1, "amp_dtype": "fp16"}
 env.require_gpu = lambda hard=True: env.device_info()      # GPU 없는 환경이므로 통과
