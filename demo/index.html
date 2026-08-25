@@ -169,6 +169,40 @@ details[open] summary::before{content:'▾ '}
 pre{background:var(--pink-faint); border-radius:9px; padding:10px; overflow-x:auto;
   font-size:10px; line-height:1.6; margin:7px 0 0; color:var(--ink)}
 
+/* ══════════════════════════════════════════════════════════════
+   가이드 프레임 — 이 네모가 그대로 bbox 로 갑니다.
+   1단계(f320)는 네모의 **중심만**, 2단계(m2.5)는 **크기**를 씁니다.
+   그래서 고정 프레임이 아니라 **끌고 늘릴 수 있어야** 합니다.
+   ══════════════════════════════════════════════════════════════ */
+.framer{
+  position:relative; border-radius:15px; overflow:hidden; margin-top:10px;
+  background:#000; touch-action:none; user-select:none; cursor:move;
+}
+.framer img{display:block; width:100%; opacity:.62}
+.hole{
+  position:absolute; border:2.5px solid #fff; border-radius:10px;
+  box-shadow:0 0 0 9999px rgba(74,59,54,.5); cursor:move;
+}
+.hole::after{
+  content:''; position:absolute; right:-9px; bottom:-9px; width:19px; height:19px;
+  background:var(--pink); border:2.5px solid #fff; border-radius:50%; cursor:nwse-resize;
+}
+.hole.bad{border-color:#FFD9D9; box-shadow:0 0 0 9999px rgba(120,50,50,.55)}
+.hole.bad::after{background:#D96B6B}
+.framer .tip{
+  position:absolute; left:0; right:0; bottom:0; padding:8px 12px; font-size:11.5px;
+  color:#fff; background:linear-gradient(transparent,rgba(74,59,54,.85)); text-align:center;
+}
+.framer .tip b{color:#FFE2DC}
+.crop-act{display:flex; gap:8px; margin-top:9px}
+.crop-act button{
+  flex:1; font-family:inherit; font-size:13.5px; font-weight:700; cursor:pointer;
+  border-radius:13px; padding:11px; border:1px solid var(--pink-soft);
+  background:var(--pink-faint); color:var(--pink-deep);
+}
+.crop-act .ok{background:var(--pink); color:#fff; border-color:var(--pink); flex:1.6}
+.crop-act .ok:disabled{background:var(--pink-soft); color:var(--muted); border-color:var(--pink-soft); cursor:default}
+
 /* ── 아래 조작부 ── */
 .dock{flex:none; background:var(--cream-bg); padding:2px 14px 14px}
 .chips{display:flex; gap:8px; overflow-x:auto; padding:8px 0 10px;
@@ -324,11 +358,110 @@ $('#diagBtn').addEventListener('click', () => $('#file').click());
 $('#file').addEventListener('change', e => {
   const f = e.target.files[0];
   e.target.value = '';
-  if (f && f.type.startsWith('image/')) diagnose(f);
+  if (f && f.type.startsWith('image/')) frameStep(f);
 });
 
-async function diagnose(file) {
-  bubble('me', `<img src="${URL.createObjectURL(file)}" alt="올린 사진">`);
+/* 촬영 가이드 밴드 — robust.usable_range() 가 STEP 10 에서 실측한 값.
+   src/agent.py 의 GUIDE_* 와 같은 값이어야 합니다. */
+const BAND = {rec: [0.34, 0.56], allow: [0.28, 0.68], center: 0.10};
+
+/* 사진을 고르면 바로 진단하지 않고, **네모를 맞추는 단계**를 한 번 거칩니다.
+   이 네모가 그대로 bbox 로 서버에 갑니다. */
+function frameStep(file) {
+  const url = URL.createObjectURL(file);
+  const w = bubble('bot',
+    '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춰줘. 끌어서 옮기고, 오른쪽 아래 동그라미로 크기를 바꿔.</p>' +
+    `<div class="framer" id="framer"><img src="${url}" alt="올린 사진">
+       <div class="hole" id="hole"></div><div class="tip" id="tip"></div></div>
+     <div class="crop-act">
+       <button class="ok" id="cropOk">이 부위로 확인하기</button>
+       <button id="cropCancel">취소</button>
+     </div>`, {raw: true});
+
+  // 정규화 좌표 [x, y, w, h] — 화면 크기와 무관하게 이 값이 서버로 갑니다.
+  // ⚠️ x/y 와 w/h 는 **각 축 기준**입니다. 그래서 w 와 h 에 같은 값을 넣으면
+  //    16:9 사진에서 정사각이 아니라 납작한 직사각형이 됩니다. 실제로 그렇게
+  //    나왔습니다 → 세로는 항상 aspect(= 가로/세로) 를 곱해 픽셀 정사각을 만듭니다.
+  let b = {x: .28, y: .28, w: .44, h: .44}, aspect = 1;
+  const framer = w.querySelector('#framer'), hole = w.querySelector('#hole');
+  const tip = w.querySelector('#tip'), okBtn = w.querySelector('#cropOk');
+  const img = framer.querySelector('img');
+
+  function setW(nw) {                       // 가로를 정하면 세로가 따라옵니다
+    b.w = Math.min(Math.max(nw, .10), 1);
+    b.h = Math.min(b.w * aspect, 1);
+    b.x = Math.min(Math.max(b.x, 0), 1 - b.w);
+    b.y = Math.min(Math.max(b.y, 0), 1 - b.h);
+  }
+  function fit() {
+    aspect = (img.naturalWidth && img.naturalHeight)
+      ? img.naturalWidth / img.naturalHeight : 1;
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    setW(Math.min(.44, 1 / aspect * .95));
+    b.x = cx - b.w / 2; b.y = cy - b.h / 2;
+    setW(b.w); draw();
+  }
+  if (img.complete) fit(); else img.addEventListener('load', fit);
+
+  function draw() {
+    const R = framer.getBoundingClientRect();
+    hole.style.left = b.x * 100 + '%';  hole.style.top = b.y * 100 + '%';
+    hole.style.width = b.w * 100 + '%'; hole.style.height = b.h * 100 + '%';
+    const off = Math.max(Math.abs(b.x + b.w / 2 - .5), Math.abs(b.y + b.h / 2 - .5));
+    let msg, bad = false;
+    if (b.w < BAND.allow[0]) { msg = '<b>너무 작아요</b> — 병변에 더 가까이'; bad = true; }
+    else if (b.w > BAND.allow[1]) { msg = '<b>너무 커요</b> — 주변 피부도 보이게'; bad = true; }
+    else if (off > BAND.center) { msg = '<b>가운데에서 벗어났어요</b>'; bad = true; }
+    else if (b.w < BAND.rec[0] || b.w > BAND.rec[1]) msg = `괜찮아요 · 가로 ${(b.w * 100) | 0}%`;
+    else msg = `딱 좋아요 👍 · 가로 ${(b.w * 100) | 0}%`;
+    tip.innerHTML = msg;
+    hole.classList.toggle('bad', bad);
+    okBtn.disabled = bad;
+    okBtn.textContent = bad ? '네모를 맞춰주세요' : '이 부위로 확인하기';
+    return R;
+  }
+  draw();
+
+  // 끌기 / 크기 조절 — 모서리 동그라미 근처를 잡으면 크기, 아니면 이동
+  let mode = null, s0 = null;
+  framer.addEventListener('pointerdown', e => {
+    const R = framer.getBoundingClientRect();
+    const px = (e.clientX - R.left) / R.width, py = (e.clientY - R.top) / R.height;
+    const nearCorner = Math.hypot(px - (b.x + b.w), py - (b.y + b.h)) < .07;
+    mode = nearCorner ? 'size' : 'move';
+    s0 = {px, py, ...b};
+    framer.setPointerCapture(e.pointerId);
+  });
+  framer.addEventListener('pointermove', e => {
+    if (!mode) return;
+    const R = framer.getBoundingClientRect();
+    const dx = (e.clientX - R.left) / R.width - s0.px, dy = (e.clientY - R.top) / R.height - s0.py;
+    if (mode === 'move') {
+      b.x = Math.min(Math.max(s0.x + dx, 0), 1 - b.w);
+      b.y = Math.min(Math.max(s0.y + dy, 0), 1 - b.h);
+    } else {
+      // 정사각으로 유지합니다 — 학습 크롭도 정사각이라 종횡비를 안 왜곡합니다.
+      // 그리고 **중심을 고정한 채** 늘립니다. 모서리 기준으로 늘리면 네모가
+      // 한쪽으로 밀려서, 크기를 맞추는 동안 가운데 정렬이 풀립니다.
+      const cx = s0.x + s0.w / 2, cy = s0.y + s0.h / 2;
+      const roomX = 2 * Math.min(cx, 1 - cx), roomY = 2 * Math.min(cy, 1 - cy) / aspect;
+      const k = Math.min(Math.max(s0.w + 2 * Math.max(dx, dy), .10), roomX, roomY);
+      b.w = k; b.h = Math.min(k * aspect, 1);
+      b.x = cx - b.w / 2; b.y = cy - b.h / 2;
+    }
+    draw();
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => framer.addEventListener(ev, () => { mode = null; }));
+
+  w.querySelector('#cropCancel').addEventListener('click', () => w.remove());
+  okBtn.addEventListener('click', () => {
+    w.remove();
+    diagnose(file, url, {...b});
+  });
+}
+
+async function diagnose(file, url, box) {
+  bubble('me', `<img src="${url}" alt="올린 사진">`);
   await new Promise(r => setTimeout(r, 260));
   bubble('bot', '<p>사진 잘 받았어! 잠깐만 살펴볼게 👀</p>');
   const stop = typing();
@@ -336,6 +469,7 @@ async function diagnose(file) {
   try {
     const fd = new FormData();
     fd.append('photo', file);
+    if (box) fd.append('box', JSON.stringify([box.x, box.y, box.w, box.h]));
     const res = await fetch('/v1/screen', {method: 'POST', body: fd});
     const j = await res.json();
     stop();
@@ -372,14 +506,19 @@ function card(j) {
             <div class="track"><div class="fill" style="width:${d.percent}%"></div></div>
           </div>`).join('') + '</div>';
   } else {
-    h += `<p class="body-t">${esc(j.body)}</p>`;
+    // 가이드 밴드 밖이면 왜 돌려보냈는지 구체적으로 말해줍니다
+    const why = j.meta && j.meta.retake_reason;
+    h += `<p class="body-t">${esc(why || j.body)}</p>`;
   }
 
   h += `<div class="cta">${esc(j.action)}</div>`;
   h += `<p class="disc">${esc(j.disclaimer)}`;
   const bits = [];
   if (j.meta && j.meta.mock) bits.push('mock — 모델이 낸 숫자가 아님');
-  if (j.stage1 && j.stage1.calibrated === false) bits.push('1단계 확률 미보정');
+  if (j.stage1 && j.stage1.calibrated === false && j.stage1.abnormal_percent !== null)
+    bits.push('1단계 확률 미보정');
+  if (j.meta && j.meta.box_source)
+    bits.push(j.meta.box_source === 'user' ? '가이드 프레임 사용' : '가이드 프레임 없음(중앙)');
   if (j.meta && j.meta.elapsed_ms != null) bits.push(j.meta.elapsed_ms + 'ms');
   if (bits.length) h += `<br>${esc(bits.join(' · '))}`;
   h += '</p>';

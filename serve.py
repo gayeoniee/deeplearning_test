@@ -28,6 +28,7 @@
 # 정의돼 있어 pydantic 이 모듈 전역에서 그 이름을 못 찾고 500 으로 죽습니다.
 import argparse
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -38,7 +39,7 @@ MAX_BYTES = 12 * 1024 * 1024          # 휴대폰 사진 한 장이면 충분합
 
 
 def build_app(agent, mock: bool):
-    from fastapi import FastAPI, File, HTTPException, UploadFile
+    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
     from fastapi.responses import FileResponse, JSONResponse
     from PIL import Image
 
@@ -47,7 +48,7 @@ def build_app(agent, mock: bool):
     app = FastAPI(
         title="반려견 피부 스크리닝 API",
         version=CONTRACT_VERSION,
-        description=("사진 한 장 → 정상/이상 + 병변 6종 **분포**. "
+        description=("사진 한 장(+ 가이드 프레임) → 정상/이상 + 병변 6종 **분포**. "
                      "병변 이름은 단정하지 않습니다 — 응답에 '1등' 필드가 없는 건 "
                      "실수가 아닙니다 (docs/cautions/03 §7-B)."),
     )
@@ -58,7 +59,12 @@ def build_app(agent, mock: bool):
                 "threshold": getattr(agent, "thr", None)}
 
     @app.post("/v1/screen")
-    async def screen(photo: UploadFile = File(...)):
+    async def screen(photo: UploadFile = File(...), box: str = Form(default="")):
+        """box: 앱의 **가이드 프레임**. 정규화 JSON `[x, y, w, h]` (0~1).
+
+        주면 학습과 같은 함수로 자릅니다 (`src/agent.crop_for`). 안 주면
+        화면 중앙으로 물러섭니다 — 1단계는 큰 차이가 없지만 2단계는 어긋납니다.
+        """
         raw = await photo.read()
         if not raw:
             raise HTTPException(400, "빈 파일입니다.")
@@ -69,6 +75,17 @@ def build_app(agent, mock: bool):
             im.load()
         except Exception:
             raise HTTPException(415, "이미지로 열리지 않는 파일입니다.")
+
+        b = None
+        if box:
+            try:
+                b = json.loads(box)
+                if not (isinstance(b, list) and len(b) == 4):
+                    raise ValueError
+                b = [float(v) for v in b]
+            except Exception:
+                raise HTTPException(422, "box 는 정규화 [x, y, w, h] JSON 배열이어야 합니다.")
+
         if mock:
             # MockAgent 는 바이트 해시로 값을 만듭니다 — 파일을 그대로 넘깁니다
             import tempfile
@@ -76,8 +93,8 @@ def build_app(agent, mock: bool):
             with tempfile.NamedTemporaryFile(suffix=Path(photo.filename or "x.jpg").suffix,
                                              delete=True) as tf:
                 tf.write(raw); tf.flush()
-                return JSONResponse(agent.screen(tf.name))
-        return JSONResponse(agent.screen(im))
+                return JSONResponse(agent.screen(tf.name, box=b))
+        return JSONResponse(agent.screen(im, box=b))
 
     demo = ROOT / "demo" / "index.html"
 

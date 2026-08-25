@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import inspect                                                   # noqa: E402
+
 from src import agent                                            # noqa: E402
 from src.config import CLASS_KO, CLASSES                         # noqa: E402
 
@@ -89,27 +91,80 @@ check("면책 문구가 항상 있음",
       all(agent.contract(v)["disclaimer"] for v in ("normal", "abnormal", "retake")))
 check("1단계 미보정을 계약이 실어 나름",
       agent.contract("normal")["stage1"]["calibrated"] is False)
-check("서빙 크롭이 미검증임을 계약이 실어 나름",
-      "실측하지 않았습니다" in agent.contract("normal")["meta"]["crop_untested"])
+check("crop_note 두 갈래가 다 있음", set(agent.CROP_NOTE) == {"user_box", "center"})
 
-# ── 4. 서빙 크롭 ──────────────────────────────────────────────
-print("\n[4] 서빙 크롭")
+# ── 4. 서빙 크롭 = 학습 크롭 ──────────────────────────────────
+print("\n[4] 서빙 크롭이 학습 크롭과 같은가")
 from PIL import Image                                            # noqa: E402
 
-check("f320 비율은 320/1080", abs(agent.STAGE1_FRAC - 320 / 1080) < 1e-9)
-im = Image.new("RGB", (1920, 1080))
-c1 = agent.center_square(im, agent.STAGE1_FRAC)
-check("1920×1080 에서 f320 은 320px 정사각", c1.size == (320, 320), str(c1.size))
-c2 = agent.center_square(im, 1.0)
-check("frac=1 은 짧은 변 정사각", c2.size == (1080, 1080), str(c2.size))
-# 휴대폰 사진(4032×3024)에서도 **같은 화각**이 나와야 합니다 — 픽셀이 아니라 비율
-phone = agent.center_square(Image.new("RGB", (4032, 3024)), agent.STAGE1_FRAC)
-check("휴대폰 사진은 비율로 잘림 (픽셀 320 아님)",
-      phone.size == (896, 896), str(phone.size))
-check("세로 사진도 짧은 변 기준",
-      agent.center_square(Image.new("RGB", (1080, 1920)), 1.0).size == (1080, 1080))
-check("중앙에서 잘림",
-      agent.center_square(Image.new("RGB", (100, 100)), 0.5).size == (50, 50))
+from src import crop                                             # noqa: E402
+
+W, H = 1920, 1080                       # AI Hub 원본
+BBOX = [900.0, 470.0, 1020.0, 610.0]    # 라벨 bbox (120×140)
+train1 = crop.crop_window({"bbox": BBOX, "img_w": W, "img_h": H}, tag="f320")
+train2 = crop.crop_window({"bbox": BBOX, "img_w": W, "img_h": H}, tag="m2.5")
+
+# 같은 구도를 휴대폰이 4032×2268 로 찍고, 가이드 프레임을 정규화로 넘겼다고 가정
+box = [BBOX[0] / W, BBOX[1] / H, (BBOX[2] - BBOX[0]) / W, (BBOX[3] - BBOX[1]) / H]
+sp = agent.to_train_space(Image.new("RGB", (4032, 2268)))
+check("짧은 변을 1080 으로 맞춤", sp.size == (1920, 1080), str(sp.size))
+bb = agent.box_to_px(box, *sp.size)
+serve1 = crop.crop_window({"bbox": bb, "img_w": sp.size[0], "img_h": sp.size[1]}, tag="f320")
+serve2 = crop.crop_window({"bbox": bb, "img_w": sp.size[0], "img_h": sp.size[1]}, tag="m2.5")
+
+check("★ 1단계 창이 학습과 동일", max(abs(a - b) for a, b in zip(train1, serve1)) <= 2,
+      f"{train1} vs {serve1}")
+check("★ 2단계 창이 학습과 동일", max(abs(a - b) for a, b in zip(train2, serve2)) <= 2,
+      f"{train2} vs {serve2}")
+check("학습이 쓰는 crop.crop_window 를 그대로 부름",
+      "crop_window" in inspect.getsource(agent.crop_for))
+
+# 1단계는 네모 **크기**에 둔감해야 합니다 (f320 은 중심만 씀)
+loose = [box[0] - .06, box[1] - .10, box[2] + .12, box[3] + .20]
+lb = agent.box_to_px(loose, *sp.size)
+l1 = crop.crop_window({"bbox": lb, "img_w": sp.size[0], "img_h": sp.size[1]}, tag="f320")
+l2 = crop.crop_window({"bbox": lb, "img_w": sp.size[0], "img_h": sp.size[1]}, tag="m2.5")
+# ⚠️ 320 과 정확히 같지는 않습니다 — `fixed_box` 가 좌변은 int(), 우변은
+#    int(round()) 을 써서 중심이 반 픽셀에 걸리면 321 이 나옵니다. 학습도 같은
+#    함수를 쓰므로 학습 크롭에도 똑같이 있는 오차입니다 (320px 에서 0.3%).
+#    중요한 건 **네모 크기에 안 흔들린다**는 것이라, 그걸 봅니다.
+check("네모가 헐렁해도 1단계 창 크기는 그대로 (±1px)",
+      abs((l1[2] - l1[0]) - (train1[2] - train1[0])) <= 1
+      and abs((l1[2] - l1[0]) - 320) <= 1,
+      f"{train1[2]-train1[0]} → {l1[2]-l1[0]}")
+check("네모가 헐렁하면 2단계 창은 커짐 (크기를 쓰므로)",
+      (l2[2] - l2[0]) > (train2[2] - train2[0]) * 1.3,
+      f"{train2[2]-train2[0]} → {l2[2]-l2[0]}")
+
+# 네모가 없으면 물러섭니다
+c1 = agent.crop_for(Image.new("RGB", (W, H)), None, "f320")
+check("네모 없으면 f320 은 중앙 320px", c1.size == (320, 320), str(c1.size))
+c2 = agent.crop_for(Image.new("RGB", (W, H)), None, "m2.5")
+check("네모 없으면 m2.5 는 중앙 정사각", c2.size == (1080, 1080), str(c2.size))
+
+check("잘못된 box 는 None", agent.box_to_px([0, 0, 0, 0], W, H) is None)
+check("길이가 안 맞는 box 는 None", agent.box_to_px([0.1, 0.2], W, H) is None)
+check("체크포인트 이름에서 크롭 태그를 읽음",
+      agent.crop_tag_from_exp("stage1_effnetv2_s_f320_384_moderate_photometric") == "f320"
+      and agent.crop_tag_from_exp("stage2_convnextv2_base_m2.5_384_moderate") == "m2.5")
+
+# ── 4-b. 촬영 가이드 밴드 ─────────────────────────────────────
+print("\n[4-b] 촬영 가이드 밴드")
+check("밴드 값이 STATUS 실측과 같음",
+      agent.GUIDE_RECOMMEND == (0.34, 0.56) and agent.GUIDE_ALLOW == (0.28, 0.68))
+mid = [0.5 - 0.44 / 2, 0.5 - 0.44 / 2, 0.44, 0.44]
+check("권장 안이면 통과", agent.check_guide(mid)["ok"])
+small = [0.5 - .10 / 2, 0.5 - .10 / 2, .10, .10]
+check("너무 작으면 막고 이유를 말함",
+      not agent.check_guide(small)["ok"] and "가까이" in agent.check_guide(small)["reason"])
+big = [0.5 - .80 / 2, 0.5 - .80 / 2, .80, .80]
+check("너무 크면 막고 이유를 말함",
+      not agent.check_guide(big)["ok"] and "멀리" in agent.check_guide(big)["reason"])
+off = [0.0, 0.0, 0.44, 0.44]
+check("가운데서 벗어나면 막음",
+      not agent.check_guide(off)["ok"] and "가운데" in agent.check_guide(off)["reason"])
+check("허용 경계 안쪽(28%)은 통과",
+      agent.check_guide([0.5 - .29 / 2, 0.5 - .29 / 2, .29, .29])["ok"])
 
 # ── 5. MockAgent — 진짜와 같은 모양 ───────────────────────────
 print("\n[5] MockAgent")
@@ -134,6 +189,15 @@ check("text 가 여섯 줄 분포를 담음",
       sum(1 for ln in r1["text"].splitlines() if ln.startswith("    ") and "%" in ln) == 6)
 check("못 읽는 파일은 retake",
       m.screen("존재하지-않는-파일.jpg")["verdict"] == "retake")
+check("mock 도 가이드 검사를 진짜로 함",
+      m.screen(tmp, box=small)["verdict"] == "retake"
+      and "가까이" in m.screen(tmp, box=small)["meta"]["retake_reason"])
+check("밴드 안이면 mock 도 통과", m.screen(tmp, box=mid)["verdict"] != "retake")
+check("box 를 주면 box_source=user", m.screen(tmp, box=mid)["meta"]["box_source"] == "user")
+check("box 가 없으면 box_source=center", m.screen(tmp)["meta"]["box_source"] == "center")
+check("한계를 계약에 실어 보냄",
+      "분포가 다릅니다" in m.screen(tmp, box=mid)["meta"]["crop_note"]
+      and "어긋납니다" in m.screen(tmp)["meta"]["crop_note"])
 
 # normal 로 떨어지는 입력도 하나 찾아 확인합니다
 found = None
@@ -157,8 +221,6 @@ check("infer 가 message 를 재수출함",
 
 # ── 7. ScreeningAgent 안전장치 ────────────────────────────────
 print("\n[7] 임계값 안전장치")
-import inspect                                                   # noqa: E402
-
 src_load = inspect.getsource(agent.ScreeningAgent.load)
 check("임계값을 못 찾으면 에러 (기본값으로 조용히 안 감)",
       "FileNotFoundError" in src_load)
@@ -173,8 +235,11 @@ check("stage1_threshold.json 을 찾아봄", "stage1_threshold.json" in src_load
 src_screen = inspect.getsource(agent.ScreeningAgent.screen)
 check("깎기 전 원본을 stage2 로 넘김",
       "stage2=raw" in src_screen and "stage2_probs = raw" in src_screen)
-check("두 단계가 다른 크롭을 씀",
-      "self.f1" in src_screen and "self.f2" in src_screen)
+check("두 단계가 다른 크롭 태그를 씀",
+      "self.tag1" in src_screen and "self.tag2" in src_screen)
+check("밴드 밖이면 모델을 돌리기 전에 돌려보냄",
+      src_screen.index("check_guide") < src_screen.index("self.s1.predict"))
+check("학습 픽셀 공간으로 먼저 맞춤", "to_train_space" in src_screen)
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")

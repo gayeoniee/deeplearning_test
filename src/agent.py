@@ -33,49 +33,118 @@ from src.config import CLASS_EN, CLASS_KO, CLASSES, NORMAL_LABEL
 CONTRACT_VERSION = "1.0"
 
 # ──────────────────────────────────────────────────────────────
-# 서빙 크롭 — 학습과 배포의 간극이 여기 있습니다
+# 서빙 크롭 — 학습이 쓰는 **그 함수**를 그대로 부릅니다
 # ──────────────────────────────────────────────────────────────
 #
-# 학습은 라벨 bbox 를 중심으로 잘랐습니다 (1단계 f320 / 2단계 m2.5).
-# **보호자 사진에는 bbox 가 없습니다.** 그래서 서빙에서는 촬영 가이드를 지켰다는
-# 전제로 **화면 중앙**을 씁니다 — 가이드가 "병변을 가운데, 화면 가로의 34~56%" 를
-# 요구하는 이유가 정확히 이것입니다.
+# 예전에는 여기서 "중앙 몇 %" 를 직접 계산했습니다. 학습은 `crop.crop_window()`
+# 를 쓰는데 서빙은 딴 식으로 자르면, 둘이 갈라지는 순간 아무도 모릅니다.
+# 지금은 **같은 함수**를 부릅니다. 갈라질 수가 없습니다.
 #
-# f320 의 크기는 원본 픽셀 320 이었고, 원본은 1920×1080 이었습니다
-# (`docs/data/DATASET_CARD.md` §1). 즉 **짧은 변의 29.6%** 입니다.
-# 휴대폰 사진은 해상도가 다르므로 픽셀 320 을 그대로 쓰면 안 됩니다 —
-# 같은 **비율**로 잘라야 피부 1mm 가 학습 때와 비슷한 픽셀 수가 됩니다.
-F320_PX = 320
-TRAIN_SHORT_SIDE = 1080            # DATASET_CARD §1 — metaData.resolution "1920X1080"
-STAGE1_FRAC = F320_PX / TRAIN_SHORT_SIDE          # ≈ 0.296
-STAGE2_FRAC = 1.0                  # m2.5 는 배율 크롭이라 비율 고정이 불가 → 중앙 정사각
+# 남는 문제는 하나였습니다 — 학습은 라벨 bbox 를 알고 있고 서빙은 모릅니다.
+# 그래서 **촬영 가이드 프레임을 bbox 로 받습니다.** 앱이 카메라에 띄운 네모를
+# 사용자가 병변에 맞추면, 그 네모가 곧 bbox 입니다.
+#
+# 두 단계가 그 네모를 **다르게** 씁니다 (이게 핵심입니다):
+#
+#   1단계 f320 : 네모의 **중심만** 씁니다. 창은 320px 고정.
+#                → 네모 크기가 틀려도 결과가 같습니다. 중심만 맞으면 됩니다.
+#   2단계 m2.5 : 네모의 **크기**를 씁니다 (긴 변 × 2.5).
+#                → 네모를 병변에 맞게 **조절할 수 있어야** 학습과 같아집니다.
+#                  고정 크기 프레임이면 2단계는 여전히 어긋납니다.
+#
+# 그래서 앱의 가이드 프레임은 **끌고 늘릴 수 있어야** 합니다.
 
-# ⚠️ 이 대응은 **실측된 적이 없습니다.**
-# holdout 숫자(AUROC 0.9304 등)는 전부 bbox 중심 크롭에서 나왔습니다. 실제 앱
-# 사진에서는 그보다 나쁠 수 있고, 얼마나 나쁜지는 앱으로 찍은 사진에 수의사
-# 라벨을 붙여봐야 압니다. 응답 `meta.crop_untested` 가 이 사실을 실어 나릅니다.
-CROP_UNTESTED_NOTE = (
-    "서빙 크롭(중앙)은 학습 크롭(bbox 중심)과 다릅니다. "
-    "보고된 성능은 bbox 크롭 기준이며 실사용 성능은 아직 실측하지 않았습니다."
-)
+TRAIN_SHORT_SIDE = 1080     # AI Hub 원본이 1920×1080 (docs/data/DATASET_CARD.md §1)
+STAGE1_TAG = "f320"         # 1단계 학습 크롭 (STEP 9-A 에서 확정)
+STAGE2_TAG = "m2.5"         # 2단계 학습 크롭 (STEP 4C 에서 확정)
+
+# 촬영 가이드 밴드 — `robust.usable_range()` 가 STEP 10 에서 실측한 값입니다
+# (STATUS.md "촬영 가이드"). 화면 **가로** 대비 병변의 비율입니다.
+GUIDE_RECOMMEND = (0.34, 0.56)     # 하락 5% 이내
+GUIDE_ALLOW = (0.28, 0.68)         # 하락 10% 이내
+GUIDE_CENTER_MAX = 0.10            # 화면 중앙에서 이만큼 이내
 
 
-def center_square(img, frac: float = 1.0):
-    """중앙에서 정사각형을 잘라냅니다. frac 은 **짧은 변 대비 비율**입니다.
+def to_train_space(im):
+    """짧은 변을 1080 으로 맞춥니다. 그 뒤로는 학습과 **같은 픽셀 공간**입니다.
 
-    frac=1.0 이면 짧은 변 크기의 정사각형(= 흔한 center crop),
-    frac=0.296 이면 f320 이 1920×1080 에서 차지하던 만큼입니다.
+    이걸 안 하면 f320 의 320 이 뜻을 잃습니다 — 휴대폰 사진은 4032×3024 라
+    320px 이 학습 때보다 훨씬 좁은 피부 조각이 됩니다. 원본이 전부 1920×1080
+    이었으므로, 짧은 변을 1080 에 맞추면 320px 이 다시 같은 화각이 됩니다.
     """
-    w, h = img.size
-    side = max(int(round(min(w, h) * float(frac))), 32)
-    side = min(side, w, h)
-    left, top = (w - side) // 2, (h - side) // 2
-    return img.crop((left, top, left + side, top + side))
+    w, h = im.size
+    short = min(w, h)
+    if short == TRAIN_SHORT_SIDE:
+        return im
+    k = TRAIN_SHORT_SIDE / short
+    return im.resize((max(1, round(w * k)), max(1, round(h * k))))
+
+
+def box_to_px(box, w: int, h: int) -> list[float] | None:
+    """정규화 [x, y, bw, bh] (0~1) → 픽셀 [x1, y1, x2, y2]. 못 읽으면 None."""
+    try:
+        x, y, bw, bh = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return None
+    if not (bw > 0 and bh > 0):
+        return None
+    x1, y1 = max(0.0, x * w), max(0.0, y * h)
+    return [x1, y1, min(float(w), x1 + bw * w), min(float(h), y1 + bh * h)]
+
+
+def check_guide(box) -> dict:
+    """가이드 프레임이 촬영 가이드 밴드 안에 있는가. 추론 **전에** 봅니다.
+
+    밴드 밖 사진은 모델에 넣지 말고 다시 찍게 하는 게 맞습니다 — 그 구간에서
+    성능이 떨어지는 걸 이미 재 뒀는데(STEP 10), 굳이 넣고 나서 틀리는 것보다
+    안 넣는 편이 낫습니다.
+
+    Returns:
+        {"ok", "reason", "width_frac", "center_off"} — reason 은 보호자에게
+        그대로 보여줄 한국어입니다.
+    """
+    try:
+        x, y, bw, bh = (float(v) for v in box)
+    except (TypeError, ValueError):
+        return {"ok": True, "reason": "", "width_frac": None, "center_off": None}
+
+    off = max(abs(x + bw / 2 - 0.5), abs(y + bh / 2 - 0.5))
+    r = {"ok": True, "reason": "", "width_frac": round(bw, 4), "center_off": round(off, 4)}
+
+    if bw < GUIDE_ALLOW[0]:
+        r.update(ok=False, reason="병변이 너무 작게 잡혔습니다. 조금 더 가까이에서 찍어주세요.")
+    elif bw > GUIDE_ALLOW[1]:
+        r.update(ok=False, reason="너무 가까워서 주변 피부가 안 보입니다. 조금 더 멀리서 찍어주세요.")
+    elif off > GUIDE_CENTER_MAX:
+        r.update(ok=False, reason="병변이 화면 가운데에서 벗어났습니다. 가운데에 오도록 다시 맞춰주세요.")
+    return r
+
+
+def crop_for(im, bbox, tag: str):
+    """학습이 쓰는 `crop.crop_window()` 로 잘라냅니다 — 재구현하지 않습니다.
+
+    bbox 가 None 이면 그 함수가 알아서 물러섭니다:
+      f320 → 이미지 중앙에서 320px,  m2.5 → 중앙 정사각.
+    """
+    from src import crop as _crop
+
+    w, h = im.size
+    win = _crop.crop_window({"bbox": bbox, "img_w": w, "img_h": h}, tag=tag)
+    return im.crop(tuple(win)) if win else im
 
 
 # ──────────────────────────────────────────────────────────────
 # 응답 계약
 # ──────────────────────────────────────────────────────────────
+# 가이드 프레임을 받았을 때 / 못 받았을 때 각각 무엇이 남는지.
+# 계약에 실어 보내서 앱이 이 한계를 모른 척할 수 없게 합니다.
+CROP_NOTE = {
+    "user_box": ("가이드 프레임을 bbox 로 써서 학습과 **같은 함수**로 잘랐습니다. "
+                 "다만 사용자가 맞춘 네모는 라벨러가 그린 네모와 분포가 다릅니다 — "
+                 "2단계는 네모 크기로 배율이 정해지므로 영향을 받습니다."),
+    "center": ("가이드 프레임 없이 화면 중앙을 잘랐습니다. 1단계는 중심만 쓰므로 "
+               "큰 차이가 없지만, 2단계는 학습 크롭과 어긋납니다."),
+}
 def _dist(probs: list[tuple[str, float]]) -> list[dict]:
     """분포를 앱이 그대로 그릴 수 있는 모양으로. **정렬은 하되 자르지 않습니다.**"""
     return [{"code": c,
@@ -138,7 +207,7 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
         "stage2": {"shown": bool(stage2), "distribution": _dist(stage2 or [])},
         "text": text,
         "disclaimer": DISCLAIMER,
-        "meta": {**{"crop_untested": CROP_UNTESTED_NOTE}, **(meta or {})},
+        "meta": {**(meta or {})},
     }
 
 
@@ -149,9 +218,9 @@ class ScreeningAgent:
     """1단계 + 2단계 체크포인트를 물고 사진 한 장을 판정합니다."""
 
     def __init__(self, stage1, stage2, threshold: float,
-                 stage1_frac: float = STAGE1_FRAC, stage2_frac: float = STAGE2_FRAC):
+                 stage1_tag: str = STAGE1_TAG, stage2_tag: str = STAGE2_TAG):
         self.s1, self.s2, self.thr = stage1, stage2, float(threshold)
-        self.f1, self.f2 = float(stage1_frac), float(stage2_frac)
+        self.tag1, self.tag2 = stage1_tag, stage2_tag
         from src.stages import ABNORMAL_LABEL
 
         self._ab = ABNORMAL_LABEL
@@ -168,6 +237,10 @@ class ScreeningAgent:
         threshold 를 안 주면 1단계 체크포인트 옆의 `stage1_threshold.json` 을 찾습니다
         (노트북 03/06 이 저장합니다). 그것도 없으면 에러 — **기본값 0.5 로 조용히
         넘어가면 안 됩니다.** recall 0.95 를 사려고 0.1823 까지 내린 값입니다.
+
+        크롭 태그는 **체크포인트 폴더 이름에서** 읽습니다. 백본을 이름에서 읽는
+        것과 같은 이유입니다 — 하드코딩했다가 05 가 죽은 적이 있습니다
+        (`train.model_key_from_exp` 주석).
         """
         import json
 
@@ -185,11 +258,19 @@ class ScreeningAgent:
                 "threshold= 로 직접 주세요. 기본값을 쓰면 recall 이 조용히 무너집니다."
             )
         return cls(Engine.load(ckpt1, device=device),
-                   Engine.load(ckpt2, device=device), threshold)
+                   Engine.load(ckpt2, device=device), threshold,
+                   crop_tag_from_exp(Path(ckpt1).parent.name) or STAGE1_TAG,
+                   crop_tag_from_exp(Path(ckpt2).parent.name) or STAGE2_TAG)
 
     # -------------------------------------------------------
-    def screen(self, image: "str | Path | Any") -> dict:
-        """사진 한 장 → 판정 dict. 경로도 되고 PIL 이미지도 됩니다."""
+    def screen(self, image: "str | Path | Any", box=None) -> dict:
+        """사진 한 장 → 판정 dict.
+
+        Args:
+            image: 경로 또는 PIL 이미지.
+            box: 앱의 **가이드 프레임**. 정규화 `[x, y, w, h]` (0~1, 원본 기준).
+                주면 학습과 같은 함수로 자릅니다. 없으면 화면 중앙으로 물러섭니다.
+        """
         import tempfile
 
         from PIL import Image
@@ -201,18 +282,30 @@ class ScreeningAgent:
             im = image if hasattr(image, "size") else Image.open(image)
             im = im.convert("RGB")
         except Exception as exc:
-            return contract("retake", text="", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
+            return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
+
+        meta = {"mock": False, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
+                "box_source": "user" if box is not None else "center",
+                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+
+        # ★ 밴드 밖 사진은 **모델에 넣기 전에** 돌려보냅니다.
+        #   그 구간에서 성능이 떨어지는 걸 이미 재 뒀는데(STEP 10), 넣고 나서
+        #   틀리는 것보다 안 넣는 편이 낫습니다.
+        if box is not None:
+            g = check_guide(box)
+            meta["guide"] = g
+            if not g["ok"]:
+                meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                return contract("retake", text="", meta={**meta, "retake_reason": g["reason"]})
+
+        im = to_train_space(im)                       # 짧은 변 1080 = 학습 픽셀 공간
+        bbox = box_to_px(box, *im.size) if box is not None else None
 
         with tempfile.TemporaryDirectory() as td:
-            # 두 단계가 **다른 크롭**을 씁니다 — 학습 때와 같은 규칙입니다
             p1 = Path(td) / "s1.jpg"
-            center_square(im, self.f1).save(p1, quality=95)
+            crop_for(im, bbox, self.tag1).save(p1, quality=95)
             pr1 = self.s1.predict(str(p1))
             abnormal = dict(pr1.topk).get(self._ab, 0.0)
-
-            meta = {"elapsed_ms": None, "mock": False,
-                    "stage1_crop": f"center {self.f1:.3f}× short side",
-                    "stage2_crop": f"center {self.f2:.3f}× short side"}
 
             if abnormal < self.thr:
                 pred = Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)],
@@ -223,7 +316,7 @@ class ScreeningAgent:
                                 text=compose_screening_message(pred), meta=meta)
 
             p2 = Path(td) / "s2.jpg"
-            center_square(im, self.f2).save(p2, quality=95)
+            crop_for(im, bbox, self.tag2).save(p2, quality=95)
             pred = self.s2.predict(str(p2))
 
         raw = list(pred.topk)                       # 깎기 전 원본 (합 = 1)
@@ -241,6 +334,22 @@ class ScreeningAgent:
                         stage2=raw, text=compose_screening_message(pred), meta=meta)
 
 
+def crop_tag_from_exp(name: str) -> str | None:
+    """체크포인트 폴더 이름에서 크롭 태그를 되찾습니다.
+
+        stage1_effnetv2_s_f320_384_moderate_photometric → 'f320'
+        stage2_convnextv2_base_m2.5_384_moderate        → 'm2.5'
+    """
+    from src import crop as _crop
+
+    if not isinstance(name, str):
+        return None
+    for t in name.split("_"):
+        if t == "full" or _crop.margin_of_tag(t) or _crop.fixed_of_tag(t):
+            return t
+    return None
+
+
 # ──────────────────────────────────────────────────────────────
 # 가중치 없이 화면만 보기
 # ──────────────────────────────────────────────────────────────
@@ -250,14 +359,17 @@ class MockAgent:
     torch 도 가중치도 필요 없습니다. 파일 내용의 해시로 값을 만들기 때문에
     같은 사진은 항상 같은 결과가 나옵니다 (시연 중에 숫자가 흔들리면 곤란합니다).
 
-    ⚠️ 여기서 나오는 숫자는 **모델이 낸 것이 아닙니다.** 응답의 `meta.mock` 이
-    true 이고, 화면에도 그렇게 표시해야 합니다.
+    가이드 프레임 검사(`check_guide`)는 **진짜로 돕니다** — 밴드 밖이면 mock
+    에서도 재촬영이 나옵니다. 앱이 그 경로를 확인할 수 있어야 하니까요.
+
+    ⚠️ 확률은 **모델이 낸 것이 아닙니다.** 응답의 `meta.mock` 이 true 입니다.
     """
 
     def __init__(self, threshold: float = 0.1823):
         self.thr = float(threshold)
+        self.tag1, self.tag2 = STAGE1_TAG, STAGE2_TAG
 
-    def screen(self, image: "str | Path | Any") -> dict:
+    def screen(self, image: "str | Path | Any", box=None) -> dict:
         from src.message import Prediction, band, compose_screening_message
 
         t0 = time.perf_counter()
@@ -267,11 +379,19 @@ class MockAgent:
         except Exception as exc:
             return contract("retake", meta={"mock": True, "error": str(exc)})
 
+        meta = {"mock": True, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
+                "box_source": "user" if box is not None else "center",
+                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+        if box is not None:
+            g = check_guide(box)
+            meta["guide"] = g
+            if not g["ok"]:
+                meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+                return contract("retake", meta={**meta, "retake_reason": g["reason"]})
+
         h = hashlib.sha256(raw_bytes).digest()
         abnormal = 0.03 + (h[0] / 255) * 0.94
-        meta = {"mock": True, "stage1_crop": f"center {STAGE1_FRAC:.3f}× short side",
-                "stage2_crop": "center 1.000× short side",
-                "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)}
+        meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
         if abnormal < self.thr:
             pred = Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)],
