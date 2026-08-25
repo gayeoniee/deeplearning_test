@@ -125,7 +125,7 @@ uv run --extra serve python serve.py --mock      # 가중치 없이 화면만
 | 무엇 | 어디 |
 |---|---|
 | 파이프라인 + JSON 계약 | `src/agent.py` |
-| HTTP 서버 + 데모 화면 | `serve.py` / `demo/index.html` |
+| HTTP 서버 + 데모 화면 | `serve.py` / `demo/index.html` (DAENGS 챗봇 재현) |
 | 계약 감시 43개 | `tests/test_agent.py` |
 | **앱 팀이 읽을 문서** | [`docs/SERVING.md`](docs/SERVING.md) |
 

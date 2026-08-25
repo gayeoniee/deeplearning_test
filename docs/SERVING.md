@@ -13,7 +13,7 @@
 | [`src/agent.py`](../src/agent.py) | 파이프라인 + **응답 계약** (HTTP 모름) |
 | [`src/message.py`](../src/message.py) | 문구 생성. torch 안 씁니다 |
 | [`serve.py`](../serve.py) | FastAPI 서버 + 데모 화면 |
-| [`demo/index.html`](../demo/index.html) | 데모 UI. 테마 토큰이 맨 위 여덟 줄 |
+| [`demo/index.html`](../demo/index.html) | 데모 UI — **DAENGS 챗봇 화면** 재현 |
 | [`tests/test_agent.py`](../tests/test_agent.py) | 계약 감시 43개 |
 
 ---
@@ -154,20 +154,60 @@ ECE ≥ 0.10 으로 나오면 **숫자를 빼고 문구만** 띄우기로 합니
 
 ---
 
-## 데모 화면 테마 바꾸기
+## 데모 화면 = 앱의 챗봇 카드
 
-`demo/index.html` 맨 위 `:root` 블록의 여덟 줄이 전부입니다:
+`demo/index.html` 은 **DAENGS 앱의 챗봇 화면을 그대로 옮긴 것**입니다
+([`gayeoniee/isometric_test`](https://github.com/gayeoniee/isometric_test) —
+`app/src/main/java/com/daengs/app/ui/home/ChatbotCard.kt`).
 
-```css
---brand:#F59E4B;       /* 주 색 */
---on-brand:#7A3E06;    /* 꽉 찬 주 색 위 글자 (다크에서도 그대로) */
---brand-ink:#7A3E06;   /* 옅은 배경 위 글자 (다크에서 밝게 뒤집힘) */
---brand-soft:#FFF3E4;  /* 주 색 옅은 배경 */
---alert:#E4633A;       /* 이상 소견 */
---safe:#4C9A6A;        /* 정상 */
---neutral:#7A8290;     /* 재촬영 */
---radius:18px;
+### 동선
+
+```
+챗봇 카드 ─ [📷 이미지 진단] 눌러 사진 선택
+              ↓
+          내 말풍선에 사진이 뜸 (오른쪽, 핑크)
+              ↓
+          🐶 발자국 세 개가 통통 (타이핑 표시)
+              ↓
+          POST /v1/screen
+              ↓
+          봇 말풍선에 결과 카드 — 이상 가능성 게이지 →
+          "판단할 수 없어요" → 여섯 줄 분포 → 진료 권함 → 면책
 ```
 
-지금 값은 **자리표시**입니다 — DAENGS_APP 이 private 이라 실제 색을 못 봤습니다.
-앱 색을 알려주시면 여기만 바꾸면 됩니다. 라이트/다크는 자동으로 따라갑니다.
+칩을 누르면 입력창에 채워지는 동작은 `ChatbotCard.kt` 와 같습니다.
+**텍스트 대화는 아직 없습니다** — 보내면 "지금은 피부 사진만 볼 수 있어" 로
+정직하게 답하고 이미지 진단으로 안내합니다.
+
+### 색
+
+`:root` 블록의 값이 전부 `ui/theme/Color.kt` 에서 그대로 온 것입니다:
+
+| 데모 토큰 | Color.kt |
+|---|---|
+| `--cream-bg` `#FDF1EC` | `CreamBg` |
+| `--card` `#FFFFFF` | `CardWhite` |
+| `--pink` `#F0A0A0` | `DaengPink` |
+| `--pink-deep` `#E08585` | `DaengPinkDeep` |
+| `--pink-soft` `#FBE4E0` | `PinkSoft` |
+| `--pink-faint` `#F7ECE8` | `PinkFaint` |
+| `--ink` `#4A3B36` | `TextDark` |
+| `--muted` `#A79089` | `TextMuted` |
+| `--safe` `#7FC98F` / `--alert` `#E87F7F` | `RoomPalette.GhostValid` / `GhostInvalid` |
+
+**다크 모드를 넣지 않았습니다** — 앱이 라이트 전용이기 때문입니다
+(`Theme.kt`: "dynamicColor 를 지원하지 않는다 … 다크 모드도 동일 스킴").
+대신 모든 색을 명시해서 브라우저 테마와 무관하게 같게 보입니다.
+
+### Compose 로 옮길 때
+
+결과 카드를 `ChatbotCard.kt` 옆에 붙일 때 그대로 쓸 수 있는 값들:
+
+* 말풍선 모서리 — 봇 `19/19/19/5.dp`, 나 `19/19/5/19.dp` (앱 카드가 22.dp)
+* 분포 막대 — 트랙 `PinkFaint`, 채움 `DaengPink`, 높이 6.dp, 완전 둥글게
+* 분포 이름은 `FontWeight.Normal` **고정** — 1등만 Bold 로 바꾸지 마세요
+* 판정 점 색 — 이상 `GhostInvalid`, 정상 `GhostValid`, 재촬영 `TextMuted`
+
+⚠️ 한국어 줄바꿈은 어절 단위로 끊어야 합니다. 웹에서는 `word-break:keep-all`,
+Compose 에서는 `LineBreak.Paragraph` 를 쓰세요 — 기본값이면
+"권합니 / 다." 처럼 낱말 가운데가 잘립니다 (실제로 그렇게 나왔습니다).

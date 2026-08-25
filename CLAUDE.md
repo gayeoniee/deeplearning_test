@@ -121,7 +121,7 @@ deeplearning_test/
 ├── diagnose.py                원본 JSON 스키마 확인용 일회성 도구 (스키마 3곳이 틀렸었음)
 ├── serve.py                   ★ 데모 API 서버 (FastAPI). 앱이 붙을 자리
 │                                --mock 이면 torch 없이 화면만
-├── demo/index.html            데모 UI. 테마 토큰이 맨 위 여덟 줄
+├── demo/index.html            데모 UI — DAENGS 챗봇 화면 재현 (앱 색 그대로)
 │
 ├── notebooks/                 ★ 클라우드(Colab/Kaggle) 전용. 첫 셀이 git clone 까지 합니다
 │   ├── 03_학습_베이스라인       1·2단계 학습 + 견고성 검사 (384px) — val 까지
