@@ -24,20 +24,78 @@
 # 가중치 없이 화면만 (torch 불필요, ~10초)
 uv sync --extra serve
 uv run --extra serve python serve.py --mock
-
-# 진짜 모델로
-uv sync --extra train --extra serve
-uv run --extra train --extra serve python serve.py \
-    --ckpt1 runs/stage1_effnetv2_s_f320_.../best.pt \
-    --ckpt2 runs/stage2_convnextv2_base_m25_.../best.pt
 ```
 
 * `http://127.0.0.1:8000/` — 데모 화면
 * `http://127.0.0.1:8000/docs` — FastAPI 자동 생성 API 문서
 
-`--threshold` 를 생략하면 1단계 체크포인트 옆의 `stage1_threshold.json` 을 찾습니다
-(노트북 03/06 이 저장합니다). **못 찾으면 에러로 멈춥니다** — 기본값 0.5 로 조용히
-넘어가면 recall 이 0.95 에서 0.82 로 떨어지는데 아무도 모릅니다.
+### 진짜 모델 붙이기 — **재학습 필요 없습니다**
+
+> ⚠️ **가중치는 리포에 커밋하지 않습니다.** `.gitignore` 가 `*.pt` 를 막고 있고,
+> AI Hub 데이터는 재배포 금지입니다 — 그 데이터로 학습한 가중치도 조심해야 합니다.
+> **각자 PC 에만** 두세요. 클라우드에 올릴 일이 있으면 반드시 Private.
+
+STEP 10 (노트북 `06`, 2026-08-24) 이 이미 두 단계를 다 학습해 뒀습니다.
+그 노트북 셀 43 의 `train.export_release()` 가 만든 결과가
+Kaggle 그 실행의 **Output 탭 → `release/` 폴더**에 있습니다:
+
+```
+release/
+  READ_ME_FIRST.txt                              ← 크롭·점수가 적혀 있어 버전 확인용
+  stage1_threshold.json                          ← 0.1823
+  checkpoints/stage1_effnetv2_s_f320_…/best.pt
+  checkpoints/stage2_…/best.pt
+```
+
+통째로 받아서 폴더 경로만 주면 됩니다:
+
+```bash
+uv sync --extra train --extra serve
+uv run --extra train --extra serve python serve.py --release ~/Downloads/release
+```
+
+**어느 파일이 1단계인지 고를 필요가 없습니다** — 이름에 다 적혀 있어서
+`from_release()` 가 읽습니다 (`train.infer_run_settings` 와 같은 규칙).
+
+**GPU 가 필요 없습니다.** 한 장씩 추론이라 CPU 로 1~3초면 됩니다.
+시작할 때 `cpu` / `cuda` 중 무엇으로 도는지 찍어줍니다.
+
+폴더를 잘못 줬으면 **거기 뭐가 있는지 같이 찍어줍니다** — 다운로드가 덜 된 건지
+경로가 틀린 건지 바로 보입니다:
+
+```
+… 안에서 'stage1_…/best.pt' 를 못 찾았습니다.
+거기 있는 것:
+  reports/
+  stage2_convnextv2_base_m2.5_384_moderate/  ← best.pt 있음
+```
+
+#### 1단계만 붙이기
+
+2단계 가중치가 없거나, 정상/이상만 먼저 확인하고 싶으면:
+
+```bash
+uv run --extra train --extra serve python serve.py --release ~/Downloads/release --stage1-only
+```
+
+"피부에 이상 소견이 보입니다 (이상 가능성 62%) → 진료 권함" 까지 나오고
+병변 분포는 안 냅니다. **이것만으로도 제품이 됩니다** — 어차피 병변 이름은
+안 말하기로 했으니까요(§7-B). 1단계가 이 프로젝트에서 가장 잘 되는 부분이기도
+합니다 (holdout AUROC 0.9304).
+
+#### 개별 파일로 주고 싶으면
+
+```bash
+uv run --extra train --extra serve python serve.py \
+    --ckpt1 runs/stage1_effnetv2_s_f320_…/best.pt \
+    --ckpt2 runs/stage2_…/best.pt
+```
+
+#### 임계값
+
+`--threshold` 를 생략하면 `stage1_threshold.json` 을 찾습니다
+(노트북 03/06 이 저장합니다). **못 찾으면 에러로 멈춥니다** — 기본값 0.5 로
+조용히 넘어가면 recall 이 0.95 에서 0.82 로 떨어지는데 아무도 모릅니다.
 
 ---
 
