@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="ko" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><text y='52' font-size='52'>🐾</text></svg>">
+<title>댕스 피부 스크리닝 데모</title>
+<style>
+/* ══════════════════════════════════════════════════════════════
+   테마 토큰 — DAENGS_APP 색을 여기 여덟 줄만 바꿔 끼우면 됩니다.
+   (앱 레포가 private 이라 실제 색을 못 봤습니다. 아래는 자리표시입니다)
+   ══════════════════════════════════════════════════════════════ */
+:root{
+  --brand:#F59E4B;            /* 주 색 — 버튼·강조 */
+  --on-brand:#7A3E06;         /* 꽉 찬 주 색 **위**의 글자 — 밝기가 안 바뀌므로 다크에서도 그대로 */
+  --brand-ink:#7A3E06;        /* 옅은 배경 위의 주 색 글자 — 다크에서 밝게 뒤집힙니다 */
+  --brand-soft:#FFF3E4;       /* 주 색 옅은 배경 */
+  --alert:#E4633A;            /* 이상 소견 */
+  --safe:#4C9A6A;             /* 정상 */
+  --neutral:#7A8290;          /* 재촬영 */
+  --radius:18px;
+  --font:'Pretendard','Apple SD Gothic Neo','Noto Sans KR',system-ui,-apple-system,sans-serif;
+
+  --bg:#F6F4F1; --card:#FFFFFF; --ink:#1F2328; --ink-2:#5A626D;
+  --line:#E6E2DC; --track:#F0EDE8;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#15171A; --card:#1E2126; --ink:#ECEFF3; --ink-2:#9AA3AE;
+    --line:#2C3037; --track:#282C33;
+    --brand-soft:#2A2119; --brand-ink:#FFD9AC;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--font);
+  line-height:1.6; -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; align-items:center;
+  padding:24px 16px 64px; min-height:100vh;
+}
+
+/* ── 휴대폰 프레임 ── */
+.phone{width:100%; max-width:420px}
+header{display:flex; align-items:center; gap:10px; margin-bottom:6px}
+.logo{
+  width:34px;height:34px;border-radius:11px;background:var(--brand);
+  display:grid;place-items:center;font-size:19px;flex:none;
+}
+h1{font-size:18px;margin:0;font-weight:700;letter-spacing:-.01em}
+.sub{margin:0 0 18px;color:var(--ink-2);font-size:12.5px}
+
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+  padding:18px; margin-bottom:14px;
+}
+
+/* ── 사진 넣는 곳 ── */
+#drop{
+  border:2px dashed var(--line); border-radius:var(--radius);
+  padding:30px 18px; text-align:center; cursor:pointer;
+  background:var(--card); transition:border-color .15s, background .15s;
+}
+#drop:hover,#drop.over{border-color:var(--brand); background:var(--brand-soft)}
+#drop .big{font-size:34px; line-height:1; margin-bottom:10px}
+#drop p{margin:0; font-size:14px; font-weight:600}
+#drop small{color:var(--ink-2); font-size:12px}
+#preview{width:100%; border-radius:14px; display:block; margin-bottom:14px}
+input[type=file]{display:none}
+
+button{
+  font-family:inherit; font-size:14.5px; font-weight:700; cursor:pointer;
+  border:0; border-radius:12px; padding:13px 18px; width:100%;
+  background:var(--brand); color:var(--on-brand);
+}
+button:disabled{opacity:.5; cursor:default}
+button.ghost{background:transparent; color:var(--ink-2); border:1px solid var(--line); margin-top:8px}
+
+/* ── 결과 ── */
+.verdict{display:flex; gap:11px; align-items:flex-start; margin-bottom:4px}
+.dot{width:11px;height:11px;border-radius:50%;flex:none;margin-top:8px}
+.verdict h2{font-size:17px; margin:0; font-weight:700; letter-spacing:-.01em}
+.gauge{margin:14px 0 4px}
+.gauge .row{display:flex;justify-content:space-between;font-size:12px;color:var(--ink-2);margin-bottom:5px}
+.gauge .track{height:7px;background:var(--track);border-radius:99px;overflow:hidden}
+.gauge .fill{height:100%;border-radius:99px}
+.body{font-size:13.5px; color:var(--ink-2); margin:12px 0 0}
+
+/* ★ 표시 규칙 — 이 블록을 고치기 전에 docs/cautions/03 §7-B 를 읽어주세요 */
+.cant{
+  background:var(--brand-soft); border-radius:12px; padding:12px 14px;
+  font-size:13.5px; font-weight:700; color:var(--brand-ink); margin:16px 0 4px;
+}
+.cant span{display:block; font-weight:500; font-size:12.5px; opacity:.85; margin-top:3px}
+/* 여섯 줄은 **똑같은 무게**로 그립니다. 1등만 굵게/색을 바꾸면
+   사람이 그걸 답으로 읽습니다 — 그게 이 화면이 막으려는 것입니다. */
+.dist{margin-top:14px}
+.bar{display:grid; grid-template-columns:1fr auto; gap:2px 10px; margin-bottom:11px}
+.bar b{font-weight:500; font-size:13px}          /* 굵게 안 씁니다 */
+.bar i{font-style:normal; font-size:12.5px; color:var(--ink-2); font-variant-numeric:tabular-nums}
+.bar .track{grid-column:1/-1; height:6px; background:var(--track); border-radius:99px; overflow:hidden}
+.bar .fill{height:100%; background:var(--brand); border-radius:99px}
+
+.action{
+  margin-top:16px; padding:14px; border-radius:12px; text-align:center;
+  font-size:14px; font-weight:700; background:var(--brand-soft); color:var(--brand-ink);
+}
+.note{font-size:11.5px; color:var(--ink-2); margin-top:14px; padding-top:13px; border-top:1px solid var(--line)}
+.meta{font-size:11px; color:var(--ink-2); margin-top:8px; font-variant-numeric:tabular-nums}
+.badge{
+  display:inline-block; font-size:10.5px; font-weight:700; padding:3px 8px;
+  border-radius:99px; background:var(--alert); color:#fff; margin-left:6px; vertical-align:2px;
+}
+.err{color:var(--alert); font-size:13.5px}
+.spin{width:17px;height:17px;border:2.5px solid rgba(255,255,255,.45);border-top-color:currentColor;
+      border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-3px}
+@keyframes sp{to{transform:rotate(360deg)}}
+details{margin-top:12px}
+summary{font-size:12px;color:var(--ink-2);cursor:pointer}
+pre{background:var(--track);padding:12px;border-radius:10px;overflow:auto;font-size:11px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="phone">
+  <header>
+    <div class="logo">🐾</div>
+    <div>
+      <h1>피부 스크리닝<span id="mockBadge"></span></h1>
+      <p class="sub" style="margin:0">진단이 아닙니다 · 병원에 가볼지 판단을 돕습니다</p>
+    </div>
+  </header>
+
+  <div id="pick" class="card" style="padding:0;border:0;background:none">
+    <label id="drop" for="file">
+      <div class="big">📷</div>
+      <p>반려견 피부 사진을 올려주세요</p>
+      <small>병변이 화면 가운데, 가로의 34~56% 를 채우게</small>
+    </label>
+    <input id="file" type="file" accept="image/*">
+  </div>
+
+  <div id="stage" hidden>
+    <div class="card">
+      <img id="preview" alt="올린 사진">
+      <button id="go">이 사진으로 확인하기</button>
+      <button id="again" class="ghost">다른 사진 고르기</button>
+    </div>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const CLR = {abnormal:'var(--alert)', normal:'var(--safe)', retake:'var(--neutral)'};
+let file = null;
+
+fetch('/healthz').then(r=>r.json()).then(h=>{
+  if(h.mock) $('#mockBadge').innerHTML = '<span class="badge">MOCK</span>';
+}).catch(()=>{});
+
+const drop = $('#drop');
+['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault(); drop.classList.add('over');}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault(); drop.classList.remove('over');}));
+drop.addEventListener('drop', ev => take(ev.dataTransfer.files[0]));
+$('#file').addEventListener('change', ev => take(ev.target.files[0]));
+$('#again').addEventListener('click', () => {
+  file=null; $('#stage').hidden=true; $('#pick').hidden=false; $('#out').innerHTML='';
+  $('#file').value='';
+});
+
+function take(f){
+  if(!f || !f.type.startsWith('image/')) return;
+  file = f;
+  $('#preview').src = URL.createObjectURL(f);
+  $('#pick').hidden = true; $('#stage').hidden = false; $('#out').innerHTML = '';
+}
+
+$('#go').addEventListener('click', async () => {
+  if(!file) return;
+  const btn = $('#go');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> 살펴보는 중…';
+  try{
+    const fd = new FormData(); fd.append('photo', file);
+    const res = await fetch('/v1/screen', {method:'POST', body:fd});
+    const j = await res.json();
+    if(!res.ok) throw new Error(j.detail || res.statusText);
+    render(j);
+  }catch(e){
+    $('#out').innerHTML = `<div class="card err">확인하지 못했습니다 — ${esc(e.message)}</div>`;
+  }finally{
+    btn.disabled = false; btn.textContent = '이 사진으로 확인하기';
+  }
+});
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function render(j){
+  const c = CLR[j.verdict] || 'var(--neutral)';
+  let h = `<div class="card">
+    <div class="verdict"><div class="dot" style="background:${c}"></div>
+      <h2>${esc(j.headline)}</h2></div>`;
+
+  if(j.stage1 && j.stage1.abnormal_percent !== null){
+    const p = j.stage1.abnormal_percent;
+    h += `<div class="gauge">
+      <div class="row"><span>이상 가능성</span><span>${p}%</span></div>
+      <div class="track"><div class="fill" style="width:${Math.min(p,100)}%;background:${c}"></div></div>
+    </div>`;
+  }
+
+  // ★ "판단할 수 없습니다" 는 숫자보다 **위**에 옵니다 (docs/cautions/03 §7-B)
+  if(j.verdict === 'abnormal' && j.stage2 && j.stage2.shown){
+    h += `<div class="cant">어떤 병변인지는 이 사진만으로 판단할 수 없습니다.
+            <span>아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다.</span></div>`;
+    h += '<div class="dist">';
+    // 여섯 개를 **전부**, 전부 같은 굵기로
+    for(const d of j.stage2.distribution){
+      h += `<div class="bar">
+        <b>${esc(d.name_ko)}</b><i>${d.percent}%</i>
+        <div class="track"><div class="fill" style="width:${d.percent}%"></div></div>
+      </div>`;
+    }
+    h += '</div>';
+  }else{
+    h += `<p class="body">${esc(j.body)}</p>`;
+  }
+
+  h += `<div class="action">${esc(j.action)}</div>`;
+  h += `<p class="note">${esc(j.disclaimer)}</p>`;
+  if(j.meta){
+    const bits = [];
+    if(j.meta.mock) bits.push('⚠️ mock — 모델이 낸 숫자가 아닙니다');
+    if(j.meta.elapsed_ms != null) bits.push(`${j.meta.elapsed_ms}ms`);
+    if(j.stage1 && j.stage1.threshold != null) bits.push(`임계값 ${j.stage1.threshold}`);
+    if(j.stage1 && j.stage1.calibrated === false) bits.push('1단계 확률 미보정');
+    if(bits.length) h += `<div class="meta">${esc(bits.join(' · '))}</div>`;
+  }
+  h += `<details><summary>앱이 받는 JSON 보기</summary><pre>${
+        esc(JSON.stringify(j, null, 2))}</pre></details>`;
+  h += '</div>';
+  $('#out').innerHTML = h;
+  $('#out').scrollIntoView({behavior:'smooth', block:'start'});
+}
+</script>
+</body>
+</html>

@@ -86,6 +86,27 @@ uv run python prepare_local.py --package
 > 🔑 API 키는 학습 노트북에서는 필요하지 않습니다 (다운로드가 로컬에서 끝났으므로).
 > 로컬에서는 환경변수 `AIHUB_API_KEY` 로 주고, **코드나 노트북 셀에 직접 붙여넣지 마세요.**
 
+### 4. 데모 화면 띄워보기 (선택 — 가중치 없어도 됩니다)
+
+```bash
+uv sync --extra serve
+uv run --extra serve python serve.py --mock      # → http://127.0.0.1:8000/
+```
+
+사진을 올리면 실제 앱이 받게 될 화면이 그대로 나옵니다. `--mock` 은 모델 없이
+**같은 모양의** 응답을 만들어 주므로 torch 도 GPU 도 필요 없습니다
+(숫자는 모델이 낸 것이 아니고, 화면에 `MOCK` 배지가 붙습니다).
+
+진짜 모델로 돌리려면:
+
+```bash
+uv run --extra train --extra serve python serve.py \
+    --ckpt1 runs/stage1_.../best.pt --ckpt2 runs/stage2_.../best.pt
+```
+
+안드로이드 앱(**DAENGS_APP**) 연동 계약과 남은 위험은
+[`docs/SERVING.md`](docs/SERVING.md) 에 있습니다.
+
 ---
 
 ## 이 프로젝트가 신경 쓴 것
@@ -259,6 +280,11 @@ uv run python tests/test_stages.py        # 잘 깔렸는지 확인
 `04` Colab/Kaggle 트러블슈팅 · `05` 실험기록·재현성 ·
 **`06` 해외IP 다운로드 차단** · `07` Windows 로컬 환경 설정 ·
 **`08` 2단계 파이프라인 설계** · `09` 세션이 끊겼을 때
+
+### 📱 앱 연동
+
+[`docs/SERVING.md`](docs/SERVING.md) — API 계약 · 서빙 크롭이 학습 크롭과 다른 문제 ·
+합치기 전에 풀어야 할 4가지 · 데모 테마 바꾸는 법.
 
 ### 🗺️ 전체 진행표
 

@@ -23,12 +23,16 @@
 * **데이터**: AI Hub 561 「반려동물 피부 질환」 — 반려견 + 일반카메라만
 * **매니페스트**: parquet (pandas + pyarrow) — DB 없음, 파일 하나가 진실
 * **실행 분리**: 전처리는 **한국 PC**(AI Hub 가 해외 IP 차단), 학습은 **Kaggle/Colab**
-* **프론트엔드 없음** — 아직 모델 단계입니다
+* **서빙**: FastAPI 데모 서버(`serve.py`) + 단일 HTML 데모(`demo/`).
+  안드로이드 앱(**DAENGS_APP**)이 붙을 자리이고 **아직 합치지 않았습니다** —
+  계약과 남은 위험은 [`docs/SERVING.md`](docs/SERVING.md)
 
 ```bash
 uv sync                 # 전처리용 (torch 없이, ~30초)
 uv sync --extra train   # 학습까지 (torch/torchvision/timm/grad-cam)
+uv sync --extra serve   # 데모 API 서버 (torch 없이도 --mock 으로 화면 확인)
 uv run python prepare_local.py --chunk VL01
+uv run --extra serve python serve.py --mock          # → http://127.0.0.1:8000/
 ```
 
 ---
@@ -115,6 +119,9 @@ deeplearning_test/
 ├── prepare_local.py           ★ 한국 PC 전용 CLI: 다운로드 → 정제 → 크롭 → zip
 │                                --chunk VL01 / --finalize / --package
 ├── diagnose.py                원본 JSON 스키마 확인용 일회성 도구 (스키마 3곳이 틀렸었음)
+├── serve.py                   ★ 데모 API 서버 (FastAPI). 앱이 붙을 자리
+│                                --mock 이면 torch 없이 화면만
+├── demo/index.html            데모 UI. 테마 토큰이 맨 위 여덟 줄
 │
 ├── notebooks/                 ★ 클라우드(Colab/Kaggle) 전용. 첫 셀이 git clone 까지 합니다
 │   ├── 03_학습_베이스라인       1·2단계 학습 + 견고성 검사 (384px) — val 까지
@@ -152,10 +159,12 @@ deeplearning_test/
 │   ├── experiments.py         비교 실험 판정 규칙 + 시작 전 시간 추정 (규칙 3)
 │   ├── calibrate.py           온도 보정 · ECE · coverage-risk
 │   ├── explain.py             Grad-CAM 정렬도 (배경 보는지 **수치로**)
-│   └── infer.py               단일 사진 추론 + 안전 문구
-│                              ⚠️ 문구 함수가 **둘**입니다 — `compose_message`
-│                              (단일 모델, 이름을 말함) / `compose_screening_message`
-│                              (★ 2단계 파이프라인, **이름을 말하지 않음**)
+│   ├── infer.py               단일 사진 추론 (문구는 message.py 에서 재수출)
+│   ├── message.py             ★ 보호자에게 보여줄 문구. **torch 안 씁니다**
+│   │                          ⚠️ 문구 함수가 **둘**입니다 — `compose_message`
+│   │                          (단일 모델, 이름을 말함) / `compose_screening_message`
+│   │                          (★ 2단계 파이프라인, **이름을 말하지 않음**)
+│   └── agent.py               ★ 앱이 받는 파이프라인 + JSON 계약 (서빙 크롭 포함)
 │
 ├── tests/                     200+ 검사. `uv run python tests/<파일>`
 │   ├── test_notebook_kaggle_e2e.py  ★ Kaggle 환경을 통째로 흉내 내 03 전 셀 실행
@@ -166,11 +175,13 @@ deeplearning_test/
 │   ├── test_stages.py               2단계 분할 공유
 │   ├── test_windows_encoding.py     cp949 회귀 (같은 버그로 3번 막혔음)
 │   ├── test_screening_message.py    ★ 최종 출력이 병변 이름을 단정하지 않는가
+│   ├── test_agent.py                ★ 앱 계약에 "1등 병변" 필드가 생기는지 감시
 │   ├── test_capture_guide.py        촬영 가이드 밴드 계산
 │   └── test_notebook_names.py       노트북 셀의 이름·인자 오타 (실행 없이)
 │
 ├── docs/
 │   ├── 00_로드맵.md            전체 STEP (현재 위치는 STATUS.md)
+│   ├── SERVING.md             ★ 앱 연동 — API 계약 · 서빙 크롭 · 아직 안 된 것
 │   ├── results/               ★ 실측 기록 — **숫자는 전부 여기**. 추정치 금지
 │   ├── data/DATASET_CARD.md   실물 스키마 (추론이 틀렸던 3곳 포함)
 │   ├── basics/                딥러닝 기초 10편 (ML 경험자 전제, DL 은 처음부터)
@@ -255,6 +266,12 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
 * **`Path.rglob` 는 심볼릭 링크 하위로 안 들어갑니다** (두 번 당함)
 * **부분 업로드**: 크롭이 30%만 올라간 채로 조용히 학습됐습니다 →
   `crop.MIN_CROP_COVERAGE = 0.95` 미만이면 에러
+* **앱 계약에 "1등 병변" 필드를 추가하지 마세요.** 주는 순간 앱은 그걸 제일 크게
+  띄웁니다 — holdout 에서 56.6% 틀린 이름을요. `tests/test_agent.py` 가
+  `top1`/`predicted`/`diagnosis` 같은 키를 감시합니다
+* **`serve.py` 에 `from __future__ import annotations` 를 넣지 마세요.**
+  `UploadFile` 이 문자열 어노테이션이 되는데 라우트가 `build_app` 안에 있어
+  pydantic 이 이름을 못 찾고 **500** 으로 죽습니다 (실제로 당했습니다)
 * **`Prediction.topk` 를 화면에 그대로 띄우면 안 됩니다.** 2단계 파이프라인에서
   이 값은 1단계 확률을 곱해 낮춰둔 **거절 판정용**입니다. 보호자에게 보여줄 분포는
   깎기 전 원본인 `Prediction.stage2_probs` (합 = 1) 입니다 — 깎은 값을 띄우면
