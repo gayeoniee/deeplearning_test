@@ -647,28 +647,40 @@ def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str
     return verdict
 
 
-def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
-                     epochs: int, n_conditions: int | None = None,
+def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: int,
+                     n_train: int, epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
     """학습을 시작하기 **전에** 총 예상 시간을 찍습니다.
 
     "몇 시간 걸릴지 모르고 돌렸다가 뒤통수" 를 여러 번 맞아서 넣었습니다.
     합성 텐서로 GPU 속도만 재므로 백본당 20초 안쪽입니다.
 
+    `model_names` 는 이름 목록이거나 **(이름, 해상도) 목록**입니다. 뒤엣것을 쓰면
+    백본마다 다른 해상도로 잽니다 — ViT 계열은 해상도가 고정이라 CNN 과 같은
+    384 로 재면 안 됩니다 (판 B 가 그 경우입니다).
+
     ⚠️ 데이터 로딩이 병목이면 실제는 이보다 느립니다. **하한 추정**입니다.
     """
     from src import bench
     from src.config import CFG, MODEL_BY_KEY
 
-    n_conditions = n_conditions or len(model_names)
+    pairs = [(m, img_size) if isinstance(m, str) else (m[0], m[1]) for m in model_names]
+    n_conditions = n_conditions or len(pairs)
     rows, total_min = [], 0.0
     print("\n" + "=" * 66)
     print(" 시작 전 시간 추정 (GPU 속도 실측, 백본당 ~20초)")
     print("=" * 66)
-    for key in model_names:
+    for key, size in pairs:
         spec = MODEL_BY_KEY[key]
-        cfg = CFG(model_name=spec.timm_name, img_size=img_size)
-        g = bench.gpu_speed(cfg, n_classes=2, steps=20)
+        cfg = CFG(model_name=spec.timm_name, img_size=size)
+        # ⚠️ 하나가 터져도 나머지 추정은 보여줘야 합니다. 추정하다 죽으면
+        #    정작 돌 수 있는 백본들의 시간도 못 보고 셀이 멈춥니다.
+        try:
+            g = bench.gpu_speed(cfg, n_classes=2, steps=20)
+        except Exception as exc:                                   # noqa: BLE001
+            print(f"  {key:<16} 속도 측정 실패 ({type(exc).__name__}: "
+                  f"{str(exc).splitlines()[0][:60]}) — 추정 생략")
+            continue
         ips = float(g.get("img_per_sec") or 0.0)
         # GPU 가 없으면 img_per_sec 이 NaN 입니다 (NaN 은 비교가 전부 False 라 따로 봅니다)
         if not (ips > 0) or ips != ips:
@@ -676,11 +688,12 @@ def estimate_runtime(model_names: list[str], img_size: int, n_train: int,
             continue
         epoch_min = n_train / ips / 60
         run_min = epoch_min * epochs
-        rows.append({"model": key, "img_per_sec": ips, "batch": g.get("batch"),
+        rows.append({"model": key, "img_size": size, "img_per_sec": ips,
+                     "batch": g.get("batch"),
                      "peak_vram_gb": g.get("peak_vram_gb"),
                      "epoch_min": epoch_min, "run_min": run_min})
         total_min += run_min
-        print(f"  {key:<16}{ips:>7.0f} img/s  배치 {g.get('batch', '?'):>3}  "
+        print(f"  {key:<16}{size:>4}px{ips:>7.0f} img/s  배치 {g.get('batch', '?'):>3}  "
               f"VRAM {g.get('peak_vram_gb', 0):>4.1f}GB   "
               f"1에폭 {epoch_min:>5.1f}분   {epochs}에폭 {run_min:>6.0f}분")
 

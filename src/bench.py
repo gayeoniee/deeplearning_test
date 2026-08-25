@@ -117,7 +117,12 @@ def gpu_speed(cfg: CFG, n_classes: int = 6, steps: int = 30) -> dict:
         return {"img_per_sec": float("nan"), "note": "GPU 없음"}
 
     dev = "cuda"
-    model = build(cfg.model_name, n_classes, pretrained=False, verbose=False)
+    # ⚠️ img_size 를 넘겨야 합니다. ViT 계열은 위치 임베딩·윈도우 크기가 고정이라
+    #    안 넘기면 기본 해상도(예: swinv2 256)로 만들어놓고 cfg.img_size(384) 짜리
+    #    텐서를 먹여 shape 오류로 죽습니다. 실제로 판 B(해상도 혼합)에서 시간 추정
+    #    셀이 학습 시작 전에 터질 뻔했습니다.
+    model = build(cfg.model_name, n_classes, pretrained=False, verbose=False,
+                  img_size=cfg.img_size)
     model = model.to(dev).to(memory_format=torch.channels_last).train()
     opt = torch.optim.AdamW(param_groups(model, cfg))
     crit = torch.nn.CrossEntropyLoss()
