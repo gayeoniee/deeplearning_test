@@ -102,6 +102,44 @@ if "image_path" in sub.columns:
             print("  " + ct.to_string().replace("\n", "\n  "))
 
 print("\n💡 위에서 부위(A/B/H/L)와 **딱 맞아떨어지는 폴더 층**이 있으면 그게 답입니다.")
-print("   없으면 AI Hub 데이터 설명서를 봐야 합니다 — 추측하지 마세요.")
+print("   없으면 코드의 뜻은 사진으로 알아내거나 AI Hub 설명서를 봐야 합니다.")
+
+# ── 부위별 사진을 깔아 눈으로 확인 ──────────────────────────────
+# 경로·메타에 부위명이 없으면 남은 방법은 **보는 것**입니다. 크롭이 로컬에 있으니
+# 부위별로 정상 사진 12장씩 한 판에 깔면 A/B/H/L 이 무엇인지 바로 보입니다.
+if "--sheets" in sys.argv:
+    import matplotlib
+    matplotlib.use("Agg")
+
+    from src import crop, errors
+
+    tags = crop.available_tags()
+    if not tags:
+        raise SystemExit("❌ 크롭이 없습니다. prepare_local.py 를 먼저 돌리세요.")
+    tag = "f320" if "f320" in tags else tags[0]      # 1단계가 보는 크롭을 우선
+    print(f"\n부위별 사진을 저장합니다 (크롭 '{tag}', 붙어 있는 것: {tags})")
+
+    out = env.work_root() / "reports"
+    # ⚠️ allow_missing=True — 그림 몇 장 보자는 것이라 95% 커버리지 기준으로
+    #    멈출 이유가 없습니다. 실제로 있는 파일만 골라 씁니다.
+    switched = crop.switch_tag(sub, tag, verbose=False, allow_missing=True)
+    have = switched["crop_path"].apply(lambda v: bool(v) and Path(v).exists())
+    print(f"  실제로 있는 크롭 {int(have.sum()):,} / {len(switched):,}장")
+    switched = switched[have]
+    if len(switched) == 0:
+        raise SystemExit(f"❌ '{tag}' 크롭 파일을 하나도 못 찾았습니다.")
+    for code in tab.index:
+        rows = switched[(switched["region"].astype(str).str.strip() == str(code))
+                        & (switched["label"] == NORMAL_LABEL)]
+        if len(rows) == 0:
+            print(f"  [{code}] 정상 사진이 없습니다 — 건너뜁니다")
+            continue
+        errors.contact_sheet(rows, n=12, cols=4, seed=0, show=False,
+                             title=f"부위 '{code}' — 정상 사진 (크롭 {tag})",
+                             save_to=out / f"region_{code}.png")
+    print(f"\n→ {out} 안의 region_*.png 를 열어 무슨 부위인지 확인하세요.")
+    print("  (머리 / 등 / 배 / 다리 / 발 … 무엇이 보이는지)")
+else:
+    print("\n💡 부위별 사진을 보려면:  uv run python tools/peek_region.py --sheets")
 print("\n💡 정상 사진이 몰려 있는 부위가 곧 헛알림 후보입니다.")
 print("   실제 헛알림률은 노트북 07 의 4-b 절(errors.by_group)이 잽니다.")
