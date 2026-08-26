@@ -170,6 +170,25 @@ def main(argv=None) -> None:
 
     from src import agent, crop, env, stages
 
+    # ── 0) 경로부터 확인합니다 — 20분 돌린 뒤 오타로 죽으면 아깝습니다 ──
+    rel = Path(a.release).expanduser()
+    if not rel.exists():
+        raise SystemExit(
+            f"릴리스 폴더가 없습니다: {rel}\n"
+            "   탐색기에서 checkpoints 가 들어 있는 폴더의 주소를 복사해 붙이세요.\n"
+            "   폴더 이름에 공백이 있으면 \"따옴표\" 로 감싸세요.")
+    hits = sorted(rel.glob("**/stage1_*/best.pt"))
+    if not hits:
+        raise SystemExit(
+            f"{rel} 안에서 stage1_*/best.pt 를 못 찾았습니다.\n"
+            f"   여기 있는 것: {[p.name for p in sorted(rel.iterdir())[:10]]}\n"
+            "   압축을 풀면 한 겹 더 감싸져 있는 일이 흔합니다 (release/release/…).")
+    print(f"[릴리스] {hits[0].parent.name}")
+    for q in sorted(rel.glob("**/stage2_*/best.pt")):
+        print(f"         {q.parent.name}")
+    if not (list(rel.glob("**/temperature.json")) or []):
+        print("         ⚠️ temperature.json 이 없습니다 — 이 릴리스는 보정 전입니다.")
+
     tag = a.tag or agent.STAGE1_TAG
     mf = env.work_root() / "manifests" / "manifest_final.parquet"
     if not mf.exists():
