@@ -178,12 +178,14 @@ deeplearning_test/
 │   ├── test_screening_message.py    ★ 최종 출력이 병변 이름을 단정하지 않는가
 │   ├── test_calibration_wiring.py   ★ 보정값이 서빙까지 도착하는가
 │   ├── test_agent.py                ★ 앱 계약에 "1등 병변" 필드가 생기는지 감시
+│   ├── test_crops_tool.py           쓰는 크롭을 지우지 않는가
 │   ├── test_capture_guide.py        촬영 가이드 밴드 계산
 │   └── test_notebook_names.py       노트북 셀의 이름·인자 오타 (실행 없이)
 │
 ├── docs/
 │   ├── 00_로드맵.md            전체 STEP (현재 위치는 STATUS.md)
 │   │  ── tools/box_error.py — 사람이 그린 네모 vs 정답 bbox (수의사 불필요)
+│   │  ── tools/crops.py    — 크롭 용량 보고 · 안 쓰는 태그 정리 · 새 청크 예상
 │   ├── SERVING.md             ★ 앱 연동 — API 계약 · 서빙 크롭 · 아직 안 된 것
 │   ├── results/               ★ 실측 기록 — **숫자는 전부 여기**. 추정치 금지
 │   ├── data/DATASET_CARD.md   실물 스키마 (추론이 틀렸던 3곳 포함)
