@@ -204,6 +204,23 @@ def plan(s: dict, chunk: str) -> None:
     r = s["raw"]
     need = zip_b + crop_b
 
+    # ⚠️ zip 이 떨어질 곳과 크롭이 쌓일 곳이 **다른 드라이브**일 수 있습니다
+    #    (DOG_SKIN_DATA 로 외장을 지정한 경우). 아래 계획은 크롭 쪽 디스크를
+    #    기준으로 세는데, 받는 도중 최대치는 zip 쪽에서 납니다. 갈라져 있으면
+    #    그 사실과 그쪽 여유를 따로 말해줍니다 — 안 그러면 통과처럼 보입니다.
+    try:
+        from src import env
+
+        dl_root = env.data_root()
+        dl_root.mkdir(parents=True, exist_ok=True)
+        if os.stat(dl_root).st_dev != os.stat(probe).st_dev:
+            dl_free = shutil.disk_usage(dl_root).free
+            print(f"\n  ⓘ 원본 zip 은 다른 드라이브로 갑니다: {dl_root}")
+            print(f"     그쪽 여유 {human(dl_free)} — **받는 도중 최대치는 이쪽**에서 납니다.")
+            print(f"     크롭은 {probe} 에 쌓입니다.")
+    except Exception:                                             # noqa: BLE001
+        pass
+
     print(f"\n  ── 단계별 계획 (지금 여유 {human(free)}) ──\n")
     steps = [("지금 그대로 시작", free, "")]
     run = free

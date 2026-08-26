@@ -104,7 +104,9 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
     print(f" 청크 {name} — {info['desc']} ({info['gb']}GB), 방식: {mode}")
     print("=" * 68)
 
-    free = env.free_disk_gb()
+    # ⚠️ **원본이 떨어질 드라이브**를 봐야 합니다. 기본값(리포 폴더)을 보면
+    #    DOG_SKIN_DATA 로 외장을 지정했을 때 엉뚱한 디스크를 재고 통과시킵니다.
+    free = env.free_disk_gb(env.data_root())
     # ⚠️ 끝나고 남는 양이 아니라 **받는 도중 최대치**를 봐야 합니다.
     #    aihubshell 이 download.tar + 푼 내용 + 합친 파일을 겹쳐 놓습니다
     #    (소스를 읽어 확인한 2~3배. src/aihub.DL_PEAK).
