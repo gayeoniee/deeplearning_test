@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ CHUNK_GB = {"VL01": 21, "VS01": 21, "TL01": 90, "TL02": 80, "TS01": 90, "TS02": 
 #   ② tar -xvf download.tar (뒤에 rm 없음)      + 풀린 내용   = 2배
 #   ③ find|xargs cat > 합친파일 (조각 삭제는 그 뒤)  + 합친 것 = 3배
 # 조각(.part*)으로 안 쪼개진 청크면 ②에서 끝나 2배입니다 — 받아보기 전엔 모릅니다.
-DL_PEAK = (2.0, 3.0)
+from src.aihub import DL_PEAK        # ★ 한 곳에만 (src/aihub.py)
 BASE_CHUNK = "VL01"          # 지금 갖고 있는 청크 — 이걸 기준으로 비례 계산합니다
 
 
@@ -249,12 +250,19 @@ def plan(s: dict, chunk: str) -> None:
                       "다 비워도 안 됩니다.")
         except OSError:
             pass
+        # ⚠️ 환경변수 거는 법이 OS 마다 다릅니다. 맥/리눅스에서 `set X=Y` 는
+        #    조용히 아무것도 안 하고, 그대로 받다가 원래 드라이브가 찹니다.
+        win = os.name == "nt"
+        setter = "set {k}={v}" if win else "export {k}={v}"
+        other = "D:\\daengs_raw" if win else "/Volumes/USB/daengs_raw"
+        work = "D:\\daengs_work" if win else "/Volumes/USB/daengs_work"
+        here = "C: 드라이브" if win else "내장 디스크"
         print("\n  ── 그래도 하려면 ──")
-        print("  1) 다른 드라이브가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
-        print(f"       set DOG_SKIN_DATA=D:\\daengs_raw")
+        print("  1) 다른 드라이브(외장/USB)가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
+        print("       " + setter.format(k="DOG_SKIN_DATA", v=other))
         print(f"       uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
-        print(f"     → C: 에는 크롭 {human(crop_b)} 만 있으면 됩니다.")
-        print("  2) 크롭도 옮기려면  set DOG_SKIN_WORK=D:\\daengs_work")
+        print(f"     → {here}에는 크롭 {human(crop_b)} 만 있으면 됩니다.")
+        print("  2) 크롭도 옮기려면  " + setter.format(k="DOG_SKIN_WORK", v=work))
         print("  3) 안 되면 데이터 늘리기는 접고 06 재실행만 하는 게 맞습니다.")
         return
 

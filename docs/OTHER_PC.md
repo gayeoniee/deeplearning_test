@@ -35,12 +35,20 @@ uv sync
 uv run python tools/crops.py --plan TL02
 
 # 2) 되면 받아서 크롭까지 — 쓰는 크롭 2종만 만듭니다
-set AIHUB_API_KEY=키
+export AIHUB_API_KEY=키        # 맥·리눅스
+set AIHUB_API_KEY=키           # 윈도우 (둘 중 하나만)
 uv run python prepare_local.py --chunk TL02 --margins 2.5,-320
 ```
 
 `--margins 2.5,-320` 이 중요합니다. 기본값은 크롭을 4종 만드는데
 지금 파이프라인은 `f320`·`m2.5` 둘만 씁니다 — 절반이 낭비입니다.
+
+`--chunk` 는 크롭이 끝나고 **원본을 지우기 직전에 phash(사진 지문)를 재서
+매니페스트에 넣습니다.** 이게 없으면 나중에 이 PC 에서 `--finalize` 를 돌릴 때
+그 청크의 원본을 다시 읽으려 하는데, 그 zip 은 이미 지워졌습니다 —
+그리고 **에러가 안 납니다.** VL01 이 읽히니까 그냥 넘어가고, TL02 는 전부
+"중복 없음" 으로 처리됩니다. 청크 경계를 넘는 누수를 막으려고 만든 단계가
+조용히 아무 일도 안 하게 됩니다. (`src/dedup.py` · `tests/test_merge_incoming.py`)
 
 ⚠️ **`--finalize` 는 여기서 돌리지 마세요.** 그건 모든 청크를 합쳐 분할하는
 단계라, VL01 이 없는 PC 에서 돌리면 TL02 만으로 분할이 잡힙니다.
@@ -58,7 +66,8 @@ data/work/manifests/chunk_TL02.parquet   ★ 이거 빠뜨리기 쉽습니다
 ```
 
 **매니페스트를 꼭 챙기세요.** 크롭 파일만 있으면 어떤 사진이 어떤 라벨인지
-알 수가 없습니다.
+알 수가 없고, 그 안의 `phash` 컬럼이 없으면 중복 제거가 조용히 건너뜁니다.
+`--package` 는 `manifests/` 를 통째로 담으므로 zip 으로 옮기면 자동입니다.
 
 zip 으로 묶어서 옮기면 편합니다:
 
@@ -74,16 +83,26 @@ uv run python prepare_local.py --package --tags f320,m2.5 --out tl02_crops.zip
 ## 이 PC 로 돌아와서
 
 ```bash
-# 1) 받아온 것을 제자리에 풉니다
-#    crops/f320, crops/m2.5 는 기존 폴더에 **덮어쓰지 말고 합치기**
-#    manifests/chunk_TL02.parquet 도 같은 자리에
+# 1) 무엇이 들어오는지 **먼저 봅니다** (아무것도 안 씁니다)
+uv run python tools/merge_incoming.py tl02_crops.zip
 
-# 2) 이제 합칩니다 — VL01 + TL02
+# 2) 괜찮으면 합칩니다
+uv run python tools/merge_incoming.py tl02_crops.zip --apply
+
+# 3) 전 청크를 합쳐 중복제거 + 개체 단위로 다시 나눕니다
 uv run python prepare_local.py --finalize
 
-# 3) 학습용 zip
+# 4) 학습용 zip
 uv run python prepare_local.py --package --tags f320,m2.5
 ```
+
+⚠️ **`unzip -o` 로 직접 풀지 마세요.** 크롭 파일 이름은 `md5(원본경로)` 라
+원본이 같으면 이름도 같습니다. 크롭 **설정**이 달랐다면 이름은 같고 내용만
+다른데, 덮어쓰면 학습 데이터가 반쯤 섞인 채로 돌아가고 아무도 모릅니다.
+`merge_incoming.py` 는 그런 걸 만나면 **멈춥니다.**
+
+그리고 이 도구가 가져온 매니페스트에 **phash 가 있는지 확인해 줍니다** —
+없으면 그 자리에서 말합니다. `--finalize` 를 돌린 뒤에 알면 늦습니다.
 
 `--finalize` 가 두 청크를 합쳐 중복 제거하고 개체 단위로 다시 나눕니다.
 

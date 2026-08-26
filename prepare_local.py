@@ -105,13 +105,19 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
     print("=" * 68)
 
     free = env.free_disk_gb()
-    # zip 방식은 zip 자체 + 크롭본만 필요. extract 방식은 해제본까지.
-    need = info["gb"] * (1.15 if mode == "zip" else 1.7)
-    print(f" 여유 디스크 {free:.0f}GB / 필요 약 {need:.0f}GB")
-    if free < need:
-        print(" ⚠️ 공간이 부족합니다.")
-        if mode != "zip":
-            print("    --mode zip 을 쓰면 압축 해제 없이 처리해 훨씬 적게 듭니다.")
+    # ⚠️ 끝나고 남는 양이 아니라 **받는 도중 최대치**를 봐야 합니다.
+    #    aihubshell 이 download.tar + 푼 내용 + 합친 파일을 겹쳐 놓습니다
+    #    (소스를 읽어 확인한 2~3배. src/aihub.DL_PEAK).
+    #    예전엔 여기서 1.15배로 봤는데, 그러면 "여유 93GB / 필요 92GB → 통과" 를
+    #    찍고 받다가 디스크가 찹니다. 통과시키면 안 되는 걸 통과시켰습니다.
+    lo, hi = (info["gb"] * m for m in aihub.DL_PEAK)
+    keep = info["gb"] * 1.15                      # 다 받고 나면 남는 양 (zip + 크롭)
+    print(f" 여유 디스크 {free:.0f}GB")
+    print(f" 받는 도중 최대 {lo:.0f}~{hi:.0f}GB  ·  다 받고 나면 약 {keep:.0f}GB")
+    if free < hi:
+        worst = "❌ 최대치가 디스크보다 큽니다" if free < lo else "⚠️ 최대치에 못 미칩니다"
+        print(f" {worst} — 중간에 'No space left' 로 죽을 수 있습니다.")
+        print("    조각(.part*)으로 안 쪼개진 청크면 2배에서 끝나 될 수도 있습니다.")
         print("    그래도 진행하려면 Enter, 중단하려면 Ctrl+C")
         input()
 
@@ -195,6 +201,32 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
         for c in [c for c in df.columns if c.endswith("_new")]:
             df[c[:-4]] = df[c]
             df = df.drop(columns=[c])
+    # 3-b) ★ phash — **원본을 지우기 전에** 재 둡니다
+    #
+    # 중복 제거는 --finalize 에서 전 청크를 합쳐 한 번에 합니다. 그런데 그때는
+    # 원본이 이미 없습니다. 이 PC 에서 계속 작업하면 zip 이 남아 있어 우연히
+    # 됐지만, **다른 PC 에서 청크를 처리해 크롭만 가져오면** 그 청크는 영영
+    # 못 읽습니다 — 그리고 dedup 은 그 경우 에러 없이 넘어갑니다
+    # (src/dedup.py 의 주석 참고). 여기서 미리 재서 매니페스트에 넣어둡니다.
+    #
+    # 비용은 zip 을 한 번 더 읽는 것뿐이고, 대신 --finalize 가 그만큼 빨라집니다.
+    print("\n[phash] 원본을 지우기 전에 지문을 재 둡니다 (--finalize 가 이걸 씁니다)")
+    try:
+        from src import dedup
+        hashes = dedup.compute_hashes(df_all, hash_size=cfg.phash_size, workers=8)
+        df["phash"] = df["image_path"].map(hashes)
+        got = int(df["phash"].notna().sum())
+        print(f"       {got:,}/{len(df):,}장 ({got / max(len(df), 1):.1%})")
+        if got < len(df) * 0.98:
+            print("  ⚠️ 못 읽은 사진이 있습니다. 그대로 두면 --finalize 가 멈춥니다 "
+                  "(멈추는 게 맞습니다 — 조용히 넘어가면 중복을 못 잡습니다).")
+    except Exception as exc:                                       # noqa: BLE001
+        # 여기서 죽으면 다운로드부터 다시 해야 합니다 — 크롭은 이미 끝났으니
+        # 매니페스트는 저장하고, 대신 무엇이 빠졌는지 크게 알립니다.
+        print(f"  ⚠️ phash 계산 실패: {type(exc).__name__}: {exc}")
+        print("     크롭과 매니페스트는 저장합니다. 다만 원본을 지우기 전에")
+        print("     --keep-raw 로 다시 돌리거나, 이 PC 에서 --finalize 까지 끝내세요.")
+
     labels.save(df, f"chunk_{name}.parquet")
 
     # 4) 원본 삭제 — 다음 청크를 위해 공간 확보
