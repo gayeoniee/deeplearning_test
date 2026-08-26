@@ -422,21 +422,39 @@ def prune_raw(s: dict, yes: bool = False) -> None:
 
 
 # 병합 여유를 **재는 대신 읽습니다.** aihubshell 은 셸 스크립트라 소스가 그대로 있습니다.
-MERGE_HINTS = [
-    ("조각 삭제", r"\brm\b[^\n|]*part|\brm\b[^\n|]*\.[0-9]{2,}\b|unlink"),
-    ("이어붙이기", r"\bcat\b[^\n]*>>|\bcat\b[^\n]*\*"),
-    ("분할 다운로드", r"part|split|chunk|[0-9]{3}\b"),
-    ("압축 해제", r"\bunzip\b|\btar\b\s+-?x"),
-    ("임시 파일", r"download_[0-9]|\.tmp\b|mktemp"),
+#
+# ⚠️ 처음엔 정규식으로 몇 줄만 뽑았는데, 정작 중요한 줄이 잘려서 판단을 못 했습니다.
+#    (`cat part* > 파일` 이 **주석**이었고, 진짜 병합은 가려진 줄에 있었습니다)
+#    그래서 지금은 **덩어리째** 보여줍니다 — 셸 스크립트는 앞뒤 맥락이 답입니다.
+PEEK_ANCHORS = [
+    ("병합", r"^\s*merge_parts\s*\(\)|^\s*function\s+merge_parts"),
+    ("압축 해제", r"\btar\b\s+-?[a-z]*x[a-z]*\s|\bunzip\b"),
+    ("조각 다운로드", r"\.part|Range:|http_status"),
 ]
 
 
-def shell_peek() -> None:
-    """`aihubshell` 을 읽어 **조각을 지우며 합치는지** 확인합니다.
+def _region(lines: list[str], start: int) -> tuple[int, int]:
+    """셸 함수 한 덩어리. `}` 로 끝나면 거기까지, 아니면 앞뒤 몇 줄."""
+    if "()" in lines[start]:
+        depth = 0
+        for k in range(start, min(start + 80, len(lines))):
+            depth += lines[k].count("{") - lines[k].count("}")
+            if depth <= 0 and k > start and "}" in lines[k]:
+                return start, k
+    return max(0, start - 4), min(len(lines) - 1, start + 10)
 
-    왜 이게 필요한가 — `--plan` 의 마지막 미지수가 "병합할 때 조각과 합친 파일이
-    잠깐 같이 있는가" 입니다. 80GB 짜리를 도박으로 받아보며 재는 것보다,
+
+def shell_peek() -> None:
+    """`aihubshell` 을 읽어 **디스크가 언제 2배가 되는지** 확인합니다.
+
+    왜 이게 필요한가 — `--plan` 의 마지막 미지수가 "받는 도중에 큰 파일이
+    둘 있는 순간이 있나" 입니다. 80GB 짜리를 도박으로 받아보며 재는 것보다,
     **스크립트를 읽는 게 공짜이고 확실합니다.**
+
+    볼 것은 두 군데입니다:
+      1. 조각 → download.tar   (`cat part* > tar` 면 2배, `>>` + `rm` 이면 조각 하나)
+      2. download.tar → 내용물 (`tar -xvf` 뒤에 tar 를 **지우는 줄이 있나**)
+         없으면 tar 와 풀린 내용이 같이 있어서 이쪽이 2배입니다.
     """
     import re
 
@@ -455,23 +473,62 @@ def shell_peek() -> None:
         print(f"\n못 읽었습니다: {exc}")
         return
 
-    print(f"\naihubshell  {p}  ({p.stat().st_size:,} bytes, {src.count(chr(10)):,}줄)\n")
     lines = src.split("\n")
-    for name, pat in MERGE_HINTS:
-        rx = re.compile(pat, re.I)
-        hits = [(i + 1, ln.strip()) for i, ln in enumerate(lines) if rx.search(ln)]
-        print(f"  {name:<10} {len(hits):>3}줄")
-        for i, ln in hits[:6]:
-            print(f"       {i:>5}: {ln[:96]}")
-        if len(hits) > 6:
-            print(f"       … {len(hits) - 6}줄 더")
-        print()
+    print(f"\naihubshell  {p}  ({p.stat().st_size:,} bytes, {len(lines):,}줄)")
 
-    print("  ── 읽는 법 ──")
-    print("  '이어붙이기' 가 `cat part* > 합친파일` 이면 → 병합 중 **2배** 씁니다.")
-    print("  그 뒤에 '조각 삭제' 가 붙어도, 지우는 건 합친 **다음**이라 소용없습니다.")
-    print("  반대로 조각 하나씩 `cat p >> 합친파일 && rm p` 면 → 여유는 **조각 하나**면 됩니다.")
-    print("  둘 중 어느 쪽인지 위 줄 번호로 확인하고, 결과를 docs/results/ 에 적어주세요.")
+    shown: set[int] = set()
+    for name, pat in PEEK_ANCHORS:
+        rx = re.compile(pat)
+        starts = [i for i, ln in enumerate(lines) if rx.search(ln)]
+        if not starts:
+            print(f"\n  [{name}]  못 찾았습니다 — 스크립트가 바뀐 것 같습니다.")
+            continue
+        print(f"\n  ── {name} ──")
+        for st in starts[:3]:
+            a, b = _region(lines, st)
+            span = range(a, b + 1)
+            if sum(k in shown for k in span) > 0.6 * len(span):
+                continue          # 앞 항목에서 이미 보여준 덩어리
+            for k in range(a, b + 1):
+                shown.add(k)
+                mark = "#" if lines[k].lstrip().startswith("#") else " "
+                print(f"    {k + 1:>4}{mark} {lines[k][:110]}")
+            print()
+
+    # ── 자동 판정: 확실한 것만 말하고, 애매하면 애매하다고 합니다 ──
+    print("  ── 판정 ──")
+    live = [(i + 1, ln.strip()) for i, ln in enumerate(lines)
+            if not ln.lstrip().startswith("#")]
+
+    def _find(pat: str) -> list[tuple[int, str]]:
+        rx = re.compile(pat)
+        return [(i, ln) for i, ln in live if rx.search(ln)]
+
+    cat_over = _find(r"\bcat\b[^>]*>[^>]")           # cat … >  (덮어쓰기)
+    cat_app = _find(r"\bcat\b[^>]*>>")               # cat … >> (이어붙이기)
+    untar = _find(r"\btar\b\s+-?[a-z]*x")
+    rm_tar = _find(r"\brm\b[^\n]*\.tar")
+
+    if cat_over:
+        print(f"  ❌ 조각→tar 이 덮어쓰기 병합입니다 (줄 {cat_over[0][0]}) → 이 구간 2배")
+    elif cat_app:
+        print(f"  ✅ 조각→tar 이 이어붙이기입니다 (줄 {cat_app[0][0]}) → 조각 하나 여유면 됩니다")
+    else:
+        print("  ◐ 조각→tar 병합 방식을 못 읽었습니다. 위 [병합] 덩어리를 직접 보세요.")
+
+    if untar:
+        if rm_tar:
+            print(f"  ✅ tar 를 푼 뒤 지웁니다 (줄 {rm_tar[0][0]}) → 그래도 **푸는 동안**은")
+            print("     tar + 풀린 내용이 같이 있습니다. 이 구간이 최대치입니다.")
+        else:
+            print(f"  ❌ `tar -x` (줄 {untar[0][0]}) 뒤에 tar 를 **지우는 줄이 없습니다.**")
+            print("     download.tar 와 풀린 내용이 같이 남습니다 → 이 구간 2배.")
+            print("     다만 prepare_local.py 가 aihub.cleanup_backups(raw) 로 뒤늦게")
+            print("     치우긴 합니다 — '뒤늦게' 라서 최대치는 그대로입니다.")
+    else:
+        print("  ◐ 압축 해제 줄을 못 찾았습니다.")
+
+    print("\n  이 판정을 docs/results/ 에 적어주세요 — 추정이 아니라 소스를 읽은 값입니다.")
 
 
 def main(argv=None):
