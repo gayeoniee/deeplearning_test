@@ -157,12 +157,83 @@ def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,
               f"{b.mean() - g.mean():>10.4f}{d:>7.2f}{ar:>8.3f}   {verdict(d, ar)}")
 
 
+def residualize(target, control, deg: int = 3):
+    """`control` 의 영향을 뺀 `target` 만 남깁니다.
+
+    ⚠️ 처음엔 `control` 을 사분위로 **묶어서** 재려 했는데 **틀렸습니다.**
+       칸 안에서도 control 이 계속 변하고 target 이 그걸 주워담아서, 독립
+       성분이 **0인 합성 데이터에서도** "독립" 이 나왔습니다 (AUROC 0.657).
+       칸을 잘게 쪼개도 새는 건 마찬가지라 방법 자체를 바꿨습니다.
+
+    지금 방식 — **순위로 바꾼 뒤 control 의 3차 추세를 빼냅니다.**
+    순위를 쓰는 이유: `blur`(라플라시안 분산)와 `hair`(1픽셀 차분)는 대략
+    제곱근 관계라 원값에 직선을 맞추면 휘어진 부분이 남습니다. 순위는
+    로그·제곱근 같은 **단조 변환에 안 흔들립니다.**
+
+    합성 데이터 검증 (tests/test_false_alarm_stats.py):
+      · hair = blur 의 다른 이름   → 0.939 → **0.511** (같은 것)
+      · hair 에 독립 성분, 그게 오답 → 0.712 → **0.917** (독립)
+      · 독립 성분 있으나 오답은 blur → 0.886 → **0.515** (같은 것)
+    """
+    import numpy as np
+    import pandas as pd
+
+    t = pd.Series(np.asarray(target, float)).rank().values
+    c = pd.Series(np.asarray(control, float)).rank().values
+    c = (c - c.mean()) / (c.std() or 1.0)
+    X = np.vander(c, deg + 1)
+    coef, *_ = np.linalg.lstsq(X, t, rcond=None)
+    return t - X @ coef
+
+
+def independence(df, mask_bad, mask_good, target: str, control: str) -> float:
+    """`control` 을 빼고도 `target` 이 오답을 가르는가.
+
+    왜 필요한가 — `hair`(결)와 `blur`(선명도)는 **같은 걸 재고 있을 수 있습니다.**
+    흐리게 하면 결이 사라지니까요 (도구 검증: 흐림 처리로 hair 0.63 → 0.0007).
+    그러면 "결이 많다" 는 그냥 "선명하다" 의 다른 말이고, 처방이 달라집니다:
+
+      · hair 가 독립  → 털·주름이 진짜 원인. 촬영 가이드(털 헤치기)가 살아납니다
+      · blur 로 설명  → 화질 지름길 하나. 촬영으로는 못 잡습니다
+    """
+    import numpy as np
+
+    sel = mask_bad | mask_good
+    sub = df[sel]
+    ok = np.isfinite(sub[target]) & np.isfinite(sub[control])
+    rows = sub.index[ok]
+    bad = mask_bad.reindex(rows).fillna(False).values
+    good = mask_good.reindex(rows).fillna(False).values
+    if bad.sum() < 30 or good.sum() < 30:
+        print(f"\n  ── {target} vs {control} — 표본이 적어 생략 ──")
+        return float("nan")
+
+    raw = auroc(df.loc[rows[bad], target], df.loc[rows[good], target])
+    r = residualize(df.loc[rows, target], df.loc[rows, control])
+    res = auroc(r[bad], r[good])
+
+    print(f"\n  ── {control} 를 빼고 {target} 만 남기면 ──")
+    print(f"     그냥 잰 AUROC        {raw:.3f}")
+    print(f"     {control} 를 뺀 뒤       {res:.3f}   ({res - raw:+.3f})")
+    if abs(res - 0.5) >= A_STRONG:
+        print(f"     ✅ **{target} 은 {control} 와 별개입니다.**")
+        print(f"        {control} 를 설명하고 나서도 {target} 이 오답을 가릅니다.")
+    elif abs(res - 0.5) >= A_WEAK:
+        print(f"     ◐ 약해졌습니다 — {target} 의 상당 부분이 {control} 였습니다.")
+    else:
+        print(f"     ❌ **{target} 은 {control} 의 다른 이름입니다.**")
+        print(f"        {control} 를 빼고 나면 아무것도 안 남습니다.")
+    return res
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--release", required=True, help="06 이 만든 릴리스 폴더")
     ap.add_argument("--tag", default=None, help="쓸 크롭 태그 (기본: 1단계 태그)")
     ap.add_argument("--limit", type=int, default=0, help="맛보기로 N장만")
     ap.add_argument("--out", default="docs/results/헛알림_사진통계_실측.md")
+    ap.add_argument("--save", metavar="파일", default=None,
+                    help="장별 값을 저장 (.parquet/.csv). 다시 20분 안 돌리려면 쓰세요")
     a = ap.parse_args(argv)
 
     import numpy as np
@@ -259,6 +330,43 @@ def main(argv=None) -> None:
     print("     촬영 가이드를 아무리 손봐도 안 줄어듭니다. 이것도 결론입니다.")
     print("  AUROC < 0.5 는 틀림이 아니라 **방향이 반대**라는 뜻입니다 "
           "(예: 헛알림 쪽이 더 흐림).")
+
+    # ── 4) 두 값이 같은 걸 재고 있나 ──
+    print("\n" + "=" * 68)
+    print(" 헛알림 — 두 값이 같은 걸 재는 건 아닌가")
+    print("=" * 68)
+    corr = df.loc[df["is_normal"], STATS].corr().loc["hair", "blur"]
+    print(f"\n  정상 사진에서 hair 와 blur 의 상관 {corr:+.3f}")
+    h_res = independence(df, fa, tn, "hair", "blur")
+    b_res = independence(df, fa, tn, "blur", "hair")
+
+    print("\n  ── 둘 중 어느 쪽이 진짜인가 ──")
+    if h_res == h_res and b_res == b_res:                   # nan 아님
+        hs, bs = abs(h_res - 0.5), abs(b_res - 0.5)
+        if hs >= A_STRONG and bs < A_WEAK:
+            print("  → **결(hair)이 원인입니다.** 선명도는 결의 그림자였습니다.")
+            print("     촬영 가이드 '털을 헤쳐서 피부가 보이게' 가 살아납니다.")
+        elif bs >= A_STRONG and hs < A_WEAK:
+            print("  → **선명도(blur)가 원인입니다.** 결은 선명도의 다른 이름이었습니다.")
+            print("     STEP 6 의 화질 지름길 그대로입니다 — 촬영으로는 못 잡습니다.")
+        elif hs >= A_STRONG and bs >= A_STRONG:
+            print("  → **둘 다 독립적으로 기여합니다.** 한쪽만 고쳐선 부족합니다.")
+        else:
+            print("  → 서로를 빼면 둘 다 약해집니다. 얽혀 있어서 이 데이터로는")
+            print("     어느 쪽이 원인인지 못 가릅니다. 그것도 결론입니다.")
+
+    if a.save:
+        cols = ["image_path", "label", "is_normal", "score", "said_abnormal",
+                "path", *STATS]
+        sp = Path(a.save)
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        keep = df[[c for c in cols if c in df.columns]]
+        if sp.suffix == ".csv":
+            keep.to_csv(sp, index=False, encoding="utf-8-sig")
+        else:
+            keep.to_parquet(sp)
+        print(f"\n  장별 값 저장: {sp}  ({len(keep):,}행)")
+        print("     → 다시 20분 안 돌리고 여기서 더 파볼 수 있습니다.")
     print(f"\n  결과를 {a.out} 에 적어주세요 (규칙 1 — 실측만).")
 
 

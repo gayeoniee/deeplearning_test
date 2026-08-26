@@ -84,6 +84,43 @@ check("노란 조명은 sat 이 높다", W["sat"] > 0.3, str(W["sat"]))
 check("못 여는 파일은 nan (죽지 않음)", np.isnan(F.image_stats("/없음.jpg")["blur"]))
 check("재는 값은 6개 그대로", set(S) == set(F.STATS) and len(F.STATS) == 6)
 
+print("\n[4] 두 값이 같은 걸 재는지 가려내나")
+# ⚠️ 처음엔 control 을 사분위로 묶었는데, 독립 성분이 **0인 데이터에서도**
+#    "독립" 이 나왔습니다 (AUROC 0.657). 칸 안에서 control 이 계속 변해서
+#    target 이 그걸 주워담기 때문입니다. 그래서 순위 잔차로 바꿨습니다.
+#    이 검사는 그 실패가 되돌아오지 않게 막습니다.
+import pandas as pd                                             # noqa: E402
+
+rng2 = np.random.default_rng(0)
+N = 4000
+for why, indep_w, bad_from, expect in [
+    ("hair 가 blur 의 다른 이름 (독립 성분 0)", 0.0, "blur", "같은 것"),
+    ("hair 의 독립 성분이 오답을 만듦",          1.0, "indep", "독립"),
+    ("독립 성분은 있지만 오답은 blur 가 만듦",   1.0, "blur", "같은 것"),
+]:
+    blur = rng2.normal(0, 1, N)
+    indep = rng2.normal(0, 1, N) * indep_w
+    # 제곱근 관계 — 원값에 직선을 맞추면 휘어진 부분이 남습니다 (순위를 쓰는 이유)
+    hair = np.sqrt(np.abs(blur)) * np.sign(blur) * 2 + indep + rng2.normal(0, .2, N)
+    drv = blur if bad_from == "blur" else indep
+    bad_m = (drv + rng2.normal(0, .5, N)) > .6
+
+    d = pd.DataFrame({"blur": blur, "hair": hair})
+    fa_m = pd.Series(bad_m, index=d.index)
+    tn_m = ~fa_m
+    res = F.residualize(d["hair"], d["blur"])
+    got = F.auroc(res[bad_m], res[~bad_m])
+    raw = F.auroc(d.loc[bad_m, "hair"], d.loc[~bad_m, "hair"])
+    indep_call = abs(got - 0.5) >= F.A_STRONG
+    check(f"{why} → {expect}",
+          indep_call == (expect == "독립"), f"raw {raw:.3f} → resid {got:.3f}")
+
+check("단조 변환에 안 흔들린다 (로그를 씌워도 같은 답)",
+      abs(F.auroc(F.residualize(np.exp(hair), np.exp(blur))[bad_m],
+                  F.residualize(np.exp(hair), np.exp(blur))[~bad_m])
+          - F.auroc(F.residualize(hair, blur)[bad_m],
+                    F.residualize(hair, blur)[~bad_m])) < 0.02)
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)
