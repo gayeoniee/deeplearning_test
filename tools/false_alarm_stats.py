@@ -231,10 +231,12 @@ def by_category(df, mask_bad, mask_good, col: str, top: int = 12) -> None:
     show = pd.concat([g.head(top // 2), g.tail(top // 2)]).drop_duplicates() \
         if len(g) > top else g
     prev = None
+    ko = REGION_KO if col == "region" else {}
     for k, r in show.iterrows():
         if prev is not None and g.index.get_loc(k) - g.index.get_loc(prev) > 1:
             print(f"     {'…':<18}")
-        print(f"     {str(k)[:17]:<18}{int(r['n']):>7,}{int(r['헛알림']):>8,}"
+        _lab = f"{k} ({ko[k]})" if str(k) in ko else str(k)
+        print(f"     {_lab[:17]:<18}{int(r['n']):>7,}{int(r['헛알림']):>8,}"
               f"{r['헛알림률']:>9.1%}{r['hair']:>11.4f}")
         prev = k
 
@@ -324,6 +326,10 @@ COL_CANDIDATES = {
 # 범주형 — "털 때문인가" 를 값 하나가 아니라 **견종·부위**로 직접 묻습니다.
 # `hair` 는 털·각질·주름을 구분 못 하지만, 견종은 털의 양을 대신 말해줍니다.
 CAT_CANDIDATES = {"breed": ["breed", "견종"], "region": ["region", "부위"]}
+
+# 부위 코드 — 매니페스트엔 알파벳만 있고 뜻이 우리 문서 어디에도 없었습니다.
+# 2026-08-26 확인 (데이터셋 설명). 표에 한글을 같이 찍습니다.
+REGION_KO = {"L": "다리", "H": "머리", "B": "몸통", "A": "연접부"}
 
 
 def _pick(cols, names: list[str]) -> str | None:
