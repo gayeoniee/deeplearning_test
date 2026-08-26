@@ -69,7 +69,11 @@ cd deeplearning_test
 #    "externally managed"(PEP 668) 라 그냥은 시스템 설치를 거부합니다.
 pip install -q uv
 python -m uv pip install -q --system --break-system-packages \
-  timm imagehash pyarrow grad-cam albumentations kaggle
+  numpy pandas pyarrow Pillow scikit-learn opencv-python-headless tqdm matplotlib \
+  timm imagehash grad-cam albumentations kaggle
+
+# torch 는 템플릿에 이미 있습니다. 어느 파이썬인지 확인:
+python -c "import sys, torch; print(sys.executable, torch.__version__, torch.cuda.is_available())"
 
 cat >> ~/.bashrc <<'RC'
 export DOG_SKIN_WORK=/workspace/data/work
@@ -248,6 +252,7 @@ python serve.py --release <풀어놓은 폴더>
 | 터미널에선 되는데 노트북에서 ImportError | venv 와 시스템 파이썬이 갈라짐 | `uv sync` 로 만든 `.venv` 를 지우고 `--system` 으로 다시 |
 | 노트북이 옛 코드를 씀 | 브랜치가 `main` 으로 리셋됨 | `git branch --show-current` 확인, `DOG_SKIN_BRANCH` 로 지정 |
 | `externally managed` 로 설치 거부 | PEP 668 (런팟 이미지) | `--break-system-packages` 추가 |
+| `No module named 'pandas'` | 임대 GPU 이미지엔 **torch 만** 있습니다 | 위 설치 목록에 numpy·pandas·sklearn·cv2 가 다 들어 있는지 확인 |
 | `import torch` 가 안 됨 | `python` 이 torch 있는 인터프리터가 아님 | `python -c "import sys;print(sys.executable)"` 로 확인 |
 | 학습이 추정보다 느림 | 데이터 로딩 병목 | 정상입니다 (실측 1.27~1.55배). vCPU 많은 팟이 유리 |
 | 새 터미널에서 경로가 다름 | `export` 가 안 넘어감 | `~/.bashrc` 에 넣기 |
