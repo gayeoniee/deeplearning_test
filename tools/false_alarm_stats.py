@@ -56,6 +56,12 @@ sys.path.insert(0, str(ROOT))
 
 STATS = ["blur", "bright", "contrast", "sat", "hair", "warm"]
 
+# 매니페스트에서 가져오는 값 — 사진을 다시 안 열어도 됩니다.
+#   area     = bbox 면적 ÷ 원본 면적 (`lesion_area_ratio`).
+#              **얼마나 가까이서 찍었나**의 대용입니다. 크면 가까이.
+#   megapix  = 원본 화소수. 기기·촬영 설정의 대용
+EXTRA = ["area", "megapix"]
+
 
 def image_stats(path: str) -> dict:
     """사진 한 장의 값들. torch 없이 numpy + PIL 로만."""
@@ -141,7 +147,7 @@ def verdict(d: float, a: float) -> str:
 
 
 def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,
-            n_good_label: str) -> None:
+            n_good_label: str, stats: list | None = None) -> None:
     print(f"\n  ── {title} ──")
     nb, ng = int(mask_bad.sum()), int(mask_good.sum())
     print(f"     {n_bad_label} {nb:,}장  vs  {n_good_label} {ng:,}장")
@@ -150,7 +156,7 @@ def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,
     print(f"\n     {'값':<10}{'틀린 쪽':>10}{'맞은 쪽':>10}{'Δ':>10}"
           f"{'d':>7}{'AUROC':>8}   판정")
     print("     " + "─" * 70)
-    for k in STATS:
+    for k in (stats or STATS):
         b, g = df.loc[mask_bad, k], df.loc[mask_good, k]
         d, ar = cohens_d(b, g), auroc(b, g)
         print(f"     {k:<10}{b.mean():>10.4f}{g.mean():>10.4f}"
@@ -226,20 +232,140 @@ def independence(df, mask_bad, mask_good, target: str, control: str) -> float:
     return res
 
 
+def attach_manifest(df):
+    """매니페스트에서 `area` / `megapix` 를 붙입니다. 사진을 다시 안 엽니다."""
+    import numpy as np
+    import pandas as pd
+
+    from src import env
+
+    mf = env.work_root() / "manifests" / "manifest_final.parquet"
+    m = pd.read_parquet(mf)
+    cols = {"image_path"}
+    if "lesion_area_ratio" in m.columns:
+        cols.add("lesion_area_ratio")
+    for c in ("width", "height"):
+        if c in m.columns:
+            cols.add(c)
+    m = m[[c for c in m.columns if c in cols]].drop_duplicates("image_path")
+    out = df.merge(m, on="image_path", how="left")
+    out["area"] = out.get("lesion_area_ratio", np.nan)
+    if {"width", "height"} <= set(out.columns):
+        out["megapix"] = out["width"] * out["height"] / 1e6
+    else:
+        out["megapix"] = np.nan
+    for c in EXTRA:
+        n = int(out[c].notna().sum())
+        print(f"  {c:<10} {n:,}/{len(out):,}장에 값이 있습니다"
+              + ("" if n else "   ← 매니페스트에 없어서 건너뜁니다"))
+    return out
+
+
+def _from_saved(a) -> None:
+    """`--save` 로 남긴 값에서 바로 분석합니다. 추론을 안 해서 몇 초면 끝납니다."""
+    import pandas as pd
+
+    sp = Path(a.from_saved)
+    if not sp.exists():
+        raise SystemExit(f"저장 파일이 없습니다: {sp}")
+    df = pd.read_csv(sp) if sp.suffix == ".csv" else pd.read_parquet(sp)
+    print(f"\n[불러옴] {sp}  ({len(df):,}행) — 추론 안 합니다")
+
+    print("\n[매니페스트에서 값 붙이기]")
+    df = attach_manifest(df)
+    use = STATS + [c for c in EXTRA if df[c].notna().any()]
+
+    fa = df["is_normal"] & df["said_abnormal"]
+    tn = df["is_normal"] & ~df["said_abnormal"]
+    fn = ~df["is_normal"] & ~df["said_abnormal"]
+    tp = ~df["is_normal"] & df["said_abnormal"]
+
+    print("\n" + "=" * 68)
+    print(f" 헛알림 {int(fa.sum()):,} / 놓침 {int(fn.sum()):,}")
+    print("=" * 68)
+    compare(df, fa, tn, "헛알림 — 정상인데 병원 보낸 사진", "헛알림", "맞게 넘김",
+            stats=use)
+    compare(df, fn, tp, "놓침 — 병변인데 괜찮다고 한 사진", "놓침", "잡음", stats=use)
+
+    print("\n" + "=" * 68)
+    print(" 무엇이 무엇의 그림자인가")
+    print("=" * 68)
+    print("\n  상관 (정상 사진에서만)")
+    corr = df.loc[df["is_normal"], use].corr()
+    print(f"    {'':<10}" + "".join(f"{c:>10}" for c in use))
+    for r in use:
+        print(f"    {r:<10}" + "".join(f"{corr.loc[r, c]:>10.3f}" for c in use))
+
+    pairs = [("hair", "blur"), ("blur", "hair")]
+    if "area" in use:
+        pairs += [("hair", "area"), ("area", "hair"),
+                  ("blur", "area"), ("area", "blur")]
+    got = {}
+    for t, c in pairs:
+        got[(t, c)] = independence(df, fa, tn, t, c)
+    verdict_shadow(df, fa, tn, got, use)
+
+
+def verdict_shadow(df, fa, tn, got: dict, use: list) -> None:
+    """서로를 뺀 결과가 **대칭이 아니면** 그게 단서입니다."""
+    print("\n  ── 읽기 ──")
+    raw = {k: auroc(df.loc[fa, k], df.loc[tn, k]) for k in use}
+
+    def strength(v):
+        return abs(v - 0.5) if v == v else 0.0
+
+    rows = []
+    for (t, c), v in got.items():
+        if v != v:
+            continue
+        rows.append((t, c, raw[t], v, strength(v)))
+    if not rows:
+        print("  판정할 게 없습니다.")
+        return
+
+    print(f"\n    {'값':<8}{'뺀 것':<8}{'그냥':>8}{'뺀 뒤':>8}{'남은 세기':>10}   방향")
+    print("    " + "─" * 52)
+    for t, c, r0, v, st in sorted(rows, key=lambda x: -x[4]):
+        flip = "뒤집힘" if (r0 - 0.5) * (v - 0.5) < 0 else "유지"
+        print(f"    {t:<8}{c:<8}{r0:>8.3f}{v:>8.3f}{st:>10.3f}   {flip}")
+
+    best = max(rows, key=lambda x: x[4])
+    print(f"\n  가장 오래 버티는 값: **{best[0]}** ({best[2]:.3f} → {best[3]:.3f})")
+    if best[4] >= A_STRONG:
+        print(f"  ✅ 다른 값을 다 빼고도 문턱({A_STRONG})을 넘습니다 — 이게 원인에 가깝습니다.")
+    elif best[4] >= A_WEAK:
+        print(f"  ◐ 문턱({A_STRONG})은 못 넘지만 다른 값들보다 오래 버팁니다.")
+        print("     '원인' 이라고 못 박진 못하고, **더 가깝다** 까지만 말할 수 있습니다.")
+    else:
+        print("  ❌ 서로를 빼면 전부 무너집니다 — 이 값들은 한 원인의 그림자들입니다.")
+    print("\n  ⚠️ 상관이 높은 값끼리 잔차를 내면 **둘 다** 약해집니다. 그래서")
+    print("     '약해졌다' 자체는 증거가 아닙니다. 봐야 할 건 **누가 더 버티나**와")
+    print("     **방향이 뒤집혔나** 입니다. 뒤집혔다면 그 값의 원래 신호는")
+    print("     상대를 통해 온 것입니다.")
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--release", required=True, help="06 이 만든 릴리스 폴더")
+    ap.add_argument("--release", help="06 이 만든 릴리스 폴더 (--from-saved 면 불필요)")
     ap.add_argument("--tag", default=None, help="쓸 크롭 태그 (기본: 1단계 태그)")
     ap.add_argument("--limit", type=int, default=0, help="맛보기로 N장만")
     ap.add_argument("--out", default="docs/results/헛알림_사진통계_실측.md")
     ap.add_argument("--save", metavar="파일", default=None,
                     help="장별 값을 저장 (.parquet/.csv). 다시 20분 안 돌리려면 쓰세요")
+    ap.add_argument("--from-saved", metavar="파일", dest="from_saved", default=None,
+                    help="★ --save 로 남긴 값에서 바로 분석 (추론 안 함, 몇 초)")
     a = ap.parse_args(argv)
+    if not a.release and not a.from_saved:
+        raise SystemExit("--release 또는 --from-saved 중 하나가 필요합니다.")
 
     import numpy as np
     import pandas as pd
 
     from src import agent, crop, env, stages
+
+    if a.from_saved:
+        _from_saved(a)
+        return
 
     # ── 0) 경로부터 확인합니다 — 20분 돌린 뒤 오타로 죽으면 아깝습니다 ──
     rel = Path(a.release).expanduser()
