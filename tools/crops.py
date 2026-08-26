@@ -3,6 +3,7 @@
     uv run python tools/crops.py                 # 보고만 (아무것도 안 지웁니다)
     uv run python tools/crops.py --plan TL01     # 새 청크를 받으면 얼마나 드나
     uv run python tools/crops.py --prune         # 안 쓰는 태그 삭제 (확인 입력 필요)
+    uv run python tools/crops.py --prune-raw     # 원본에서 zip 만 남기고 정리
 
 왜 필요한가 — 전처리는 크롭을 **네 종류**(m1.5 / m2.5 / full / f320) 만드는데
 지금 파이프라인은 **둘만** 씁니다. 나머지는 실험이 끝나서 놀고 있는 용량입니다.
@@ -119,6 +120,7 @@ def report(s: dict) -> None:
             print(f"    zip 아닌 것 {human(r['other_b']):>12}  ({r['other_n']:,}개)   "
                   f"← **안 씁니다** (압축 해제본으로 보입니다)")
             print("       크롭은 zip 에서 직접 읽습니다. 이건 지워도 --recrop 이 됩니다.")
+            print("       → uv run python tools/crops.py --prune-raw")
     else:
         print("\n  원본  없음 — 크롭을 지우면 되살리는 데 재다운로드가 필요합니다.")
 
@@ -231,7 +233,7 @@ def plan(s: dict, chunk: str) -> None:
     if drop_b:
         print("  uv run python tools/crops.py --prune")
     if r["other_b"]:
-        print("  (압축 해제본만 삭제)   ← zip 은 남기세요")
+        print("  uv run python tools/crops.py --prune-raw   ← zip 은 남깁니다")
     if run - r["zip_b"] < safe <= run:
         # zip 까지 지워야 되는 경우엔 그 명령도 적어줍니다 (빠져 있었습니다)
         print(f"  del {r['path']}\\*.zip"
@@ -285,22 +287,121 @@ def prune(s: dict, yes: bool = False) -> None:
     print(f"\n{human(total)} 확보했습니다.")
 
 
+def raw_victims(raw: Path) -> tuple[list[dict], list[dict]]:
+    """`data/raw` 의 최상위 항목을 (지워도 되는 것, 지키는 것) 으로 가릅니다.
+
+    지키는 규칙은 **세 줄**이고, 헷갈리면 지키는 쪽으로 넘깁니다:
+      1. 이름이 `.` 로 시작하면 지킵니다 — `.downloaded_keys` 가 여기 있습니다.
+         이걸 지우면 `aihub.download()` 가 이미 받은 걸 또 받습니다 (21GB).
+      2. `.zip` 파일은 지킵니다 — `--recrop` 이 픽셀을 여기서 읽습니다.
+      3. 폴더는 **그 안에 zip 이 하나라도 있으면** 통째로 지킵니다.
+         압축 해제본과 zip 이 같은 폴더에 섞여 있을 수 있어서, 그럴 땐
+         자동으로 안 건드리고 사람에게 넘깁니다.
+    """
+    victims: list[dict] = []
+    guarded: list[dict] = []
+    if not raw.is_dir():
+        return victims, guarded
+
+    for p in sorted(raw.iterdir()):
+        if p.name.startswith("."):                    # ① 다운로드 기록 등
+            continue
+        if p.is_file():
+            if p.suffix.lower() == ".zip":            # ② 원본
+                continue
+            victims.append({"path": p, "n": 1, "bytes": p.stat().st_size,
+                            "kind": "파일"})
+            continue
+        n, b = scan_tag(p)                            # 폴더
+        holds_zip = any(f.suffix.lower() == ".zip"
+                        for f in p.rglob("*") if f.is_file())
+        (guarded if holds_zip else victims).append(
+            {"path": p, "n": n, "bytes": b, "kind": "폴더"})
+    return victims, guarded
+
+
+def prune_raw(s: dict, yes: bool = False) -> None:
+    """원본 폴더에서 **zip 과 다운로드 기록만 남기고** 나머지를 지웁니다.
+
+    크롭은 zip 에서 직접 읽기 때문에 압축 해제본은 크롭이 끝나면 쓰이지 않습니다.
+    그래도 `--prune` 과 같은 규칙으로, 지울 이름을 그대로 입력해야 지웁니다.
+    """
+    raw = s["raw"]["path"]
+    if not raw.is_dir():
+        print(f"\n원본 폴더가 없습니다  ({raw})")
+        return
+
+    victims, guarded = raw_victims(raw)
+    zb, zn = s["raw"]["zip_b"], s["raw"]["zip_n"]
+
+    print(f"\n원본 폴더  {raw}")
+    print(f"  남길 것   zip {zn:,}개 {human(zb)}  +  `.` 로 시작하는 기록 파일")
+    if guarded:
+        print("  ⚠️ 아래 폴더는 **안에 zip 이 있어서** 안 건드립니다:")
+        for g in guarded:
+            print(f"       {g['path'].name}  ({g['n']:,}개 {human(g['bytes'])})")
+        print("     안의 zip 을 밖으로 옮긴 뒤 다시 돌리세요.")
+
+    if not victims:
+        print("\n지울 게 없습니다. 이미 zip 만 남아 있어요.")
+        return
+
+    total = sum(v["bytes"] for v in victims)
+    print("\n지울 것:")
+    for v in victims:
+        print(f"  {v['path'].name:<28}{v['kind']:>4}{v['n']:>9,}개{human(v['bytes']):>13}")
+    print(f"  {'─' * 54}  {human(total)} 확보")
+
+    if zn:
+        print("\n✅ zip 이 남으므로 되돌리기는 재다운로드가 아니라 재압축해제입니다.")
+        print("   크롭 자체는 zip 에서 직접 읽어서, 이걸 지워도 --recrop 이 됩니다.")
+    else:
+        print("\n⚠️ 이 폴더엔 zip 이 **없습니다.** 지우면 그 청크는 재다운로드입니다 "
+              f"({BASE_CHUNK} = {CHUNK_GB[BASE_CHUNK]}GB).")
+
+    names = ",".join(v["path"].name for v in victims)
+    if not yes:
+        print(f"\n정말 지우려면 지울 이름을 그대로 입력하세요: {names}")
+        try:
+            got = input("> ").strip()
+        except EOFError:
+            got = ""
+        if got.replace(" ", "") != names:
+            print("입력이 달라서 **아무것도 안 지웠습니다.**")
+            return
+
+    for v in victims:
+        if v["path"].is_dir():
+            shutil.rmtree(v["path"], ignore_errors=True)
+        else:
+            v["path"].unlink(missing_ok=True)
+        print(f"  지움  {v['path'].name}")
+    print(f"\n{human(total)} 확보했습니다. zip {zn:,}개는 그대로 있습니다.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--plan", metavar="청크", help="새 청크를 받으면 얼마나 드나 (예: TL01)")
     ap.add_argument("--prune", action="store_true", help="안 쓰는 크롭 태그 삭제")
-    ap.add_argument("--yes", action="store_true", help="--prune 확인 입력 건너뛰기")
+    ap.add_argument("--prune-raw", action="store_true",
+                    dest="prune_raw", help="원본에서 zip·기록만 남기고 삭제")
+    ap.add_argument("--yes", action="store_true", help="확인 입력 건너뛰기")
     a = ap.parse_args(argv)
 
     s = survey()
     report(s)
     if a.plan:
         plan(s, a.plan.upper())
+    # 원본을 먼저 지웁니다 — 크롭 --prune 은 (zip 이 있으면) 되돌리기 쉬운 쪽이라
+    # 순서가 바뀌어도 상관없지만, 화면에서 "남길 zip" 을 먼저 보는 게 안전합니다.
+    if a.prune_raw:
+        prune_raw(s, a.yes)
     if a.prune:
-        prune(s, a.yes)
-    if not (a.plan or a.prune):
+        prune(survey() if a.prune_raw else s, a.yes)
+    if not (a.plan or a.prune or a.prune_raw):
         print("\n  --plan TL01   새 청크 용량 예상")
-        print("  --prune       안 쓰는 태그 삭제 (확인 입력 필요)")
+        print("  --prune       안 쓰는 크롭 태그 삭제 (확인 입력 필요)")
+        print("  --prune-raw   원본에서 zip 만 남기고 정리 (확인 입력 필요)")
 
 
 if __name__ == "__main__":
