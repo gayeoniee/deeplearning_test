@@ -153,6 +153,71 @@ def check_calls(path: Path) -> list[str]:
     return problems
 
 
+
+# ──────────────────────────────────────────────────────────────
+# import 하기 전에 쓰는 src 모듈이 있나
+# ──────────────────────────────────────────────────────────────
+# ⚠️ 실제로 당했습니다. 06 에 1단계 온도 보정 셀을 끼워 넣으면서
+#    `calibrate.fit_temperature(...)` 를 썼는데, `calibrate` 는 **holdout 절
+#    (한참 뒤 셀)** 에서야 import 됩니다. 40분짜리 학습이 다 끝나고 나서
+#    NameError 가 났습니다 — 앞 셀들은 멀쩡히 돌았으니 더 늦게 알았습니다.
+#
+# ⚠️ 정규식으로 찾으면 **주석 속 글자**를 코드로 착각합니다 (`infer.Engine` 을
+#    설명하는 주석이 걸렸습니다). AST 로 실제 attribute 접근만 봅니다.
+SRC_MODULES = {
+    "labels", "split", "crop", "data", "models", "train", "evaluate", "stages",
+    "experiments", "robust", "calibrate", "explain", "infer", "gates", "bench",
+    "texture", "agent", "message", "dedup", "aihub", "scan", "env", "config",
+}
+
+
+def undefined_module_uses(path: Path) -> list[tuple[int, str]]:
+    """(셀 번호, 모듈) — 그 셀 전에 import 가 없는데 쓰는 것."""
+    nb = json.loads(path.read_text(encoding="utf-8"))
+    seen: set[str] = set()
+    bad: list[tuple[int, str]] = []
+    for i, c in enumerate(nb["cells"]):
+        if c["cell_type"] != "code":
+            continue
+        try:
+            tree = ast.parse("".join(c["source"]))
+        except SyntaxError:
+            continue                      # 문법은 위쪽 검사가 봅니다
+        used = {n.value.id for n in ast.walk(tree)
+                if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                and n.value.id in SRC_MODULES}
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom):
+                for al in n.names:
+                    seen.add(al.asname or al.name)
+            elif isinstance(n, ast.Import):
+                for al in n.names:
+                    seen.add((al.asname or al.name).split(".")[0])
+            elif isinstance(n, ast.Assign):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        seen.add(t.id)
+        for u in sorted(used - seen):
+            bad.append((i, u))
+            seen.add(u)                   # 같은 것을 여러 번 보고하지 않습니다
+    return bad
+
+
+def _check_import_order() -> int:
+    print("\n[import 순서] 쓰기 전에 import 했는가")
+    n = 0
+    for p in sorted(Path("notebooks").glob("*.ipynb")):
+        bad = undefined_module_uses(p)
+        if bad:
+            n += len(bad)
+            for i, m in bad:
+                print(f"  ❌ {p.name} cell {i}: '{m}.' — 그 전에 import 가 없습니다")
+        else:
+            print(f"  ✅ {p.name}")
+    if n:
+        print(f"\n❌ {n}건 — 노트북을 몇십 분 돌린 뒤에 NameError 로 죽습니다")
+    return n
+
 if __name__ == "__main__":
     fails = 0
     for nb_path in sorted((ROOT / "notebooks").glob("*.ipynb")):
@@ -165,4 +230,5 @@ if __name__ == "__main__":
         else:
             print(f"✅ {nb_path.name}")
     print(f"\n{'문제 없음' if not fails else f'문제 {fails}건'}")
+    fails += _check_import_order()
     sys.exit(1 if fails else 0)
