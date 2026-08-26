@@ -497,8 +497,24 @@ def describe(verbose: bool = True) -> EnvSummary:
 
 
 def _search_roots() -> list[Path]:
-    return [p for p in (Path("/kaggle/input"), Path("/content/drive/MyDrive"),
-                        Path("/content"), Path.cwd()) if p.exists()]
+    """전처리 결과를 찾아볼 곳.
+
+    ⚠️ `/workspace` 는 **RunPod 등 임대 GPU** 의 표준 마운트입니다. 이게 없어서
+       런팟에서 `load_prepared()` 가 바로 FileNotFoundError 로 죽었습니다.
+       `DOG_SKIN_PREPARED` 로 직접 지정할 수도 있습니다.
+    """
+    roots = []
+    override = os.environ.get("DOG_SKIN_PREPARED")
+    if override:
+        roots.append(Path(override))
+    roots += [Path("/kaggle/input"), Path("/content/drive/MyDrive"),
+              Path("/content"), Path("/workspace"), Path.cwd()]
+    seen, out = set(), []
+    for p in roots:
+        if p.exists() and p.resolve() not in seen:
+            seen.add(p.resolve())
+            out.append(p)
+    return out
 
 
 def _looks_prepared(d: Path) -> bool:
@@ -701,6 +717,13 @@ def load_prepared(
 
     if len(sources) > 1:
         print(f"[env] 입력 {len(sources)}개를 합칩니다: {[s.name for s, _ in sources]}")
+
+    # ★ 이미 work_root 에 크롭+매니페스트가 있으면 **할 일이 없습니다.**
+    #    런팟처럼 데이터를 직접 넣는 환경에서 여기서 죽으면 안 됩니다.
+    if zip_path is None and _looks_prepared(dest):
+        n = sum(1 for _ in (dest / "crops").iterdir() if _.is_dir())
+        print(f"[env] 이미 준비돼 있습니다: {dest}  (크롭 태그 {n}종) — 그대로 씁니다.")
+        return dest
 
     marker = dest / ".prepared_from"
     seen_before = set(marker.read_text().splitlines()) if marker.exists() else set()
