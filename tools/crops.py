@@ -287,81 +287,114 @@ def prune(s: dict, yes: bool = False) -> None:
     print(f"\n{human(total)} 확보했습니다.")
 
 
-def raw_victims(raw: Path) -> tuple[list[dict], list[dict]]:
-    """`data/raw` 의 최상위 항목을 (지워도 되는 것, 지키는 것) 으로 가릅니다.
+def raw_units(raw: Path) -> tuple[list[dict], list[dict]]:
+    """`data/raw` 를 끝까지 걸어 (지울 것, 지킬 것) 으로 가릅니다.
 
-    지키는 규칙은 **세 줄**이고, 헷갈리면 지키는 쪽으로 넘깁니다:
-      1. 이름이 `.` 로 시작하면 지킵니다 — `.downloaded_keys` 가 여기 있습니다.
-         이걸 지우면 `aihub.download()` 가 이미 받은 걸 또 받습니다 (21GB).
-      2. `.zip` 파일은 지킵니다 — `--recrop` 이 픽셀을 여기서 읽습니다.
-      3. 폴더는 **그 안에 zip 이 하나라도 있으면** 통째로 지킵니다.
-         압축 해제본과 zip 이 같은 폴더에 섞여 있을 수 있어서, 그럴 땐
-         자동으로 안 건드리고 사람에게 넘깁니다.
+    ⚠️ **최상위만 보면 안 됩니다.** 실제 배치는 이렇게 생겼습니다:
+
+        data/raw/VL01/VL01.zip                        ← 지킴
+        data/raw/VL01/.downloaded_keys                ← 지킴
+        data/raw/VL01/152.반려동물_피부질환_데이터/…/반려견/…  ← 압축 해제본, 지움
+
+    zip 이 `VL01/` **안**에 있어서, 최상위 `VL01` 을 통째로 판단하면
+    "안에 zip 이 있네" 로 아무것도 못 지웁니다. 그래서 파일 단위로 가른 뒤,
+    **지킬 게 하나도 없는 가장 얕은 폴더**를 삭제 단위로 잡습니다.
+
+    지키는 규칙 두 줄 — 헷갈리면 지키는 쪽입니다:
+      1. `.zip` — `--recrop` 이 픽셀을 여기서 읽습니다 (`zip_path` + `zip_member`)
+      2. 이름이 `.` 로 시작 — `.downloaded_keys`. 지우면 `aihub.download()` 가
+         또 받습니다. (`has_usable_data()` 도 zip 을 세므로 zip 만 남아도 안전)
     """
-    victims: list[dict] = []
-    guarded: list[dict] = []
-    if not raw.is_dir():
-        return victims, guarded
+    keep: list[dict] = []
 
-    for p in sorted(raw.iterdir()):
-        if p.name.startswith("."):                    # ① 다운로드 기록 등
-            continue
-        if p.is_file():
-            if p.suffix.lower() == ".zip":            # ② 원본
+    def walk(d: Path) -> tuple[bool, list[dict]]:
+        """(이 폴더 아래에 지킬 게 있나, 지울 단위 목록)"""
+        has_keep = False
+        units: list[dict] = []
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return True, []                       # 못 읽으면 안 건드립니다
+        for p in entries:
+            if p.name.startswith("."):            # ② 기록 파일
+                has_keep = True
+                keep.append({"path": p, "why": "기록"})
                 continue
-            victims.append({"path": p, "n": 1, "bytes": p.stat().st_size,
-                            "kind": "파일"})
-            continue
-        n, b = scan_tag(p)                            # 폴더
-        holds_zip = any(f.suffix.lower() == ".zip"
-                        for f in p.rglob("*") if f.is_file())
-        (guarded if holds_zip else victims).append(
-            {"path": p, "n": n, "bytes": b, "kind": "폴더"})
-    return victims, guarded
+            if p.is_symlink() or p.is_file():
+                if p.is_file() and p.suffix.lower() == ".zip":   # ① 원본
+                    has_keep = True
+                    keep.append({"path": p, "why": "zip",
+                                 "bytes": p.stat().st_size})
+                    continue
+                units.append({"path": p, "n": 1, "kind": "파일",
+                              "bytes": p.stat().st_size if p.is_file() else 0})
+                continue
+            sub_keep, sub_units = walk(p)
+            if sub_keep:
+                has_keep = True
+                units.extend(sub_units)           # 폴더는 남기고 안쪽만
+            else:
+                n, b = scan_tag(p)
+                units.append({"path": p, "n": n, "kind": "폴더", "bytes": b})
+        return has_keep, units
+
+    if not raw.is_dir():
+        return [], []
+    return walk(raw)[1], keep
 
 
 def prune_raw(s: dict, yes: bool = False) -> None:
     """원본 폴더에서 **zip 과 다운로드 기록만 남기고** 나머지를 지웁니다.
 
-    크롭은 zip 에서 직접 읽기 때문에 압축 해제본은 크롭이 끝나면 쓰이지 않습니다.
-    그래도 `--prune` 과 같은 규칙으로, 지울 이름을 그대로 입력해야 지웁니다.
+    크롭은 zip 안에서 직접 읽습니다 (`prepare_local.py --mode zip` 이 기본).
+    그래서 압축 해제본은 크롭이 끝나면 아무도 안 읽습니다.
     """
     raw = s["raw"]["path"]
     if not raw.is_dir():
         print(f"\n원본 폴더가 없습니다  ({raw})")
         return
 
-    victims, guarded = raw_victims(raw)
-    zb, zn = s["raw"]["zip_b"], s["raw"]["zip_n"]
+    units, keep = raw_units(raw)
+    zips = [k for k in keep if k["why"] == "zip"]
+    marks = [k for k in keep if k["why"] != "zip"]
 
-    print(f"\n원본 폴더  {raw}")
-    print(f"  남길 것   zip {zn:,}개 {human(zb)}  +  `.` 로 시작하는 기록 파일")
-    if guarded:
-        print("  ⚠️ 아래 폴더는 **안에 zip 이 있어서** 안 건드립니다:")
-        for g in guarded:
-            print(f"       {g['path'].name}  ({g['n']:,}개 {human(g['bytes'])})")
-        print("     안의 zip 을 밖으로 옮긴 뒤 다시 돌리세요.")
+    print(f"\n원본 폴더  {raw}\n")
+    print("  남길 것:")
+    for k in zips:
+        print(f"    {human(k['bytes']):>10}  {k['path'].relative_to(raw)}")
+    for k in marks:
+        print(f"    {'(기록)':>8}  {k['path'].relative_to(raw)}")
+    if not keep:
+        print("    (없음)")
 
-    if not victims:
+    if not units:
         print("\n지울 게 없습니다. 이미 zip 만 남아 있어요.")
         return
 
-    total = sum(v["bytes"] for v in victims)
-    print("\n지울 것:")
-    for v in victims:
-        print(f"  {v['path'].name:<28}{v['kind']:>4}{v['n']:>9,}개{human(v['bytes']):>13}")
-    print(f"  {'─' * 54}  {human(total)} 확보")
+    total = sum(u["bytes"] for u in units)
+    print("\n  지울 것:")
+    for u in units:
+        print(f"    {u['kind']}{u['n']:>9,}개{human(u['bytes']):>12}  "
+              f"{u['path'].relative_to(raw)}")
+    print(f"    {'─' * 56}  {human(total)} 확보")
 
-    if zn:
+    if zips:
         print("\n✅ zip 이 남으므로 되돌리기는 재다운로드가 아니라 재압축해제입니다.")
-        print("   크롭 자체는 zip 에서 직접 읽어서, 이걸 지워도 --recrop 이 됩니다.")
+        print("   크롭은 zip 안에서 직접 읽어서(--mode zip), 이걸 지워도 --recrop 이 됩니다.")
     else:
         print("\n⚠️ 이 폴더엔 zip 이 **없습니다.** 지우면 그 청크는 재다운로드입니다 "
               f"({BASE_CHUNK} = {CHUNK_GB[BASE_CHUNK]}GB).")
 
-    names = ",".join(v["path"].name for v in victims)
+    # 확인 입력은 **최상위 이름**으로 받습니다. 위 목록의 전체 경로는 한글이 길어
+    # 타이핑이 사실상 불가능하고, 무엇이 지워지는지는 목록이 이미 보여줬습니다.
+    tops: list[str] = []
+    for u in units:
+        t = u["path"].relative_to(raw).parts[0]
+        if t not in tops:
+            tops.append(t)
+    names = ",".join(tops)
     if not yes:
-        print(f"\n정말 지우려면 지울 이름을 그대로 입력하세요: {names}")
+        print(f"\n정말 지우려면 이 이름을 그대로 입력하세요: {names}")
         try:
             got = input("> ").strip()
         except EOFError:
@@ -370,13 +403,13 @@ def prune_raw(s: dict, yes: bool = False) -> None:
             print("입력이 달라서 **아무것도 안 지웠습니다.**")
             return
 
-    for v in victims:
-        if v["path"].is_dir():
-            shutil.rmtree(v["path"], ignore_errors=True)
+    for u in units:
+        if u["path"].is_dir() and not u["path"].is_symlink():
+            shutil.rmtree(u["path"], ignore_errors=True)
         else:
-            v["path"].unlink(missing_ok=True)
-        print(f"  지움  {v['path'].name}")
-    print(f"\n{human(total)} 확보했습니다. zip {zn:,}개는 그대로 있습니다.")
+            u["path"].unlink(missing_ok=True)
+        print(f"  지움  {u['path'].relative_to(raw)}")
+    print(f"\n{human(total)} 확보했습니다. zip {len(zips)}개는 그대로 있습니다.")
 
 
 def main(argv=None):

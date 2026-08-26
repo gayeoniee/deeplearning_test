@@ -91,63 +91,70 @@ with tempfile.TemporaryDirectory() as td:
 # ── 원본(raw) 정리 ────────────────────────────────────────────────────
 # 여기서 실수하면 21GB 재다운로드입니다. zip 과 `.downloaded_keys` 는
 # **어떤 경로로도** 사라지면 안 됩니다.
+#
+# ⚠️ 실제 배치는 zip 이 **하위 폴더 안**에 있습니다 (prepare_local.py:115 —
+#    raw = env.data_root() / name). 최상위만 보면 아무것도 못 지웁니다.
 with tempfile.TemporaryDirectory() as td:
     raw = Path(td) / "raw"
-    (raw / "TL01" / "라벨링데이터").mkdir(parents=True)      # 압축 해제본
-    (raw / "TL01" / "라벨링데이터" / "a.json").write_text("{}")
-    (raw / "TL01" / "라벨링데이터" / "b.json").write_text("{}")
-    (raw / "섞임").mkdir()                                    # 안에 zip 이 있는 폴더
-    (raw / "섞임" / "keep.zip").write_bytes(b"z" * 100)
-    (raw / "섞임" / "junk.json").write_text("{}")
-    (raw / "VL01.zip").write_bytes(b"z" * 4096)               # 원본
-    (raw / ".downloaded_keys").write_text("561/1234")         # 다운로드 기록
-    (raw / "scan_report.txt").write_text("x" * 50)            # 지워도 되는 파일
+    real = raw / "VL01" / "152.반려동물_피부질환_데이터" / "01.데이터" / "2.Validation"
+    (real / "2_라벨링데이터_240422_add" / "반려견").mkdir(parents=True)
+    for i in range(3):
+        (real / "2_라벨링데이터_240422_add" / "반려견" / f"{i}.json").write_text("{}")
+    (raw / "VL01" / "VL01.zip").write_bytes(b"z" * 4096)          # ← 폴더 **안**
+    (raw / "VL01" / ".downloaded_keys").write_text("517022")      # ← 폴더 **안**
+    (raw / "scan_report.txt").write_text("x" * 50)                # 최상위 잡파일
 
-    env.data_root = lambda: raw                               # noqa: E731
+    env.data_root = lambda: raw                                   # noqa: E731
 
     def alive() -> set[str]:
-        return {p.name for p in raw.iterdir()}
+        return {str(p.relative_to(raw)) for p in raw.rglob("*")}
 
-    print("\n[5] raw — 무엇을 지키고 무엇을 지우나")
-    v, g = crops.raw_victims(raw)
-    vn = sorted(x["path"].name for x in v)
-    check("zip 은 지울 목록에 없다", "VL01.zip" not in vn, str(vn))
-    check(".downloaded_keys 는 지울 목록에 없다",
-          ".downloaded_keys" not in vn, str(vn))
-    check("압축 해제본 폴더는 지울 목록에 있다", "TL01" in vn, str(vn))
-    check("zip 아닌 파일도 지울 목록에 있다", "scan_report.txt" in vn, str(vn))
-    check("zip 을 품은 폴더는 지키는 쪽으로",
-          [x["path"].name for x in g] == ["섞임"], str(g))
+    print("\n[5] raw — zip 이 하위 폴더에 있어도 안쪽을 지운다")
+    units, keep = crops.raw_units(raw)
+    un = sorted(str(u["path"].relative_to(raw)) for u in units)
+    kn = sorted(str(k["path"].relative_to(raw)) for k in keep)
+    check("zip 은 지킬 목록", "VL01/VL01.zip".replace("/", os.sep) in kn, str(kn))
+    check(".downloaded_keys 는 지킬 목록",
+          "VL01/.downloaded_keys".replace("/", os.sep) in kn, str(kn))
+    check("압축 해제본은 **가장 얕은** 폴더 하나로 잡힌다",
+          un == [str(Path("VL01") / "152.반려동물_피부질환_데이터"),
+                 "scan_report.txt"], str(un))
+    check("그 폴더 안 3개를 다 센다",
+          any(u["n"] == 3 for u in units), str([u["n"] for u in units]))
+    check("VL01 자체는 지울 목록에 없다",
+          "VL01" not in un, str(un))
 
     print("\n[6] 확인 입력이 틀리면 아무것도 안 지운다")
     before = alive()
-    for typed, why in [("yes", "yes"), ("", "빈 입력"), ("TL01", "일부만"),
-                       ("scan_report.txt,TL01", "순서 다름"),
-                       ("TL01,scan_report.txt,VL01.zip", "zip 을 끼워넣음")]:
+    for typed, why in [("yes", "yes"), ("", "빈 입력"), ("VL01", "일부만"),
+                       ("scan_report.txt,VL01", "순서 다름"),
+                       ("VL01,scan_report.txt,VL01.zip", "zip 을 끼워넣음")]:
         sys.stdin = io.StringIO(typed + "\n")
         try:
             crops.prune_raw(crops.survey())
         finally:
             sys.stdin = real_in
-        check(f"'{why}' 입력 → 그대로", alive() == before, str(alive()))
+        check(f"'{why}' 입력 → 그대로", alive() == before, str(alive() ^ before))
 
     print("\n[7] 정확히 입력해야 지운다")
-    names = ",".join(x["path"].name for x in crops.raw_victims(raw)[0])
-    sys.stdin = io.StringIO(names + "\n")
+    sys.stdin = io.StringIO("VL01,scan_report.txt\n")
     try:
         crops.prune_raw(crops.survey())
     finally:
         sys.stdin = real_in
-    check("zip 은 남아 있다", (raw / "VL01.zip").is_file())
-    check("다운로드 기록은 남아 있다", (raw / ".downloaded_keys").is_file())
-    check("zip 을 품은 폴더는 남아 있다", (raw / "섞임" / "keep.zip").is_file())
-    check("압축 해제본은 지워졌다", not (raw / "TL01").exists())
-    check("zip 아닌 파일도 지워졌다", not (raw / "scan_report.txt").exists())
+    check("zip 은 남아 있다", (raw / "VL01" / "VL01.zip").is_file())
+    check("다운로드 기록은 남아 있다", (raw / "VL01" / ".downloaded_keys").is_file())
+    check("압축 해제본은 지워졌다",
+          not (raw / "VL01" / "152.반려동물_피부질환_데이터").exists())
+    check("최상위 잡파일도 지워졌다", not (raw / "scan_report.txt").exists())
+    check("has_usable_data 가 아직 True (zip 을 셈) → 재다운로드 안 함",
+          __import__("src.aihub", fromlist=["x"]).has_usable_data(raw))
 
     print("\n[8] 두 번 돌려도 안전하다")
     crops.prune_raw(crops.survey())      # 확인 입력 없이도 지울 게 없어야 합니다
-    check("zip 과 기록이 그대로", alive() == {"VL01.zip", ".downloaded_keys", "섞임"},
-          str(alive()))
+    check("zip 과 기록만 남았다",
+          alive() == {"VL01", str(Path("VL01") / "VL01.zip"),
+                      str(Path("VL01") / ".downloaded_keys")}, str(alive()))
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
