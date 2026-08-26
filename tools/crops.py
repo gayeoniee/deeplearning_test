@@ -7,12 +7,12 @@
 왜 필요한가 — 전처리는 크롭을 **네 종류**(m1.5 / m2.5 / full / f320) 만드는데
 지금 파이프라인은 **둘만** 씁니다. 나머지는 실험이 끝나서 놀고 있는 용량입니다.
 
-⚠️ **지우면 되돌리는 데 재다운로드가 필요합니다.**
-`--recrop` 은 매니페스트만 읽고 크롭을 다시 만드는 명령인데, 실제 픽셀은
-zip 에서 읽습니다. `--chunk` 가 크롭 후 원본을 지우므로, 지운 태그를 되살리려면
-그 청크 zip 을 다시 받아야 합니다 (VL01 = 21GB).
+되돌리기 비용은 `data/raw` 가 살아 있느냐에 달렸습니다:
+  · 원본 zip 이 있으면 → `--recrop` 으로 공짜로 되살립니다
+  · 없으면            → 그 청크를 다시 받아야 합니다 (VL01 = 21GB)
+이 도구가 그때그때 어느 쪽인지 알려줍니다.
 
-그래서 이 도구는 **기본이 보고**이고, 삭제는 태그 이름을 직접 입력해야 합니다.
+그래도 **기본은 보고**이고, 삭제는 태그 이름을 직접 입력해야 합니다.
 """
 
 from __future__ import annotations
@@ -65,7 +65,13 @@ def survey() -> dict:
     for d in sorted(p for p in croot.iterdir() if p.is_dir()):
         n, b = scan_tag(d)
         tags[d.name] = {"path": d, "n": n, "bytes": b, "used": d.name in used}
-    return {"root": croot, "tags": tags, "used": used}
+
+    # 원본(zip). 살아 있으면 지운 크롭을 `--recrop` 으로 공짜로 되살릴 수 있고,
+    # 지우면 그만큼 공간이 나지만 되살리기는 재다운로드가 됩니다.
+    raw = ROOT / "data" / "raw"
+    rn, rb = scan_tag(raw) if raw.is_dir() else (0, 0)
+    return {"root": croot, "tags": tags, "used": used,
+            "raw": {"path": raw, "n": rn, "bytes": rb, "alive": rn > 0}}
 
 
 def report(s: dict) -> None:
@@ -87,6 +93,15 @@ def report(s: dict) -> None:
           f"{human(keep + drop):>13}")
     print(f"\n  쓰는 것   {human(keep)}")
     print(f"  안 쓰는 것 {human(drop)}   ← --prune 으로 지울 수 있습니다")
+
+    r = s["raw"]
+    if r["alive"]:
+        print(f"\n  원본 zip  {human(r['bytes'])}  ({r['n']:,}개)  {r['path']}")
+        print("            살아 있어서 지운 크롭을 --recrop 으로 되살릴 수 있습니다.")
+        print("            공간이 급하면 이것도 지울 수 있지만, 그러면 되살리기가")
+        print("            재다운로드가 됩니다.")
+    else:
+        print("\n  원본 zip  없음 — 크롭을 지우면 되살리는 데 재다운로드가 필요합니다.")
 
     try:
         du = shutil.disk_usage(s["root"])
@@ -121,25 +136,43 @@ def plan(s: dict, chunk: str) -> None:
     print(f"  예상 장수          {n_new:,}장   ({ratio:.1f}배)")
     print(f"  zip                {human(zip_b)}   (크롭 뒤 자동 삭제)")
     print(f"  크롭 {STAGE1_TAG}+{STAGE2_TAG} 만  {human(crop_b)}")
-    print(f"  ── 처리 중 최대     {human(zip_b + crop_b)}")
 
     all_per_img = sum(per_img.values())
-    print(f"\n  (참고) 기본값처럼 {len(tags)}종을 다 만들면 크롭이 "
-          f"{human(int(n_new * all_per_img))} 입니다.")
-    print(f"  → 쓰는 것만 만들려면:")
-    print(f"     uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
+    print(f"  (기본값처럼 {len(tags)}종을 다 만들면 크롭이 "
+          f"{human(int(n_new * all_per_img))})")
 
+    # ── 단계별 계획: 어디서 얼마가 필요한지 ──
     try:
         free = shutil.disk_usage(s["root"]).free
-        need = zip_b + crop_b
-        print(f"\n  디스크 여유 {human(free)} vs 필요 {human(need)}   "
-              f"{'✅ 됩니다' if free > need * 1.1 else '❌ 모자랍니다'}")
-        if free <= need * 1.1:
-            drop = sum(t["bytes"] for t in tags.values() if not t["used"])
-            if drop:
-                print(f"     --prune 으로 {human(drop)} 를 먼저 확보할 수 있습니다.")
     except OSError:
-        pass
+        print("\n  (디스크 여유를 못 읽어서 계획은 생략합니다)")
+        return
+
+    drop_b = sum(t["bytes"] for t in tags.values() if not t["used"])
+    raw_b = s["raw"]["bytes"]
+
+    print(f"\n  ── 단계별 계획 (지금 여유 {human(free)}) ──\n")
+    steps = [
+        ("지금 그대로 시작",              free,                       "위험"),
+        ("① --prune (안 쓰는 크롭 삭제)", free + drop_b,              f"+{human(drop_b)}"),
+        ("② 원본 zip 도 삭제",            free + drop_b + raw_b,      f"+{human(raw_b)}"),
+    ]
+    need = zip_b + crop_b
+    for label, avail, note in steps:
+        mark = "✅" if avail > need * 1.1 else "❌"
+        print(f"  {mark} {label:<26} 여유 {human(avail):>10}   {note}")
+    print(f"\n     필요한 최대치        {human(need):>10}   "
+          f"(zip {human(zip_b)} + 크롭 {human(crop_b)})")
+
+    print("\n  ── 명령 ──")
+    print("  uv run python tools/crops.py --prune")
+    if raw_b:
+        print(f"  (필요하면) rmdir /s /q {s['raw']['path']}")
+        print("     ⚠️ 지우면 지금 크롭을 --recrop 으로 되살릴 수 없습니다.")
+        print("        m1.5/full 은 이미 결론 난 실험이라 괜찮지만, 나중에")
+        print(f"        **새 크롭 태그**가 필요해지면 {BASE_CHUNK} 를 다시 받아야 합니다.")
+    print(f"  uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
+    print("  uv run python prepare_local.py --finalize")
 
 
 def prune(s: dict, yes: bool = False) -> None:
@@ -155,10 +188,13 @@ def prune(s: dict, yes: bool = False) -> None:
         print(f"  {n:<8}{t['n']:>10,}{human(t['bytes']):>13}")
     print(f"  ────────────────────────────────  {human(total)} 확보")
 
-    print("\n⚠️ 되돌리려면 그 청크 zip 을 **다시 받아야** 합니다 "
-          f"({BASE_CHUNK} = {CHUNK_GB[BASE_CHUNK]}GB).")
-    print("   `--recrop` 은 매니페스트만 읽고 픽셀은 zip 에서 가져오는데,")
-    print("   `--chunk` 가 크롭 뒤 원본을 지웠기 때문입니다.")
+    if s["raw"]["alive"]:
+        print(f"\n✅ 원본 zip 이 살아 있어서({human(s['raw']['bytes'])}) 되돌리기 쉽습니다:")
+        print("     uv run python prepare_local.py --recrop m1.5   (재다운로드 없이)")
+    else:
+        print("\n⚠️ 원본 zip 이 없어서 되돌리려면 **다시 받아야** 합니다 "
+              f"({BASE_CHUNK} = {CHUNK_GB[BASE_CHUNK]}GB).")
+        print("   `--recrop` 은 매니페스트만 읽고 픽셀은 zip 에서 가져오기 때문입니다.")
     print("\n   잃는 것 — 이 태그를 쓰던 실험은 다시 못 돌립니다:")
     if "m1.5" in victims:
         print("     m1.5   크롭 배율 비교 (STEP 4C — m2.5 채택으로 이미 결론)")
