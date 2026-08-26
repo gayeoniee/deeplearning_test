@@ -53,22 +53,47 @@
 
 ## 2. 셋업 (복붙)
 
+⚠️ **가상환경(`uv sync`)을 만들지 마세요.** 노트북 첫 셀이 `--system` 으로
+설치하고 주피터도 시스템 파이썬으로 돕니다. venv 를 따로 만들면 **패키지가
+두 곳으로 갈라져서** "터미널에선 되는데 노트북에선 안 되는" 상태가 됩니다.
+런팟 PyTorch 템플릿에는 torch 가 이미 있습니다.
+
 ```bash
+cd /workspace
 git clone -b claude/dog-disease-diagnosis-model-1s6jtf \
   https://github.com/gayeoniee/deeplearning_test.git
 cd deeplearning_test
 
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-uv sync --extra train                    # torch 포함, 몇 분
+# 노트북 첫 셀과 **똑같은 방식**으로 시스템 파이썬에 설치합니다
+pip install -q uv
+python -m uv pip install -q --system \
+  timm imagehash pyarrow grad-cam albumentations kaggle
 
+cat >> ~/.bashrc <<'RC'
 export DOG_SKIN_WORK=/workspace/data/work
 export DOG_SKIN_PERSIST=/workspace/data/work
+export NO_ALBUMENTATIONS_UPDATE=1
+RC
+source ~/.bashrc
 mkdir -p "$DOG_SKIN_WORK"
 ```
 
-⚠️ `export` 는 터미널을 새로 열면 사라집니다. 새 터미널·주피터 커널에서는
-다시 하거나 `~/.bashrc` 에 넣으세요.
+`~/.bashrc` 에 넣는 이유: `export` 는 터미널을 새로 열면 사라집니다.
+⚠️ **주피터 커널은 `~/.bashrc` 를 안 읽을 수 있습니다.** 노트북에서 경로가
+이상하면 첫 셀 **위에** 이 두 줄을 넣으세요:
+
+```python
+import os
+os.environ["DOG_SKIN_WORK"] = "/workspace/data/work"
+os.environ["DOG_SKIN_PERSIST"] = "/workspace/data/work"
+```
+
+### 브랜치 — 노트북이 덮어쓰지 않습니다
+
+첫 셀은 **지금 있는 브랜치를 그대로 유지**합니다. (예전엔 `main` 으로
+`git reset --hard` 해서 작업 브랜치를 통째로 덮어썼습니다 — 방금 만든 코드가
+사라진 채 몇 시간을 돌 뻔했습니다.)
+`main` 으로 강제하려면 `export DOG_SKIN_BRANCH=main`.
 
 ## 3. 크롭 가져오기 — 집에서 올리지 말고 캐글에서 받으세요
 
@@ -94,7 +119,6 @@ mkdir -p "$DOG_SKIN_WORK"
 ```bash
 export KAGGLE_USERNAME=내캐글아이디
 export KAGGLE_KEY=0123456789abcdef0123456789abcdef
-uv pip install kaggle
 ```
 
 캐글 CLI 가 이 두 변수를 그대로 읽습니다. `chmod` 도, 파일도 필요 없습니다.
@@ -119,7 +143,7 @@ chmod 600 ~/.kaggle/kaggle.json
 ### 3-c. 데이터셋 이름 확인 — **추측하지 말고 물어보세요**
 
 ```bash
-uv run kaggle datasets list --mine
+kaggle datasets list --mine
 ```
 
 내가 올린 데이터셋이 `ref` 열에 `아이디/이름` 형태로 그대로 나옵니다.
@@ -127,9 +151,9 @@ uv run kaggle datasets list --mine
 
 ```bash
 cd "$DOG_SKIN_WORK"
-uv run kaggle datasets download -d 아이디/dogskin-f320 --unzip
+kaggle datasets download -d 아이디/dogskin-f320 --unzip
 # 06 까지 갈 거면 2단계 크롭도:
-uv run kaggle datasets download -d 아이디/dogskin-m25 --unzip
+kaggle datasets download -d 아이디/dogskin-m25 --unzip
 ```
 
 받고 나서 확인:
@@ -153,7 +177,8 @@ ls "$DOG_SKIN_WORK/manifests"    # manifest_final.parquet
 ## 4. ★ preflight — 학습 전에 반드시
 
 ```bash
-uv run --extra train python tools/preflight.py
+cd /workspace/deeplearning_test
+python tools/preflight.py
 ```
 
 GPU·데이터·분할·영속저장소·디스크·코드 배선을 몇 초에 확인합니다.
@@ -172,10 +197,15 @@ GPU·데이터·분할·영속저장소·디스크·코드 배선을 몇 초에 
 터미널에서 돌리려면:
 
 ```bash
-uv run --extra train jupyter nbconvert --to notebook --execute \
+cd /workspace/deeplearning_test
+python -m jupyter nbconvert --to notebook --execute \
   --ExecutePreprocessor.timeout=-1 notebooks/03g_털가중_샘플러.ipynb \
   --output /workspace/out_03g.ipynb
 ```
+
+⚠️ 이렇게 돌리면 **중간에 못 멈추고** 로그도 다 끝나야 보입니다. 처음이면
+Jupyter Lab 에서 셀을 하나씩 돌리세요 — 6번 셀의 시간 게이트를 보고 판단할
+수 있어야 합니다.
 
 ## 6. ★ 끄기 전에 — 결과를 빼내세요
 
@@ -199,7 +229,8 @@ tar czf release.tgz data/work/release data/work/reports
 ## 7. 받아온 릴리스로 서빙
 
 ```bash
-uv run --extra train --extra serve python serve.py --release <풀어놓은 폴더>
+python -m uv pip install -q --system fastapi "uvicorn[standard]" python-multipart
+python serve.py --release <풀어놓은 폴더>
 ```
 
 `tests/test_calibration_wiring.py` 가 `temperature.json` 이 실렸는지 감시합니다 —
@@ -212,5 +243,7 @@ uv run --extra train --extra serve python serve.py --release <풀어놓은 폴�
 |---|---|---|
 | `load_prepared` 가 FileNotFoundError | 크롭이 `work_root` 밖에 있음 | `DOG_SKIN_WORK` 확인, 또는 `DOG_SKIN_PREPARED` 로 위치 지정 |
 | preflight 에서 "영속 저장소가 없습니다" | `DOG_SKIN_PERSIST` 미설정 | 위 2단계 `export` 다시 |
+| 터미널에선 되는데 노트북에서 ImportError | venv 와 시스템 파이썬이 갈라짐 | `uv sync` 로 만든 `.venv` 를 지우고 `--system` 으로 다시 |
+| 노트북이 옛 코드를 씀 | 브랜치가 `main` 으로 리셋됨 | `git branch --show-current` 확인, `DOG_SKIN_BRANCH` 로 지정 |
 | 학습이 추정보다 느림 | 데이터 로딩 병목 | 정상입니다 (실측 1.27~1.55배). vCPU 많은 팟이 유리 |
 | 새 터미널에서 경로가 다름 | `export` 가 안 넘어감 | `~/.bashrc` 에 넣기 |
