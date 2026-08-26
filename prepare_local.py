@@ -327,6 +327,50 @@ def step_download(filekeys: list[str]) -> None:
     aihub.peek()
 
 
+def step_list() -> None:
+    """★ AI Hub 가 **어느 단위까지** filekey 를 주는지 봅니다.
+
+    이게 왜 중요한가 — TL02 는 80GB 짜리 zip 한 덩어리라, 통째로 받으려면
+    디스크가 그만큼 비어 있어야 합니다. 그런데 AI Hub 가 zip **안쪽**까지
+    filekey 를 준다면 조각조각 받아서 크롭하고 지우기를 반복할 수 있습니다.
+    그러면 디스크 문제가 통째로 사라집니다.
+
+    `KNOWN_FILES_561` 에 하드코딩된 6개는 2026-08 에 **관측된** 것일 뿐,
+    API 가 그것만 준다는 뜻은 아닙니다. 실제 출력을 봐야 압니다.
+    """
+    from src import aihub, env
+
+    key = env.secret("AIHUB_API_KEY")
+    aihub.install()
+
+    print("\n" + "=" * 68)
+    print(" AI Hub 파일 목록 (-mode l 원본)")
+    print("=" * 68)
+    text = aihub.raw_listing(key)
+    print(text)
+
+    files = aihub.parse_listing(text)
+    print("\n" + "=" * 68)
+    print(f" 파싱 결과: {len(files)}개")
+    print("=" * 68)
+    if not files:
+        print(" ⚠️ 파싱 0건 — 위 원본 출력을 그대로 공유해주세요.")
+        return
+
+    for f in files:
+        print(f"   {f.filekey:>8}  {str(f.size):>10}  {f.path}/{f.name}" if f.path
+              else f"   {f.filekey:>8}  {str(f.size):>10}  {f.name}")
+
+    big = [f for f in files if "GB" in str(f.size)]
+    print(f"\n 총 {len(files)}개 중 GB 단위 {len(big)}개")
+    if len(files) > 10:
+        print(" ✅ zip 안쪽까지 filekey 가 있습니다 — **조각내서 받을 수 있습니다.**")
+        print("    → 디스크가 부족해도 조금씩 받고 크롭하고 지우기를 반복하면 됩니다.")
+    else:
+        print(" ❌ 큰 zip 단위로만 줍니다 — 통째로 받는 수밖에 없습니다.")
+        print("    → 그 크기만큼 디스크가 비어 있어야 합니다.")
+
+
 def step_scan() -> None:
     from src import scan
 
@@ -443,6 +487,9 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="VL01 만 받아 전 과정 (가장 간단)")
     p.add_argument("--download", action="store_true", help="(단독) 다운로드만")
     p.add_argument("--scan", action="store_true", help="(단독) 스캔만")
+    p.add_argument("--list", action="store_true", dest="list_files",
+                   help="★ AI Hub 가 어느 단위까지 filekey 를 주는지 확인 "
+                        "(조각내서 받을 수 있는지 판단)")
     p.add_argument("--filekey", default="517022")
     p.add_argument("--margins", default="1.5,2.5,0,-320",
                    help="크롭 방식 목록. 양수=margin 배율(m1.5), 0=중앙 정사각(full), "
@@ -459,15 +506,21 @@ def main() -> None:
     p.add_argument("--out", default="dogskin_prepared.zip")
     a = p.parse_args()
 
-    if not any([a.all, a.chunk, a.finalize, a.package, a.download, a.scan, a.recrop]):
+    if not any([a.all, a.chunk, a.finalize, a.package, a.download,
+                a.scan, a.recrop, a.list_files]):
         p.print_help()
         sys.exit(0)
 
-    needs_key = a.all or a.chunk or a.download
+    needs_key = a.all or a.chunk or a.download or a.list_files
     if needs_key and not os.environ.get("AIHUB_API_KEY"):
         _die('환경변수 AIHUB_API_KEY 가 없습니다.\n'
              '   Linux/Mac : export AIHUB_API_KEY="키"\n'
              "   Windows   : set AIHUB_API_KEY=키")
+
+    # 목록만 보는 건 환경 설명·시드 없이 바로 끝냅니다
+    if a.list_files:
+        step_list()
+        return
 
     from src import env
     env.describe()
