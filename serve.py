@@ -36,6 +36,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
+# ⚠️ import 만으로 Windows 콘솔 인코딩을 고칩니다 (env._fix_console_encoding).
+#    이게 없으면 stdout 이 파이프·파일·컨테이너 로그로 갈 때 코드페이지가 cp949 가
+#    되고, 아래 print 의 ⚠️ 하나 때문에 서버가 UnicodeEncodeError 로 **뜨지도
+#    못합니다.** 터미널에서 직접 돌릴 때는 멀쩡해서 안 보입니다.
+from src import env as _env  # noqa: F401,E402
+
 MAX_BYTES = 12 * 1024 * 1024          # 휴대폰 사진 한 장이면 충분합니다
 
 
@@ -87,14 +93,12 @@ def build_app(agent, mock: bool):
             except Exception:
                 raise HTTPException(422, "box 는 정규화 [x, y, w, h] JSON 배열이어야 합니다.")
 
-        if mock:
-            # MockAgent 는 바이트 해시로 값을 만듭니다 — 파일을 그대로 넘깁니다
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(suffix=Path(photo.filename or "x.jpg").suffix,
-                                             delete=True) as tf:
-                tf.write(raw); tf.flush()
-                return JSONResponse(agent.screen(tf.name, box=b))
+        # ⚠️ mock 도 진짜 모델과 **같은 길**로 보냅니다 (PIL 이미지 그대로).
+        #    예전에는 임시 파일에 써서 경로를 넘겼는데, Windows 는 열려 있는
+        #    NamedTemporaryFile 을 다시 못 엽니다 → Permission denied 가 나고
+        #    MockAgent 가 모든 요청을 "판단이 어려운 사진" 으로 돌려보냈습니다.
+        #    (mock 은 바이트 해시로 값을 만들고, PIL 이미지면 픽셀을 씁니다 —
+        #     어느 쪽이든 같은 사진은 항상 같은 결과입니다.)
         return JSONResponse(agent.screen(im, box=b))
 
     demo = ROOT / "demo" / "index.html"
