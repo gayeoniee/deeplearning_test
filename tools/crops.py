@@ -68,10 +68,21 @@ def survey() -> dict:
 
     # 원본(zip). 살아 있으면 지운 크롭을 `--recrop` 으로 공짜로 되살릴 수 있고,
     # 지우면 그만큼 공간이 나지만 되살리기는 재다운로드가 됩니다.
-    raw = ROOT / "data" / "raw"
-    rn, rb = scan_tag(raw) if raw.is_dir() else (0, 0)
+    from src import env as _env
+
+    raw = _env.data_root()
+    zn = zb = on = ob = 0
+    if raw.is_dir():
+        for f in raw.rglob("*"):
+            if not f.is_file():
+                continue
+            if f.suffix.lower() == ".zip":
+                zn += 1; zb += f.stat().st_size
+            else:
+                on += 1; ob += f.stat().st_size
     return {"root": croot, "tags": tags, "used": used,
-            "raw": {"path": raw, "n": rn, "bytes": rb, "alive": rn > 0}}
+            "raw": {"path": raw, "n": zn + on, "bytes": zb + ob, "alive": zn + on > 0,
+                    "zip_n": zn, "zip_b": zb, "other_n": on, "other_b": ob}}
 
 
 def report(s: dict) -> None:
@@ -96,12 +107,15 @@ def report(s: dict) -> None:
 
     r = s["raw"]
     if r["alive"]:
-        print(f"\n  원본 zip  {human(r['bytes'])}  ({r['n']:,}개)  {r['path']}")
-        print("            살아 있어서 지운 크롭을 --recrop 으로 되살릴 수 있습니다.")
-        print("            공간이 급하면 이것도 지울 수 있지만, 그러면 되살리기가")
-        print("            재다운로드가 됩니다.")
+        print(f"\n  원본  {r['path']}")
+        print(f"    zip        {human(r['zip_b']):>12}  ({r['zip_n']:,}개)   "
+              f"{'← --recrop 이 쓰는 것' if r['zip_n'] else ''}")
+        if r["other_n"]:
+            print(f"    zip 아닌 것 {human(r['other_b']):>12}  ({r['other_n']:,}개)   "
+                  f"← **안 씁니다** (압축 해제본으로 보입니다)")
+            print("       크롭은 zip 에서 직접 읽습니다. 이건 지워도 --recrop 이 됩니다.")
     else:
-        print("\n  원본 zip  없음 — 크롭을 지우면 되살리는 데 재다운로드가 필요합니다.")
+        print("\n  원본  없음 — 크롭을 지우면 되살리는 데 재다운로드가 필요합니다.")
 
     try:
         du = shutil.disk_usage(s["root"])
@@ -149,28 +163,47 @@ def plan(s: dict, chunk: str) -> None:
         return
 
     drop_b = sum(t["bytes"] for t in tags.values() if not t["used"])
-    raw_b = s["raw"]["bytes"]
+    r = s["raw"]
+    need = zip_b + crop_b
 
     print(f"\n  ── 단계별 계획 (지금 여유 {human(free)}) ──\n")
-    steps = [
-        ("지금 그대로 시작",              free,                       "위험"),
-        ("① --prune (안 쓰는 크롭 삭제)", free + drop_b,              f"+{human(drop_b)}"),
-        ("② 원본 zip 도 삭제",            free + drop_b + raw_b,      f"+{human(raw_b)}"),
-    ]
-    need = zip_b + crop_b
+    steps = [("지금 그대로 시작", free, "")]
+    run = free
+    if drop_b:
+        run += drop_b
+        steps.append(("① --prune (안 쓰는 크롭)", run, f"+{human(drop_b)}"))
+    if r["other_b"]:
+        run += r["other_b"]
+        steps.append(("② 압축 해제본 삭제 (안 씀)", run, f"+{human(r['other_b'])}"))
+    if r["zip_b"]:
+        run += r["zip_b"]
+        steps.append(("③ 원본 zip 도 삭제", run, f"+{human(r['zip_b'])}"))
+
+    fits = False
     for label, avail, note in steps:
-        mark = "✅" if avail > need * 1.1 else "❌"
-        print(f"  {mark} {label:<26} 여유 {human(avail):>10}   {note}")
-    print(f"\n     필요한 최대치        {human(need):>10}   "
+        okmark = avail >= need
+        fits = fits or okmark
+        print(f"  {'✅' if okmark else '❌'} {label:<28} 여유 {human(avail):>10}   {note}")
+    print(f"\n     필요한 최대치          {human(need):>10}   "
           f"(zip {human(zip_b)} + 크롭 {human(crop_b)})")
 
+    if not fits:
+        short = need - run
+        print(f"\n  ❌ 다 치워도 {human(short)} 모자랍니다.")
+        print("\n  ── 그래도 하려면 ──")
+        print("  1) 다른 드라이브가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
+        print(f"       set DOG_SKIN_DATA=D:\\daengs_raw")
+        print(f"       uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
+        print(f"     → C: 에는 크롭 {human(crop_b)} 만 있으면 됩니다.")
+        print("  2) 크롭도 옮기려면  set DOG_SKIN_WORK=D:\\daengs_work")
+        print("  3) 안 되면 데이터 늘리기는 접고 06 재실행만 하는 게 맞습니다.")
+        return
+
     print("\n  ── 명령 ──")
-    print("  uv run python tools/crops.py --prune")
-    if raw_b:
-        print(f"  (필요하면) rmdir /s /q {s['raw']['path']}")
-        print("     ⚠️ 지우면 지금 크롭을 --recrop 으로 되살릴 수 없습니다.")
-        print("        m1.5/full 은 이미 결론 난 실험이라 괜찮지만, 나중에")
-        print(f"        **새 크롭 태그**가 필요해지면 {BASE_CHUNK} 를 다시 받아야 합니다.")
+    if drop_b:
+        print("  uv run python tools/crops.py --prune")
+    if r["other_b"]:
+        print(f"  rmdir /s /q (압축 해제본만)   ← zip 은 남기세요")
     print(f"  uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
     print("  uv run python prepare_local.py --finalize")
 
