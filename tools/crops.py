@@ -144,6 +144,11 @@ def plan(s: dict, chunk: str) -> None:
 
     zip_b = CHUNK_GB[chunk] * 1024 ** 3
     crop_b = int(n_new * used_per_img)
+    # ⚠️ aihubshell 은 **조각으로 받아 병합**합니다. 병합하는 순간 조각과 합친
+    #    파일이 같이 있을 수 있어서, 이 리포가 직접 경고하는 값이 zip 의 2배입니다
+    #    (src/aihub.py: "압축 해제까지 순간 최대 약 {need*2}GB 필요").
+    #    실제로 얼마인지는 안 재봤습니다 — 그래서 두 값을 다 보여줍니다.
+    dl_peak_b = zip_b * 2
 
     print(f"\n{chunk} 을(를) 받으면  ({BASE_CHUNK} {CHUNK_GB[BASE_CHUNK]}GB · "
           f"{n_base:,}장 을 기준으로 비례)\n")
@@ -179,17 +184,24 @@ def plan(s: dict, chunk: str) -> None:
         run += r["zip_b"]
         steps.append(("③ 원본 zip 도 삭제", run, f"+{human(r['zip_b'])}"))
 
+    safe = dl_peak_b + crop_b            # 리포가 경고하는 보수적 값
     fits = False
     for label, avail, note in steps:
-        okmark = avail >= need
+        okmark = avail >= safe
         fits = fits or okmark
-        print(f"  {'✅' if okmark else '❌'} {label:<28} 여유 {human(avail):>10}   {note}")
-    print(f"\n     필요한 최대치          {human(need):>10}   "
-          f"(zip {human(zip_b)} + 크롭 {human(crop_b)})")
+        m = "✅" if okmark else ("◐" if avail >= need else "❌")
+        print(f"  {m} {label:<28} 여유 {human(avail):>10}   {note}")
+
+    print(f"\n     필요 — 낙관 {human(need):>10}   (zip {human(zip_b)} + 크롭 {human(crop_b)})")
+    print(f"     필요 — 보수 {human(safe):>10}   (다운로드 병합 중 2배 · src/aihub.py 경고)")
+    print("     ⚠️ 실제 최대치는 **안 재봤습니다.** aihubshell 이 조각을 병합할 때")
+    print("        조각과 합친 파일이 같이 있으면 보수 쪽에 가깝습니다.")
+    print("        ◐ 는 낙관값은 넘지만 보수값은 못 넘는 구간입니다 — 도박입니다.")
 
     if not fits:
-        short = need - run
-        print(f"\n  ❌ 다 치워도 {human(short)} 모자랍니다.")
+        print(f"\n  ❌ 다 치워도 보수값({human(safe)})에는 {human(safe - run)} 모자랍니다.")
+        if run >= need:
+            print(f"     낙관값({human(need)})은 넘지만, 실패하면 몇 시간을 날립니다.")
         print("\n  ── 그래도 하려면 ──")
         print("  1) 다른 드라이브가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
         print(f"       set DOG_SKIN_DATA=D:\\daengs_raw")
@@ -203,7 +215,11 @@ def plan(s: dict, chunk: str) -> None:
     if drop_b:
         print("  uv run python tools/crops.py --prune")
     if r["other_b"]:
-        print(f"  rmdir /s /q (압축 해제본만)   ← zip 은 남기세요")
+        print("  (압축 해제본만 삭제)   ← zip 은 남기세요")
+    if run - r["zip_b"] < safe <= run:
+        # zip 까지 지워야 되는 경우엔 그 명령도 적어줍니다 (빠져 있었습니다)
+        print(f"  del {r['path']}\\*.zip"
+              f"        ⚠️ 되돌리려면 {BASE_CHUNK} 재다운로드 ({CHUNK_GB[BASE_CHUNK]}GB)")
     print(f"  uv run python prepare_local.py --chunk {chunk} --margins 2.5,-320")
     print("  uv run python prepare_local.py --finalize")
 
