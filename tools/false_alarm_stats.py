@@ -362,18 +362,20 @@ def _from_saved(a) -> None:
 
 
 def verdict_shadow(df, fa, tn, got: dict, use: list) -> None:
-    """서로를 뺀 결과가 **대칭이 아니면** 그게 단서입니다."""
+    """서로를 뺀 결과가 **대칭이 아니면** 그게 단서입니다.
+
+    ⚠️ 처음엔 (값, 뺀 것) 짝 중 **가장 센 것**으로 판정했습니다. 그러면 상관이
+       거의 없는 상대를 골라 이깁니다 — `hair` vs `area`(상관 −0.067)는 당연히
+       살아남으니까요. 실제로 그 버전이 "hair 가 원인 ✅" 이라고 했는데,
+       정작 진짜 경쟁자인 `blur`(상관 0.896)에게는 문턱을 못 넘었습니다.
+       그래서 지금은 **가장 약해진 쪽(최악)**으로 판정합니다 —
+       "제일 센 상대를 빼고도 버티는가" 가 물어야 할 질문입니다.
+    """
     print("\n  ── 읽기 ──")
     raw = {k: auroc(df.loc[fa, k], df.loc[tn, k]) for k in use}
 
-    def strength(v):
-        return abs(v - 0.5) if v == v else 0.0
-
-    rows = []
-    for (t, c), v in got.items():
-        if v != v:
-            continue
-        rows.append((t, c, raw[t], v, strength(v)))
+    rows = [(t, c, raw[t], v, abs(v - 0.5))
+            for (t, c), v in got.items() if v == v]
     if not rows:
         print("  판정할 게 없습니다.")
         return
@@ -384,15 +386,34 @@ def verdict_shadow(df, fa, tn, got: dict, use: list) -> None:
         flip = "뒤집힘" if (r0 - 0.5) * (v - 0.5) < 0 else "유지"
         print(f"    {t:<8}{c:<8}{r0:>8.3f}{v:>8.3f}{st:>10.3f}   {flip}")
 
-    best = max(rows, key=lambda x: x[4])
-    print(f"\n  가장 오래 버티는 값: **{best[0]}** ({best[2]:.3f} → {best[3]:.3f})")
-    if best[4] >= A_STRONG:
-        print(f"  ✅ 다른 값을 다 빼고도 문턱({A_STRONG})을 넘습니다 — 이게 원인에 가깝습니다.")
-    elif best[4] >= A_WEAK:
-        print(f"  ◐ 문턱({A_STRONG})은 못 넘지만 다른 값들보다 오래 버팁니다.")
-        print("     '원인' 이라고 못 박진 못하고, **더 가깝다** 까지만 말할 수 있습니다.")
+    # ★ 값마다 **최악**(가장 약해진) 잔차로 판정합니다
+    worst: dict = {}
+    for t, c, r0, v, st in rows:
+        if t not in worst or st < worst[t][2]:
+            worst[t] = (c, v, st)
+
+    print(f"\n    ── 값마다 **제일 센 상대**를 뺐을 때 ──")
+    print(f"\n    {'값':<8}{'제일 센 상대':<14}{'남은 세기':>10}   판정")
+    print("    " + "─" * 48)
+    order = sorted(worst.items(), key=lambda kv: -kv[1][2])
+    for t, (c, v, st) in order:
+        j = ("버팀" if st >= A_STRONG else "약함" if st >= A_WEAK else "무너짐")
+        print(f"    {t:<8}{c:<14}{st:>10.3f}   {j}")
+
+    best_t, (best_c, best_v, best_st) = order[0]
+    print(f"\n  가장 오래 버티는 값: **{best_t}** "
+          f"({best_c} 를 빼도 {best_st:.3f} 남음)")
+    if best_st >= A_STRONG:
+        print(f"  ✅ 제일 센 상대를 빼고도 문턱({A_STRONG})을 넘습니다 — 원인에 가깝습니다.")
+    elif best_st >= A_WEAK:
+        print(f"  ◐ 문턱({A_STRONG})은 **못 넘습니다**({best_st:.3f}). 다른 값들보다")
+        print("     오래 버티지만, '원인' 이라고 못 박진 못합니다. **더 가깝다** 까지입니다.")
     else:
         print("  ❌ 서로를 빼면 전부 무너집니다 — 이 값들은 한 원인의 그림자들입니다.")
+
+    dead = [t for t, (_, _, st) in worst.items() if st < A_WEAK]
+    if dead:
+        print(f"\n  기각: {', '.join(dead)} — 다른 값을 빼면 아무것도 안 남습니다.")
     print("\n  ⚠️ 상관이 높은 값끼리 잔차를 내면 **둘 다** 약해집니다. 그래서")
     print("     '약해졌다' 자체는 증거가 아닙니다. 봐야 할 건 **누가 더 버티나**와")
     print("     **방향이 뒤집혔나** 입니다. 뒤집혔다면 그 값의 원래 신호는")

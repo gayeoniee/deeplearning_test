@@ -168,6 +168,37 @@ check("경로가 한 줄도 안 맞으면 **멈춘다**",
             "area_ratio": _rng.random(_n), "img_w": 1920,
             "img_h": 1080}).startswith("STOP:"))
 
+print("\n[6] 판정은 **제일 센 상대**를 기준으로 한다 (가장 약한 상대 아님)")
+# ⚠️ 실제로 당했습니다. (값, 뺀 것) 짝 중 가장 센 것으로 판정했더니
+#    hair vs area(상관 -0.067) 라는 만만한 상대로 이겨서 "원인 ✅" 이 나왔습니다.
+#    정작 진짜 경쟁자 blur(상관 0.896)에게는 문턱을 못 넘었는데요.
+import io as _io2                                               # noqa: E402
+import contextlib                                               # noqa: E402
+
+_got = {("hair", "blur"): 0.623, ("blur", "hair"): 0.433,       # 실측값입니다
+        ("hair", "area"): 0.747, ("area", "hair"): 0.500,
+        ("blur", "area"): 0.727, ("area", "blur"): 0.500}
+# raw AUROC 이 0.5 여야 방향 판정을 못 합니다 — 실측처럼 hair/blur 는 0.5 위,
+# area 는 0.5 아래가 되게 만듭니다 (그래야 area 의 '뒤집힘' 을 확인할 수 있습니다)
+_nn = 40
+_fa = pd.Series([True] * _nn + [False] * _nn)
+_d = pd.DataFrame({
+    "hair": np.r_[np.linspace(1, 2, _nn), np.linspace(0, 1, _nn)],   # 틀린 쪽이 큼
+    "blur": np.r_[np.linspace(1, 2, _nn), np.linspace(0, 1, _nn)],   # 틀린 쪽이 큼
+    "area": np.r_[np.linspace(0, 1, _nn), np.linspace(1, 2, _nn)],   # 틀린 쪽이 작음
+})
+_buf = _io2.StringIO()
+with contextlib.redirect_stdout(_buf):
+    F.verdict_shadow(_d, _fa, ~_fa, _got, ["hair", "blur", "area"])
+_out = _buf.getvalue()
+
+check("hair 를 '원인' 으로 단정하지 않는다 (0.123 < 0.15)",
+      "◐ 문턱" in _out and "✅ 제일 센 상대를 빼고도" not in _out)
+check("hair 의 상대로 blur 를 고른다 (area 아님)",
+      "hair    blur" in _out.split("제일 센 상대")[-1], _out.split("─" * 48)[-1][:80])
+check("area 를 기각한다", "기각: area" in _out)
+check("방향 뒤집힘을 표시한다", "뒤집힘" in _out)
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)
