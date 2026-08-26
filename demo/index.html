@@ -197,6 +197,19 @@ pre{background:var(--pink-faint); border-radius:9px; padding:10px; overflow-x:au
   pointer-events:none;
 }
 .tip b{color:#FFE2DC}
+/* 촬영 가이드 — 헛알림을 실제로 줄일 수 있는 **유일한** 문구입니다.
+   holdout 7,134장에서 부위별 헛알림률이 털 덮인 순서 그대로였습니다
+   (연접부 16.6% → 다리 41.0%, 2.5배). 같은 부위 안에서도 잔선이 적게 찍힌
+   사진이 낫습니다(`hair` AUROC 0.727). 거리·조명은 무관했습니다 — 그래서
+   여기엔 **털 이야기만** 씁니다. 근거: docs/results/헛알림_사진통계_실측.md */
+.hairtip{
+  display:flex; gap:7px; align-items:flex-start;
+  margin-top:9px; padding:9px 11px; border-radius:12px;
+  background:var(--pink-faint); border:1px solid var(--pink-soft);
+  font-size:12px; line-height:1.55; color:var(--pink-deep);
+}
+.hairtip b{color:var(--pink-deep)}
+.hairtip span{color:var(--muted); font-size:11px}
 /* 두 갈래 고르기 */
 .pick{display:flex; gap:8px; margin-top:11px}
 .pick button{
@@ -405,9 +418,19 @@ document.addEventListener('paste', e => {
   if (it) take(it.getAsFile());
 });
 
+/* ★ 촬영 가이드 — 한 곳에만 씁니다. 세 화면(고르기·카메라·첨부)이 같은 문구를
+   나눠 쓰므로, 여기만 고치면 셋 다 바뀝니다. 문구를 늘리지 마세요 —
+   촬영 거리(`area` AUROC 0.462)와 조명(밝기·채도·색온도)은 헛알림과 **무관**한
+   것으로 나왔습니다. 근거 없는 줄을 더하면 지켜지는 줄까지 같이 흐려집니다. */
+const HAIR_TIP =
+  `<div class="hairtip"><span style="font-size:14px">🐾</span><div>
+     <b>털을 헤쳐서 피부가 보이게</b> 찍어줘.<br>
+     <span>털이 많이 찍히면 괜히 이상하다고 볼 수 있어.</span>
+   </div></div>`;
+
 function pickStep() {
   const w = bubble('bot',
-    '<p>사진을 <b>찍을래</b>, 아니면 <b>가지고 있는 걸 올릴래</b>?</p>' +
+    '<p>사진을 <b>찍을래</b>, 아니면 <b>가지고 있는 걸 올릴래</b>?</p>' + HAIR_TIP +
     `<div class="pick">
        <button id="pCam">
          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"
@@ -558,7 +581,7 @@ async function cameraStep() {
   }
 
   const w = bubble('bot',
-    '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춘 다음 찍어줘.</p>' +
+    '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춘 다음 찍어줘.</p>' + HAIR_TIP +
     `<div class="cam" id="cam"><video id="vid" playsinline muted></video>
        <div class="hole" id="hole"></div><div class="tip" id="tip"></div></div>
      <button class="shutter" id="shot" aria-label="촬영"></button>
@@ -593,7 +616,8 @@ function frameStep(file, preset) {
   const url = URL.createObjectURL(file);
   const w = bubble('bot',
     (preset ? '<p>찍은 그대로면 <b>확인하기</b>를 눌러줘. 고치고 싶으면 네모를 다시 맞춰도 돼.</p>'
-            : '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춰줘. 끌어서 옮기고, 오른쪽 아래 동그라미로 크기를 바꿔.</p>') +
+            : '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춰줘. 끌어서 옮기고, 오른쪽 아래 동그라미로 크기를 바꿔.</p>'
+             + HAIR_TIP) +
     `<div class="framer" id="framer"><img src="${url}" alt="올린 사진">
        <div class="hole" id="hole"></div><div class="tip" id="tip"></div></div>
      <div class="crop-act">
