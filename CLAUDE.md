@@ -302,6 +302,12 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
   `stages.stage1_scores()` 를 걸면 softmax 가 **두 번** 먹어 전부 0.5 로 뭉개집니다.
   ECE 가 0.03 → 0.20 으로 나빠져서 잡았습니다. 보정된 점수가 필요하면
   **`logits / T` 를 넘기세요**
+* **매니페스트 컬럼 이름을 계획 문서에서 베끼지 마세요.** 실물은
+  `area_ratio` / `img_w` / `img_h` 인데 계획서엔 `lesion_area_ratio` /
+  `width` / `height` 로 적혀 있습니다. 이름이 틀리면 병합이 조용히 NaN 을
+  만들고 **없는 걸 재면서 분석이 끝까지 돕니다.** 실물은
+  `docs/data/DATASET_CARD.md` 에 있습니다 ("추론이 틀렸던 3곳" 포함).
+  붙일 값이 0장이면 **멈추게** 하세요 — `tools/false_alarm_stats.py` 참고
 * **`export_release` 에서 빠진 파일은 조용히 기본값이 됩니다.** `temperature.json`
   이 안 실려서 릴리스로 서빙하면 `Engine.load` 가 T=1.0 으로 물러섰습니다 —
   보정 안 된 확률이 보호자에게 갑니다. 에러도 안 납니다.

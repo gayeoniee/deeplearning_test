@@ -232,8 +232,32 @@ def independence(df, mask_bad, mask_good, target: str, control: str) -> float:
     return res
 
 
+# 매니페스트의 **실물** 컬럼 이름. 후보를 여러 개 두는 이유는
+# `docs/data/DATASET_CARD.md` 가 "추론이 틀렸던 3곳" 을 따로 적어둘 만큼
+# 이 스키마를 한 번 틀린 적이 있기 때문입니다. 지금 맞는 건 앞쪽입니다.
+COL_CANDIDATES = {
+    "area_ratio": ["area_ratio", "lesion_area_ratio"],
+    "img_w": ["img_w", "width"],
+    "img_h": ["img_h", "height"],
+    "bbox": ["bbox"],
+}
+
+
+def _pick(cols, names: list[str]) -> str | None:
+    return next((n for n in names if n in cols), None)
+
+
 def attach_manifest(df):
-    """매니페스트에서 `area` / `megapix` 를 붙입니다. 사진을 다시 안 엽니다."""
+    """매니페스트에서 `area` / `megapix` 를 붙입니다. 사진을 다시 안 엽니다.
+
+    `area`    = bbox 면적 ÷ 원본 면적. **얼마나 가까이서 찍었나**의 대용
+    `megapix` = 원본 화소수. 기기·촬영 설정의 대용
+
+    ⚠️ 못 찾으면 **조용히 NaN 으로 넘어가지 않고 멈춥니다.** 처음 짤 때 컬럼
+       이름을 계획 문서에서 베껴 왔다가(`lesion_area_ratio`/`width`/`height`)
+       실물(`area_ratio`/`img_w`/`img_h`)과 달라서, 0장인 채로 분석이
+       끝까지 돌아갔습니다. 결과가 안 나온 게 아니라 **없는 걸 재고 있었습니다.**
+    """
     import numpy as np
     import pandas as pd
 
@@ -241,23 +265,54 @@ def attach_manifest(df):
 
     mf = env.work_root() / "manifests" / "manifest_final.parquet"
     m = pd.read_parquet(mf)
-    cols = {"image_path"}
-    if "lesion_area_ratio" in m.columns:
-        cols.add("lesion_area_ratio")
-    for c in ("width", "height"):
-        if c in m.columns:
-            cols.add(c)
-    m = m[[c for c in m.columns if c in cols]].drop_duplicates("image_path")
+    found = {k: _pick(m.columns, v) for k, v in COL_CANDIDATES.items()}
+    for k, v in found.items():
+        print(f"  {k:<12} → {v or '❌ 없음'}")
+
+    if "image_path" not in m.columns:
+        raise SystemExit(f"매니페스트에 image_path 가 없습니다. 있는 것: "
+                         f"{sorted(m.columns)[:20]}")
+
+    take = ["image_path"] + [v for v in found.values() if v]
+    m = m[take].drop_duplicates("image_path")
     out = df.merge(m, on="image_path", how="left")
-    out["area"] = out.get("lesion_area_ratio", np.nan)
-    if {"width", "height"} <= set(out.columns):
-        out["megapix"] = out["width"] * out["height"] / 1e6
+
+    matched = int(out[take[1]].notna().sum()) if len(take) > 1 else 0
+    if len(take) > 1 and matched == 0:
+        raise SystemExit(
+            f"❌ 매니페스트와 한 줄도 안 맞았습니다 (image_path 병합 실패).\n"
+            f"   저장 파일 예: {df['image_path'].iloc[0]}\n"
+            f"   매니페스트 예: {m['image_path'].iloc[0]}")
+
+    # area — 있으면 그대로, 없으면 bbox 로 직접 계산
+    if found["area_ratio"]:
+        out["area"] = out[found["area_ratio"]]
+    elif found["bbox"] and found["img_w"] and found["img_h"]:
+        def _a(r):
+            b = r[found["bbox"]]
+            if b is None or len(b) != 4 or not r[found["img_w"]]:
+                return np.nan
+            return (((b[2] - b[0]) * (b[3] - b[1]))
+                    / (r[found["img_w"]] * r[found["img_h"]]))
+        out["area"] = out.apply(_a, axis=1)
+        print("  area 를 bbox 에서 직접 계산했습니다.")
+    else:
+        out["area"] = np.nan
+
+    if found["img_w"] and found["img_h"]:
+        out["megapix"] = out[found["img_w"]] * out[found["img_h"]] / 1e6
     else:
         out["megapix"] = np.nan
+
     for c in EXTRA:
         n = int(out[c].notna().sum())
-        print(f"  {c:<10} {n:,}/{len(out):,}장에 값이 있습니다"
-              + ("" if n else "   ← 매니페스트에 없어서 건너뜁니다"))
+        mark = "" if n else "   ← 이 값은 빼고 갑니다"
+        print(f"  {c:<12} {n:,}/{len(out):,}장{mark}")
+    if not out[EXTRA].notna().any().any():
+        raise SystemExit(
+            f"❌ 붙일 수 있는 값이 하나도 없습니다.\n"
+            f"   매니페스트 컬럼: {sorted(m.columns)}\n"
+            f"   tools/false_alarm_stats.py 의 COL_CANDIDATES 를 고치세요.")
     return out
 
 

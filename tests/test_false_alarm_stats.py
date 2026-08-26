@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 import numpy as np                                              # noqa: E402
+import pandas as pd                                             # noqa: E402
 
 import false_alarm_stats as F                                   # noqa: E402
 
@@ -120,6 +121,52 @@ check("단조 변환에 안 흔들린다 (로그를 씌워도 같은 답)",
                   F.residualize(np.exp(hair), np.exp(blur))[~bad_m])
           - F.auroc(F.residualize(hair, blur)[bad_m],
                     F.residualize(hair, blur)[~bad_m])) < 0.02)
+
+print("\n[5] 매니페스트 컬럼을 못 찾으면 **조용히 넘어가지 않는다**")
+# ⚠️ 실제로 당했습니다. 컬럼 이름을 계획 문서에서 베껴 왔는데
+#    (lesion_area_ratio / width / height) 실물은 area_ratio / img_w / img_h 라
+#    0장인 채로 분석이 끝까지 돌았습니다. 결과가 안 나온 게 아니라
+#    **없는 걸 재고 있었습니다.** 그게 제일 나쁜 실패입니다.
+import tempfile as _tf                                          # noqa: E402
+
+_rng = np.random.default_rng(1)
+_n = 400
+_paths = [f"/f/{i}.jpg" for i in range(_n)]
+_stats = pd.DataFrame({
+    "image_path": _paths, "is_normal": _rng.random(_n) < .5,
+    "said_abnormal": _rng.random(_n) < .3,
+    **{k: _rng.random(_n) for k in F.STATS}})
+
+from src import env as _env                                     # noqa: E402
+
+
+def _try(man: dict) -> str:
+    td = Path(_tf.mkdtemp())
+    (td / "manifests").mkdir(parents=True)
+    _env.work_root = lambda: td                                 # noqa: E731
+    pd.DataFrame(man).to_parquet(td / "manifests" / "manifest_final.parquet")
+    try:
+        out = F.attach_manifest(_stats)
+    except SystemExit as e:
+        return f"STOP:{e}"
+    return f"OK:{int(out['area'].notna().sum())}"
+
+
+check("실물 이름(area_ratio/img_w/img_h)을 찾는다",
+      _try({"image_path": _paths, "area_ratio": _rng.random(_n),
+            "img_w": 1920, "img_h": 1080}) == f"OK:{_n}")
+check("옛 이름(lesion_area_ratio)도 받는다",
+      _try({"image_path": _paths, "lesion_area_ratio": _rng.random(_n),
+            "width": 1920, "height": 1080}) == f"OK:{_n}")
+check("area_ratio 가 없으면 bbox 로 직접 계산한다",
+      _try({"image_path": _paths, "bbox": [[10, 10, 110, 110]] * _n,
+            "img_w": 1920, "img_h": 1080}) == f"OK:{_n}")
+check("쓸 값이 하나도 없으면 **멈춘다**",
+      _try({"image_path": _paths, "label": ["A7"] * _n}).startswith("STOP:"))
+check("경로가 한 줄도 안 맞으면 **멈춘다**",
+      _try({"image_path": [f"/다른/{i}.jpg" for i in range(_n)],
+            "area_ratio": _rng.random(_n), "img_w": 1920,
+            "img_h": 1080}).startswith("STOP:"))
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
