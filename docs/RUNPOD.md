@@ -20,6 +20,23 @@
 ⚠️ **`06` 은 반드시 마지막**입니다. holdout 을 여는 유일한 노트북이라,
 설정이 다 확정된 뒤에 한 번만 열어야 합니다.
 
+## ⚠️ 먼저 — 런팟은 캐글이 **아닙니다**
+
+| | 캐글 | 런팟 |
+|---|---|---|
+| 뭘 빌리나 | 노트북 서비스 | **빈 리눅스 서버 한 대** |
+| 노트북 | Import 해야 함 | **`git clone` 하면 같이 옵니다** |
+| 데이터 | [Add Input] 으로 붙임 | 직접 넣어야 함 |
+| 셀 갱신 | ⚠️ `git pull` 해도 **안 바뀜** (다시 Import) | ✅ **파일이 곧 리포라 그냥 바뀝니다** |
+| 출력 | 자동 보존 | ❌ **직접 빼내야 함** |
+
+**자동으로 연결되는 건 없습니다.** 팟은 빈 서버라 아래를 순서대로 다 해야
+합니다. 대신 노트북을 따로 Import 할 필요는 **없습니다.**
+
+💡 그리고 이 리포의 오래된 함정 하나가 런팟에서는 사라집니다 —
+*"노트북 셀은 `git pull` 로 안 바뀝니다"*. 여기선 노트북 파일이 리포 파일
+그 자체라 `git pull` 이 진짜로 먹습니다.
+
 ## 1. 팟 고르기
 
 | 항목 | 권장 | 왜 |
@@ -57,15 +74,69 @@ mkdir -p "$DOG_SKIN_WORK"
 
 2.6GB 를 가정 회선으로 올리는 것보다 데이터센터에서 받는 게 훨씬 빠릅니다.
 
-```bash
-uv pip install kaggle
-mkdir -p ~/.kaggle && nano ~/.kaggle/kaggle.json   # 토큰 붙여넣기
-chmod 600 ~/.kaggle/kaggle.json
+### 3-a. 토큰 받기 (내 PC 에서, 한 번만)
 
+1. <https://www.kaggle.com/settings> 접속 (우측 상단 프로필 → **Settings**)
+2. **API** 항목 → **[Create New Token]**
+3. `kaggle.json` 이 다운로드됩니다. 열어보면 이렇게 생겼습니다:
+
+```json
+{"username":"내캐글아이디","key":"0123456789abcdef0123456789abcdef"}
+```
+
+⚠️ **계정 이름은 이 파일의 `username`** 입니다. 깃허브 아이디와 다를 수 있어요.
+⚠️ 이전에 만든 토큰이 있으면 새로 만드는 순간 **옛 토큰이 무효**가 됩니다.
+
+### 3-b. 팟에 넣기 — 환경변수가 제일 쉽습니다
+
+`nano` 로 JSON 을 붙여넣다 따옴표가 깨지는 일이 흔해서, **파일 없이** 갑니다:
+
+```bash
+export KAGGLE_USERNAME=내캐글아이디
+export KAGGLE_KEY=0123456789abcdef0123456789abcdef
+uv pip install kaggle
+```
+
+캐글 CLI 가 이 두 변수를 그대로 읽습니다. `chmod` 도, 파일도 필요 없습니다.
+
+<details><summary>파일로 넣고 싶다면</summary>
+
+```bash
+mkdir -p ~/.kaggle
+cat > ~/.kaggle/kaggle.json <<'JSON'
+{"username":"내캐글아이디","key":"0123456789abcdef0123456789abcdef"}
+JSON
+chmod 600 ~/.kaggle/kaggle.json
+```
+
+`<<'JSON'` 의 **따옴표가 중요합니다** — 없으면 셸이 내용을 건드립니다.
+</details>
+
+⚠️ 토큰을 **노트북 셀에 붙여넣지 마세요.** 셀은 출력과 함께 저장돼서 그대로
+남습니다. `.gitignore` 가 `*apikey*` / `.env` 를 막고 있지만, 애초에 리포
+안에 두지 않는 게 확실합니다.
+
+### 3-c. 데이터셋 이름 확인 — **추측하지 말고 물어보세요**
+
+```bash
+uv run kaggle datasets list --mine
+```
+
+내가 올린 데이터셋이 `ref` 열에 `아이디/이름` 형태로 그대로 나옵니다.
+거기 나온 값을 그대로 복사해서 씁니다:
+
+```bash
 cd "$DOG_SKIN_WORK"
-uv run kaggle datasets download -d <계정>/dogskin-f320 --unzip
+uv run kaggle datasets download -d 아이디/dogskin-f320 --unzip
 # 06 까지 갈 거면 2단계 크롭도:
-uv run kaggle datasets download -d <계정>/dogskin-m25 --unzip
+uv run kaggle datasets download -d 아이디/dogskin-m25 --unzip
+```
+
+받고 나서 확인:
+
+```bash
+ls "$DOG_SKIN_WORK/crops"        # f320 (m2.5) 가 보여야 합니다
+ls "$DOG_SKIN_WORK/manifests"    # manifest_final.parquet
 ```
 
 받고 나면 이런 모양이어야 합니다:
