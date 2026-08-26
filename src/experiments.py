@@ -367,22 +367,42 @@ def stage1_report(runs: list[dict], *, base_model: str = "resnet50",
                 print(f"    ➖ {base_aug} 유지 — 차이가 잡음 안입니다. 이 축은 닫습니다.")
 
     # ── 백본 축 ────────────────────────────────────────────────
-    alt_model = next((m for m in models_ if m != base_model), None)
-    if alt_model:
+    # ⚠️ 전에는 대체 백본을 **하나만** 봤습니다 (2×2 전용). 3종 이상을 비교하면
+    #    나머지가 조용히 무시됩니다. 이제 전부 보고, 그중 가장 많이 오른 것을
+    #    고릅니다. 후보가 하나뿐이면 예전과 똑같이 동작합니다.
+    alts = [m for m in models_ if m != base_model]
+    gains: list[tuple[str, float]] = []
+    for alt_model in alts:
         r = get.get((alt_model, base_aug))
-        if r:
-            d = r["auroc"] - base["auroc"]
-            print(f"\n  [백본 축] {base_model} → {alt_model}")
-            print(f"    AUROC     {d:+.4f}")
-            if d >= AUROC_NOISE:
-                verdict["model"] = alt_model
-                print(f"    ✅ {alt_model} 채택")
-            elif d <= -AUROC_NOISE:
-                verdict["model"] = base_model
-                print(f"    ❌ {base_model} 유지 — {alt_model} 이 더 나쁩니다.")
-            else:
-                verdict["model"] = base_model
-                print(f"    ➖ {base_model} 유지 — 차이가 잡음 안입니다.")
+        if not r:
+            continue
+        d = r["auroc"] - base["auroc"]
+        gains.append((alt_model, d))
+        print(f"\n  [백본 축] {base_model} → {alt_model}")
+        print(f"    AUROC     {d:+.4f}")
+        if d >= AUROC_NOISE:
+            print(f"    ✅ 기준선을 넘습니다 (+{d:.4f} ≥ 잡음 {AUROC_NOISE})")
+        elif d <= -AUROC_NOISE:
+            print(f"    ❌ 더 나쁩니다")
+        else:
+            print(f"    ➖ 차이가 잡음({AUROC_NOISE}) 안입니다 — 구분 불가")
+
+    if gains:
+        best_alt, best_d = max(gains, key=lambda t: t[1])
+        if best_d >= AUROC_NOISE:
+            verdict["model"] = best_alt
+            # 2등과의 차이도 잡음 안이면 "이겼다" 고 말하면 안 됩니다.
+            others = [d for m, d in gains if m != best_alt]
+            runner = max(others) if others else None
+            if runner is not None and abs(best_d - runner) < AUROC_NOISE:
+                verdict["model_tie"] = True
+                print(f"\n    ⚠️ {best_alt} 이 1등이지만 2등과 차이가 "
+                      f"{abs(best_d - runner):.4f} 로 잡음({AUROC_NOISE}) 안입니다 — "
+                      "**구분 불가**. 싼 쪽을 고르세요.")
+            print(f"\n    ★ 백본 축: {best_alt} (+{best_d:.4f})")
+        else:
+            verdict["model"] = base_model
+            print(f"\n    ★ 백본 축: {base_model} 유지 — 아무도 잡음을 못 넘었습니다.")
 
     # ── 채택 조합 ──────────────────────────────────────────────
     # ⚠️ **val AUROC 가 가장 높은 조합을 고르면 안 됩니다.** 그게 바로 우리가
