@@ -56,13 +56,10 @@ def survey() -> dict:
     from src import env
 
     croot = env.work_root() / "crops"
-    if not croot.is_dir():
-        raise SystemExit(f"크롭 폴더가 없습니다: {croot}\n"
-                         "한국 PC 에서 `prepare_local.py --chunk …` 를 먼저 도세요.")
-
     used = {STAGE1_TAG, STAGE2_TAG}
     tags = {}
-    for d in sorted(p for p in croot.iterdir() if p.is_dir()):
+    for d in (sorted(p for p in croot.iterdir() if p.is_dir())
+              if croot.is_dir() else []):
         n, b = scan_tag(d)
         tags[d.name] = {"path": d, "n": n, "bytes": b, "used": d.name in used}
 
@@ -87,6 +84,14 @@ def survey() -> dict:
 
 def report(s: dict) -> None:
     tags = s["tags"]
+    if not tags:
+        print(f"\n크롭 폴더  {s['root']}  — 아직 없습니다 (새 PC 인가요?)")
+        try:
+            du = shutil.disk_usage(s["root"].parent.parent)
+            print(f"  디스크    여유 {human(du.free)} / 전체 {human(du.total)}")
+        except OSError:
+            pass
+        return
     print(f"\n크롭 폴더  {s['root']}\n")
     print(f"  {'태그':<8}{'파일 수':>10}{'용량':>13}   쓰임")
     print("  " + "─" * 52)
@@ -131,15 +136,24 @@ def plan(s: dict, chunk: str) -> None:
 
     tags = s["tags"]
     have = sum(t["n"] for t in tags.values() if t["used"])
-    if have == 0:
-        raise SystemExit("쓰는 태그의 크롭이 없어서 비례 계산을 못 합니다.")
 
-    # 태그 하나당 이미지 한 장의 평균 크기
-    per_img = {n: (t["bytes"] / t["n"] if t["n"] else 0) for n, t in tags.items()}
-    used_per_img = sum(per_img[n] for n in s["used"] if n in per_img)
+    if have:
+        # 태그 하나당 이미지 한 장의 평균 크기 — **지금 폴더를 재서**
+        per_img = {n: (t["bytes"] / t["n"] if t["n"] else 0) for n, t in tags.items()}
+        used_per_img = sum(per_img[n] for n in s["used"] if n in per_img)
+        n_base = max(t["n"] for t in tags.values())
+        measured_here = True
+    else:
+        # 크롭이 아직 없는 PC (새로 클론한 작업용 PC)에서도 계획을 세울 수 있게,
+        # 2026-08-26 에 VL01 에서 **실측한** 값을 기본으로 씁니다.
+        #   47,605장 · f320 1.0GB + m2.5 1.6GB = 2.6GB  →  장당 약 57KB
+        per_img = {STAGE1_TAG: 22 * 1024, STAGE2_TAG: 35 * 1024}
+        used_per_img = sum(per_img.values())
+        n_base = 47_605
+        measured_here = False
+        print("\n  ℹ️ 이 PC 엔 크롭이 없어서 VL01 실측값(장당 57KB)으로 계산합니다.")
 
     ratio = CHUNK_GB[chunk] / CHUNK_GB[BASE_CHUNK]
-    n_base = max(t["n"] for t in tags.values())
     n_new = int(round(n_base * ratio))
 
     zip_b = CHUNK_GB[chunk] * 1024 ** 3
@@ -156,13 +170,15 @@ def plan(s: dict, chunk: str) -> None:
     print(f"  zip                {human(zip_b)}   (크롭 뒤 자동 삭제)")
     print(f"  크롭 {STAGE1_TAG}+{STAGE2_TAG} 만  {human(crop_b)}")
 
-    all_per_img = sum(per_img.values())
-    print(f"  (기본값처럼 {len(tags)}종을 다 만들면 크롭이 "
-          f"{human(int(n_new * all_per_img))})")
+    if measured_here and len(tags) > len(s["used"]):
+        all_per_img = sum(per_img.values())
+        print(f"  (기본값처럼 {len(tags)}종을 다 만들면 크롭이 "
+              f"{human(int(n_new * all_per_img))})")
 
     # ── 단계별 계획: 어디서 얼마가 필요한지 ──
     try:
-        free = shutil.disk_usage(s["root"]).free
+        probe = s["root"] if s["root"].is_dir() else ROOT
+        free = shutil.disk_usage(probe).free
     except OSError:
         print("\n  (디스크 여유를 못 읽어서 계획은 생략합니다)")
         return

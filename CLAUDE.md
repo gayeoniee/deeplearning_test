@@ -187,6 +187,7 @@ deeplearning_test/
 │   │  ── tools/box_error.py — 사람이 그린 네모 vs 정답 bbox (수의사 불필요)
 │   │  ── tools/crops.py    — 크롭 용량 보고 · 안 쓰는 태그 정리 · 새 청크 예상
 │   ├── SERVING.md             ★ 앱 연동 — API 계약 · 서빙 크롭 · 아직 안 된 것
+│   ├── OTHER_PC.md            다른 PC 에서 청크 처리해서 크롭만 가져오기
 │   ├── results/               ★ 실측 기록 — **숫자는 전부 여기**. 추정치 금지
 │   ├── data/DATASET_CARD.md   실물 스키마 (추론이 틀렸던 3곳 포함)
 │   ├── basics/                딥러닝 기초 10편 (ML 경험자 전제, DL 은 처음부터)
