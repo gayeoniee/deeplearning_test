@@ -54,6 +54,8 @@ def train_and_measure(
     n_robust: int = 3000,
     measure_robust: bool = True,
     measure_blur: bool = False,
+    balance: str | None = None,
+    hair_alpha: float = 1.0,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """한 설정으로 학습하고 **점수와 견고성을 함께** 돌려줍니다.
@@ -62,6 +64,12 @@ def train_and_measure(
 
     반환하는 dict 는 `resolution_report()` / `augmentation_report()` 가 그대로 먹습니다.
     모델은 다 쓰고 나면 버립니다 (해상도를 올리면 VRAM 이 빠듯합니다).
+
+    Args:
+        balance: 불균형 대응 전략을 덮어씁니다. 기본은 1단계 `"none"` /
+            2단계 `"class_weight"`. `"hair_weighted"` 를 주면 **털처럼 가는 선이
+            많은 정상 사진**을 더 자주 뽑습니다 (`data.hair_sampler`).
+        hair_alpha: `balance="hair_weighted"` 일 때의 세기. `0` 이면 균등.
     """
     from src import data, evaluate, models, robust, split, stages, train
     from src.config import CLASSES, CLASSES_STAGE1, CFG, with_aug, with_finetune
@@ -71,12 +79,18 @@ def train_and_measure(
         with_finetune(
             CFG(model_name=model_name, img_size=img_size, epochs=epochs,
                 # 1단계는 정상:이상이 5:5 라 가중치가 필요 없습니다.
-                balance_strategy="none" if stage == 1 else "class_weight",
+                balance_strategy=balance or ("none" if stage == 1 else "class_weight"),
+                hair_alpha=hair_alpha,
                 monitor="macro_f1",
                 # ⚠️ 해상도를 이름에 넣습니다 — 안 넣으면 224 체크포인트를 384 학습이
                 #    "이미 끝난 학습" 으로 착각하고 건너뜁니다.
                 #    (증강 프리셋은 with_aug 가 이름 뒤에 자동으로 붙입니다)
-                exp_name=f"stage{stage}_{model_name}_{crop_tag}_{img_size}"),
+                # ⚠️ 샘플러가 다르면 **이름도 달라야** 합니다. 안 그러면
+                #    train.fit 이 기준선 체크포인트를 보고 "이미 끝난 학습" 으로
+                #    착각해 처치를 통째로 건너뜁니다 — 해상도에서 이미 당한 실패입니다.
+                exp_name=f"stage{stage}_{model_name}_{crop_tag}_{img_size}"
+                         + (f"_hair{hair_alpha:g}"
+                            if balance == "hair_weighted" else "")),
             finetune),
         aug)
 
@@ -124,6 +138,9 @@ def train_and_measure(
 
     out: dict[str, Any] = {
         "stage": stage, "img_size": img_size, "crop_tag": crop_tag, "aug": aug,
+        # ★ 샘플러 설정 — 기준선/처치를 표에서 갈라 보려면 이게 있어야 합니다
+        "balance": cfg.balance_strategy,
+        "hair_alpha": hair_alpha if cfg.balance_strategy == "hair_weighted" else 0.0,
         # ★ 어떤 백본이었는지 남깁니다 — 2×2 비교(stage1_report)가 이걸로 표를 만듭니다
         "model_name": model_name,
         "subset_frac": subset_frac, "n_train": len(tr),
