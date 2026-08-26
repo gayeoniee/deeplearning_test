@@ -56,42 +56,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-STATS = ["blur", "bright", "contrast", "sat", "hair", "warm"]
+# ⚠️ 값의 **정의는 `src/texture.py` 한 곳에만** 둡니다. 여기 따로 적으면
+#    학습(`data.hair_sampler`)과 갈라지고, 갈라져도 아무도 모릅니다 —
+#    이 리포가 크롭 창에서 이미 당한 실패입니다.
+from src.texture import STATS, image_stats                      # noqa: E402,F401
 
 # 매니페스트에서 가져오는 값 — 사진을 다시 안 열어도 됩니다.
-#   area     = bbox 면적 ÷ 원본 면적 (`lesion_area_ratio`).
-#              **얼마나 가까이서 찍었나**의 대용입니다. 크면 가까이.
+#   area     = bbox 면적 ÷ 원본 면적 (`area_ratio`). **얼마나 가까이서 찍었나**
 #   megapix  = 원본 화소수. 기기·촬영 설정의 대용
 EXTRA = ["area", "megapix"]
-
-
-def image_stats(path: str) -> dict:
-    """사진 한 장의 값들. torch 없이 numpy + PIL 로만."""
-    import numpy as np
-    from PIL import Image
-
-    try:
-        im = Image.open(path).convert("RGB")
-    except Exception:                                          # noqa: BLE001
-        return {k: float("nan") for k in STATS}
-    a = np.asarray(im, dtype=np.float32) / 255.0
-    g = a @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-
-    # 라플라시안 = 2차 미분. 초점이 나가면 급변이 사라져 분산이 줄어듭니다.
-    lap = (g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:]
-           - 4 * g[1:-1, 1:-1])
-    mx, mn = a.max(axis=2), a.min(axis=2)
-    return {
-        "blur": float(lap.var()),
-        "bright": float(g.mean()),
-        "contrast": float(g.std()),
-        "sat": float(((mx - mn) / (mx + 1e-6)).mean()),
-        # 가로/세로 1픽셀 차분의 크기 — 털처럼 가는 선이 많을수록 커집니다
-        "hair": float(np.abs(np.diff(g, axis=0)).mean()
-                      + np.abs(np.diff(g, axis=1)).mean()),
-        "warm": float((a[:, :, 0] - a[:, :, 2]).mean()),
-    }
-
 
 def cohens_d(x, y) -> float:
     import numpy as np

@@ -166,7 +166,11 @@ class CFG:
     shift_limit: float = 0.0          # 평행이동 비율 (위치 교란 20.6% 대응)
 
     # --- 불균형 대응 ---
-    balance_strategy: str = "class_weight"   # "none" | "class_weight" | "weighted_sampler"
+    balance_strategy: str = "class_weight"
+    # "none" | "class_weight" | "weighted_sampler" | "hair_weighted"
+    #   hair_weighted — 털처럼 가는 선이 많은 **정상** 사진을 더 자주 뽑습니다.
+    #   헛알림 실측(AUROC 0.749)에서 나온 값이고, 클래스 총량은 보존합니다.
+    hair_alpha: float = 1.0   # 0=끔, 1=최상위가 최하위보다 2배 자주
     focal_gamma: float = 0.0                 # >0 이면 focal loss 사용
 
     # --- 평가 / 안전장치 ---

@@ -258,6 +258,84 @@ def weighted_sampler(ds: SkinDataset) -> WeightedRandomSampler:
     return WeightedRandomSampler(torch.as_tensor(w, dtype=torch.double), len(w), replacement=True)
 
 
+def hair_sampler(ds: SkinDataset, alpha: float = 1.0,
+                 target_class: str = "A7", cache: Path | None = None,
+                 verbose: bool = True) -> WeightedRandomSampler:
+    """**털처럼 가는 선이 많은 정상 사진**을 더 자주 뽑습니다.
+
+    왜 — 헛알림 실측 (`docs/results/헛알림_사진통계_실측.md`)
+    -------------------------------------------------------
+    정상인데 "병원 가보세요" 가 나온 사진 1,234장은 **`hair` 가 큽니다**
+    (AUROC 0.749, d 0.80). 그리고 그 값은 견종(0.739)·부위(0.727)·촬영거리
+    (0.747) 어느 것으로도 설명되지 않는 **사진 한 장의 성질**입니다.
+
+    사진 단위 값이라 **샘플러 가중치로 그대로 들어갑니다.** 새 데이터도
+    새 라벨도 필요 없습니다 — 이미 있는 정상 사진 중 **어려운 것**을 더
+    자주 보여줘서 "털 ≠ 병변" 을 배우게 합니다.
+
+    ★ 총량을 안 바꿉니다 — 이게 설계의 핵심입니다
+    ---------------------------------------------
+    가중치를 그냥 올리면 **정상 사진이 전체적으로 더 많이 뽑혀서**
+    클래스 균형이 같이 바뀝니다. 그러면 좋아져도 "털 가중치 덕분" 인지
+    "정상을 더 봐서" 인지 못 가릅니다 — 교란(confound)입니다.
+
+    그래서 **클래스별 총 가중치를 1로 다시 맞춥니다.** 바뀌는 건
+    *정상 안에서 누가 더 뽑히나* 뿐이고, 정상:이상 비율은 그대로입니다.
+
+    Args:
+        alpha: 세기. `0` 이면 균등(= 아무것도 안 함), `1` 이면 `hair` 최상위가
+            최하위보다 **2배** 자주 뽑힙니다. 순위(백분위)를 쓰므로
+            `hair` 의 단위·분포에 안 흔들립니다.
+        target_class: 가중치를 걸 클래스. 기본은 정상(`A7`) — 헛알림이
+            정상 쪽 오류이기 때문입니다. 놓친 병변에서는 `hair` 가
+            신호가 없었습니다 (6개 값 전부 문턱 아래).
+    """
+    import numpy as np
+
+    from src import texture
+
+    w = np.ones(len(ds), dtype=np.float64)
+    if alpha <= 0:
+        if verbose:
+            print("[data] hair_sampler alpha=0 — 균등 샘플링과 같습니다.")
+        return WeightedRandomSampler(torch.as_tensor(w), len(w), replacement=True)
+
+    if target_class not in ds.classes:
+        raise ValueError(f"'{target_class}' 가 클래스에 없습니다: {ds.classes}")
+    tgt = ds.classes.index(target_class)
+    targets = np.asarray(ds.targets)
+    mask = targets == tgt
+    if mask.sum() < 2:
+        raise ValueError(f"'{target_class}' 표본이 {int(mask.sum())}장뿐입니다.")
+
+    paths = [str(pp) for pp in np.asarray(ds.paths)[mask]]
+    hair = texture.hair_index(paths, cache=cache, verbose=verbose)
+
+    # 순위 → 0~1 백분위. 값의 단위·치우침에 안 흔들립니다.
+    order = hair.argsort().argsort().astype(np.float64)
+    pct = order / max(len(order) - 1, 1)
+    w[mask] = 1.0 + alpha * pct
+
+    # ★ 클래스별 총량을 원래대로 — 이걸 빼면 클래스 균형이 같이 바뀝니다
+    for t in np.unique(targets):
+        m = targets == t
+        w[m] *= m.sum() / w[m].sum()
+
+    if verbose:
+        q = np.quantile(hair, [0, .25, .5, .75, 1])
+        print(f"[data] hair 가중 샘플러 alpha={alpha:g} · '{target_class}' "
+              f"{int(mask.sum()):,}장")
+        print(f"[data]   hair 분위 {np.round(q, 4).tolist()}")
+        print(f"[data]   뽑힐 확률 최저 {w[mask].min():.3f} ~ 최고 "
+              f"{w[mask].max():.3f} (평균 {w[mask].mean():.3f})")
+        for t in np.unique(targets):
+            m = targets == t
+            print(f"[data]   {ds.classes[t]:<10} 총 가중치 {w[m].sum():>9,.1f} "
+                  f"(장수 {int(m.sum()):,}) ← 총량 보존")
+    return WeightedRandomSampler(torch.as_tensor(w, dtype=torch.double),
+                                 len(w), replacement=True)
+
+
 # ──────────────────────────────────────────────────────────────
 # Loader
 # ──────────────────────────────────────────────────────────────
@@ -279,7 +357,17 @@ def build_loaders(
                         draft_size=int(cfg.img_size * 1.14))
 
     bs = cfg.resolved_batch_size()
-    sampler = weighted_sampler(ds_tr) if cfg.balance_strategy == "weighted_sampler" else None
+    if cfg.balance_strategy == "weighted_sampler":
+        sampler = weighted_sampler(ds_tr)
+    elif cfg.balance_strategy == "hair_weighted":
+        from src import env as _env
+
+        sampler = hair_sampler(
+            ds_tr, alpha=getattr(cfg, "hair_alpha", 1.0),
+            # 캐시를 두면 실험을 여러 번 돌려도 hair 를 한 번만 잽니다
+            cache=_env.work_root() / "reports" / "hair_index.parquet")
+    else:
+        sampler = None
 
     common = dict(
         num_workers=cfg.resolved_num_workers(),
