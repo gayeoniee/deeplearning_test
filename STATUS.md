@@ -471,33 +471,60 @@ holdout 합산 / A6 에도 부트스트랩 CI 병기. 지금 A6 만 보고 설�
 
 ---
 
-## ▶ 지금 돌리면 되는 것 (준비 완료 2026-08-26)
+## ▶ 다음에 할 것 — TL02 붙여서 한 번에 (2026-08-26 밤 기준)
 
-캐글 할당량은 이번 주 소진(일요일 리셋). 런팟 RTX 4090 $0.75/hr 로 돌리는 경우
-**총 $3 안팎**입니다. 절차는 [`docs/RUNPOD.md`](RUNPOD.md).
+USB(250GB · exFAT/NTFS) 오면 시작합니다.
 
-| 순서 | 노트북 | 붙일 것 | 대략 | 무엇 |
-|---|---|---|---|---|
-| ~~①~~ | ~~`03g_털가중_샘플러`~~ | | ✅ 끝 | ❌ 채택 없음 (4090 에서 31분) |
-| ~~②~~ | ~~`03f` 판 B~~ | | ✅ 끝 | ❌ 축 닫힘 (4090 에서 53분) |
-| ③ | `06_확정재학습_홀드아웃` | `f320` + `m25` | ~1.5h | 풀 학습 + **holdout** + 보정 + 릴리스 |
-
-⚠️ **③ 은 반드시 마지막.** holdout 을 여는 유일한 노트북이라 설정이 확정된
-뒤에 한 번만 엽니다. ①의 결과를 06 의 `STAGE1_HAIR_ALPHA` 에 적고 돌리세요
-(안 돌렸으면 **0 으로 두세요** — 안 재본 걸 켜면 원인을 못 가립니다).
-
-**팟 켜자마자 가장 먼저**:
+### 1. 전처리 — 한국 PC, USB 를 **원본 전용**으로
 
 ```
-uv run --extra train python tools/preflight.py
+set DOG_SKIN_DATA=E:\daengs_raw
+uv run python prepare_local.py --chunk TL02 --margins 2.5,-320
+uv run python prepare_local.py --finalize
+uv run python prepare_local.py --package --tags f320,m2.5 --out dogskin_all.zip
 ```
 
-GPU·데이터·분할·영속저장소·디스크·코드배선을 몇 초에 봅니다. `❌` 가 있으면
-학습을 시작하지 마세요 — 두 시간짜리가 5분 뒤에 죽는 것보다 10초가 쌉니다.
+* `--margins 2.5,-320` **만** — `m1.5`·`full` 은 결론이 나서 안 씁니다 (크롭 절반)
+* ⚠️ `DOG_SKIN_WORK` 은 **건드리지 마세요.** 기존 작업 폴더에 쌓여야
+  `--finalize` 가 `chunk_VL01.parquet` 을 찾습니다
+* ⚠️ USB 여유 **250GB** — 받는 도중 최대치 (aihubshell 소스 실측)
 
-**끄기 전에**: 런팟은 출력이 자동 보존되지 **않습니다.** `release/` 와
-`reports/*.json` 을 빼내고, **팟 → 볼륨 순으로** 지우세요 (볼륨은 팟을 지워도
-계속 과금됩니다).
+### 2. ⚠️ `--finalize` 가 **전체를 다시 분할합니다**
+
+`animal_id` 는 안정적이지만 그룹이 `dup_cluster`(phash)와 합집합이라,
+새 사진이 두 클러스터를 이으면 그 그룹의 배정이 바뀝니다.
+→ **holdout 이 일부 달라지고, 지금까지 숫자와 직접 비교가 안 됩니다.**
+나쁜 게 아니라 **"TL02 를 넣은 새 기준선"** 이 되는 것입니다.
+
+자동으로 걸리는 것 (신경 안 써도 됨):
+`split.verify()` 가 누수를 발견하면 에러 · 크롭 커버리지 95% 미만이면 에러.
+
+### 3. 학습 — `06` 하나면 끝
+
+크롭 올리고 `06` 만 돌리면 1·2단계 + holdout + 보정 + 릴리스가 한 번에.
+백본은 **1단계 `effnetv2_s` / 2단계 `convnextv2_base`** (아래 실측으로 확정).
+
+| 셀 | 확인할 것 |
+|---|---|
+| 6 | `STAGE2_MODEL = "convnextv2_base"` |
+| 20 | 예상 시간 — 너무 길면 여기서 판단 |
+| 22 | `STAGE1_HAIR_ALPHA = 0.0` (03g 채택 없음) |
+
+⚠️ 06 전에 `checkpoints/stage1_*` 를 치우세요 — 서브셋 실험과 **이름이 같아서**
+그걸 "이미 끝난 학습" 으로 이어받습니다.
+
+### 4. 임대 GPU 로 돌린다면
+
+[`docs/RUNPOD.md`](RUNPOD.md). 오늘 겪은 것들:
+
+| 증상 | 원인 |
+|---|---|
+| 첫 셀에서 `FileNotFoundError` | `/workspace` 가 검색 경로에 없었음 → 고침 |
+| `externally managed` | PEP 668 → `--break-system-packages` |
+| `No module named 'pandas'` | 임대 이미지엔 **torch 만** 있음 → 없는 것만 깔게 고침 |
+| `notebooks/deeplearning_test` 중첩 clone | 리포 루트를 폴더 이름으로만 판정 → 고침 |
+| 캐글 CLI 인증 실패 | 토큰 형식이 바뀜 (37자). **`runpodctl` 로 직접 전송이 확실** |
+| Stop 뒤 팟 못 켬 | GPU 재고. 볼륨은 남으니 **다른 GPU/지역 선택** |
 
 ## 다음 할 일
 
