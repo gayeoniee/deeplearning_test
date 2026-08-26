@@ -105,76 +105,80 @@ os.environ["DOG_SKIN_PERSIST"] = "/workspace/data/work"
 
 2.6GB 를 가정 회선으로 올리는 것보다 데이터센터에서 받는 게 훨씬 빠릅니다.
 
-### ⚠️ 먼저 읽으세요 — 캐글 CLI 는 **믿지 마세요** (2026-08-26 실측)
+### 3-a. 토큰 받기 (내 PC 에서, 한 번만)
 
-런팟에서 캐글 다운로드를 시도하다 **30분 넘게 태웠고 결국 실패했습니다.**
-원인은 **캐글이 API 토큰 형식을 바꿨기 때문**입니다:
+1. <https://www.kaggle.com/settings> 접속 (우측 상단 프로필 → **Settings**)
+2. **API** 항목 → **[Create New Token]**
+3. `kaggle.json` 이 다운로드됩니다. 열어보면 이렇게 생겼습니다:
 
-| | 옛 방식 | 새 방식 |
-|---|---|---|
-| 받는 법 | `kaggle.json` **파일 다운로드** | 파일 안 줌 (화면에 값만) |
-| 키 모양 | 소문자+숫자 **32자** hex | **대문자 4자 + `_` + 소문자·숫자 = 37자** |
-| CLI 인식 | `auth_method: LEGACY_API_KEY` | ❓ **확인 못 했습니다** |
-
-새 방식 키를 이 CLI 에 어떻게 물리는지 **우리가 확인하지 못했습니다.**
-`kaggle config view` 가 `/root/.config/kaggle` 을 본다고 말해도, 거기에
-파일을 만들어도 `Authentication required` 가 계속 났습니다.
-
-> **큰 파일은 `runpodctl` 로 옮기세요.** 아래 3-b 가 그 방법입니다.
-> 캐글 CLI 는 토큰이 옛 방식(32자 hex)일 때만 시도할 가치가 있습니다.
-
-### 3-a. (옛 방식 토큰이 있을 때만) 캐글에서 받기
-
-<details><summary>32자 hex 토큰을 갖고 있다면 펼치세요</summary>
-
-1. <https://www.kaggle.com/settings> → **API** → **[Create New Token]**
-2. `kaggle.json` 이 다운로드되면 **옛 방식**입니다 (안 받아지면 새 방식 — 위 참고)
-3. 팟에서:
-
-```bash
-mkdir -p /root/.config/kaggle
-printf '{"username":"%s","key":"%s"}\n' 'USER' 'KEY' > /root/.config/kaggle/kaggle.json
-chmod 600 /root/.config/kaggle/kaggle.json
-kaggle datasets list --mine          # 목록이 나오면 성공
+```json
+{"username":"내캐글아이디","key":"0123456789abcdef0123456789abcdef"}
 ```
 
-⚠️ 환경변수(`KAGGLE_USERNAME`/`KAGGLE_KEY`)보다 **파일이 우선**입니다.
-낡은 파일이 남아 있으면 환경변수를 무시합니다 — 먼저 지우세요.
-⚠️ 토큰을 새로 만들면 **옛 토큰은 그 자리에서 무효**가 됩니다.
+⚠️ **계정 이름은 이 파일의 `username`** 입니다. 깃허브 아이디와 다를 수 있어요.
+⚠️ 이전에 만든 토큰이 있으면 새로 만드는 순간 **옛 토큰이 무효**가 됩니다.
 
+### 3-b. 팟에 넣기 — 환경변수가 제일 쉽습니다
+
+`nano` 로 JSON 을 붙여넣다 따옴표가 깨지는 일이 흔해서, **파일 없이** 갑니다:
+
+```bash
+export KAGGLE_USERNAME=내캐글아이디
+export KAGGLE_KEY=0123456789abcdef0123456789abcdef
+```
+
+캐글 CLI 가 이 두 변수를 그대로 읽습니다. `chmod` 도, 파일도 필요 없습니다.
+
+<details><summary>파일로 넣고 싶다면</summary>
+
+```bash
+mkdir -p ~/.kaggle
+cat > ~/.kaggle/kaggle.json <<'JSON'
+{"username":"내캐글아이디","key":"0123456789abcdef0123456789abcdef"}
+JSON
+chmod 600 ~/.kaggle/kaggle.json
+```
+
+`<<'JSON'` 의 **따옴표가 중요합니다** — 없으면 셸이 내용을 건드립니다.
 </details>
 
-### 3-b. ★ 권장 — PC 에서 직접 보내기 (`runpodctl`)
+⚠️ 토큰을 **노트북 셀에 붙여넣지 마세요.** 셀은 출력과 함께 저장돼서 그대로
+남습니다. `.gitignore` 가 `*apikey*` / `.env` 를 막고 있지만, 애초에 리포
+안에 두지 않는 게 확실합니다.
 
-브라우저(JupyterLab Upload)는 런팟 프록시를 거쳐서 **느립니다.**
-`runpodctl` 은 직접 전송이라 훨씬 빠르고, 인증 싸움이 없습니다.
-
-**① PC 에서 zip 만들기** — 크롭은 4만 개 넘는 낱개 파일이라 그대로는 못 올립니다:
-
-```
-cd C:\Users\403\deeplearning_test
-uv run python prepare_local.py --package --tags f320 --out dogskin_f320.zip
-```
-
-`--tags f320` 이면 1GB, `--tags f320,m2.5` 면 2.6GB 입니다.
-`03g` 는 f320 만, `06` 은 둘 다 필요합니다.
-
-**② PC 에서 보내기** — <https://github.com/runpod/runpodctl/releases> 에서
-`runpodctl-windows-amd64.exe` 를 받아 zip 폴더에 두고:
-
-```
-runpodctl-windows-amd64.exe send dogskin_f320.zip
-```
-
-일회용 코드(`8338-galileo-...` 모양)가 뜹니다.
-
-**③ 팟에서 받기**:
+### 3-c. 데이터셋 이름 확인 — **추측하지 말고 물어보세요**
 
 ```bash
-cd /workspace/data/work
-runpodctl receive 그코드
-unzip -q dogskin_f320.zip && ls crops manifests
+kaggle datasets list --mine
 ```
+
+내가 올린 데이터셋이 `ref` 열에 `아이디/이름` 형태로 그대로 나옵니다.
+거기 나온 값을 그대로 복사해서 씁니다:
+
+```bash
+cd "$DOG_SKIN_WORK"
+kaggle datasets download -d 아이디/dogskin-f320 --unzip
+# 06 까지 갈 거면 2단계 크롭도:
+kaggle datasets download -d 아이디/dogskin-m25 --unzip
+```
+
+받고 나서 확인:
+
+```bash
+ls "$DOG_SKIN_WORK/crops"        # f320 (m2.5) 가 보여야 합니다
+ls "$DOG_SKIN_WORK/manifests"    # manifest_final.parquet
+```
+
+받고 나면 이런 모양이어야 합니다:
+
+```
+/workspace/data/work/crops/f320/...
+/workspace/data/work/manifests/manifest_final.parquet
+```
+
+⚠️ **`kaggle.json` 은 절대 커밋하지 마세요.** `.gitignore` 가 막고 있지만
+리포 바깥(`~/.kaggle/`)에 두는 게 확실합니다.
+⚠️ AI Hub 데이터는 **재배포 금지**입니다. 볼륨을 공개로 두지 마세요.
 
 ## 4. ★ preflight — 학습 전에 반드시
 
