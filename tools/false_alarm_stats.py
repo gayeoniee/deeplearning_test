@@ -29,8 +29,17 @@ STEP 11 에서 오류가 A2(비듬·각질)에 몰린다는 건 알아냈는데 
 읽는 법
 -------
 같은 정상 사진인데 **틀린 쪽과 맞은 쪽의 값이 다른가** 를 봅니다.
-* `d` = 표준화된 차이(Cohen's d). |d| < 0.2 는 사실상 차이 없음
-* `AUROC` = 그 값 **하나만** 보고 오류를 맞힐 수 있나. 0.5 = 못 맞힘
+
+* `Δ` = 두 평균의 차이 (그 값의 원래 단위)
+* `d`  = 퍼짐으로 나눈 차이(Cohen's d). |d| < 0.2 는 사실상 차이 없음
+* `AUROC` = 그 값 **하나만** 보고 오류 난 사진을 골라낼 수 있나.
+  0.5 = 못 함. **0.5 미만이면 방향이 반대**라는 뜻이고 세기는 |AUROC − 0.5| 입니다
+
+⚠️ **`d` 하나만 보면 속습니다.** 퍼짐이 아주 작으면 실제 차이가 없다시피 해도
+   `d` 가 커집니다 (검증 때 `bright` 가 0.5001 vs 0.4981 인데 d=0.69 였습니다).
+   그래서 판정은 **d 와 AUROC 를 둘 다** 넘어야 합니다:
+
+       |d| ≥ 0.5  **그리고**  |AUROC − 0.5| ≥ 0.15   →  차이 있음
 
 둘 다 작으면 "그 사진들엔 공통점이 없다" 가 결론이고, 그것도 결과입니다 —
 촬영 가이드로 못 잡는다는 뜻이니까요.
@@ -112,6 +121,25 @@ def auroc(pos, neg) -> float:
                  / (len(pos) * len(neg)))
 
 
+# 판정 문턱 — **결과를 보기 전에** 못 박습니다 (CLAUDE.md 규칙 2).
+# d 하나로는 안 됩니다: 퍼짐이 작으면 실제 차이가 없어도 d 가 커집니다.
+D_STRONG, A_STRONG = 0.5, 0.15         # 둘 **다** 넘어야 "차이 있음"
+D_WEAK, A_WEAK = 0.2, 0.06
+
+
+def verdict(d: float, a: float) -> str:
+    import math
+
+    if math.isnan(d) or math.isnan(a):
+        return "못 잼"
+    da = abs(a - 0.5)
+    if abs(d) >= D_STRONG and da >= A_STRONG:
+        return "**차이 있음**"
+    if abs(d) >= D_WEAK and da >= A_WEAK:
+        return "조금"
+    return "차이 없음"
+
+
 def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,
             n_good_label: str) -> None:
     print(f"\n  ── {title} ──")
@@ -119,16 +147,14 @@ def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,
     print(f"     {n_bad_label} {nb:,}장  vs  {n_good_label} {ng:,}장")
     if nb < 30 or ng < 30:
         print("     ⚠️ 표본이 30장 미만이라 아래 숫자는 못 믿습니다.")
-    print(f"\n     {'값':<10}{'틀린 쪽':>10}{'맞은 쪽':>10}{'d':>8}{'AUROC':>8}   판정")
-    print("     " + "─" * 60)
+    print(f"\n     {'값':<10}{'틀린 쪽':>10}{'맞은 쪽':>10}{'Δ':>10}"
+          f"{'d':>7}{'AUROC':>8}   판정")
+    print("     " + "─" * 70)
     for k in STATS:
         b, g = df.loc[mask_bad, k], df.loc[mask_good, k]
-        d, a = cohens_d(b, g), auroc(b, g)
-        # 판정 문턱은 결과를 보기 전에 못 박습니다 (CLAUDE.md 규칙 2)
-        verdict = ("**차이 있음**" if abs(d) >= 0.5 else
-                   "조금" if abs(d) >= 0.2 else "차이 없음")
+        d, ar = cohens_d(b, g), auroc(b, g)
         print(f"     {k:<10}{b.mean():>10.4f}{g.mean():>10.4f}"
-              f"{d:>8.2f}{a:>8.3f}   {verdict}")
+              f"{b.mean() - g.mean():>10.4f}{d:>7.2f}{ar:>8.3f}   {verdict(d, ar)}")
 
 
 def main(argv=None) -> None:
@@ -150,7 +176,9 @@ def main(argv=None) -> None:
         raise SystemExit(f"매니페스트가 없습니다: {mf}")
 
     df = pd.read_parquet(mf)
-    df = df[df.get("is_holdout", False)].reset_index(drop=True)
+    if "is_holdout" not in df.columns:
+        raise SystemExit("매니페스트에 is_holdout 이 없습니다 — --finalize 를 돌렸나요?")
+    df = df[df["is_holdout"].astype(bool)].reset_index(drop=True)
     if df.empty:
         raise SystemExit("holdout 행이 없습니다. --finalize 를 돌렸나요?")
     df = stages.to_stage1(df)
@@ -204,10 +232,14 @@ def main(argv=None) -> None:
     compare(df, fn, tp, "놓침 — 병변인데 괜찮다고 한 사진", "놓침", "잡음")
 
     print("\n  ── 어떻게 읽나 ──")
-    print("  |d| ≥ 0.5 인 값이 있으면 → **촬영 가이드로 잡을 수 있는 문제**입니다.")
+    print(f"  판정 문턱: |d| ≥ {D_STRONG} **그리고** |AUROC − 0.5| ≥ {A_STRONG}")
+    print("  (d 만 보면 속습니다 — 퍼짐이 작으면 차이가 없어도 d 가 커집니다)")
+    print("\n  '차이 있음' 이 하나라도 있으면 → **촬영 가이드로 잡을 수 있는 문제**입니다.")
     print("     그 값을 촬영 단계에서 걸러내면 헛알림이 줄어듭니다.")
-    print("  전부 |d| < 0.2 면 → 사진 조건 문제가 **아닙니다.** 모델이나 라벨 쪽이고,")
+    print("  전부 '차이 없음' 이면 → 사진 조건 문제가 **아닙니다.** 모델이나 라벨 쪽이고,")
     print("     촬영 가이드를 아무리 손봐도 안 줄어듭니다. 이것도 결론입니다.")
+    print("  AUROC < 0.5 는 틀림이 아니라 **방향이 반대**라는 뜻입니다 "
+          "(예: 헛알림 쪽이 더 흐림).")
     print(f"\n  결과를 {a.out} 에 적어주세요 (규칙 1 — 실측만).")
 
 
