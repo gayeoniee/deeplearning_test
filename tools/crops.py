@@ -160,11 +160,17 @@ def plan(s: dict, chunk: str) -> None:
 
     zip_b = CHUNK_GB[chunk] * 1024 ** 3
     crop_b = int(n_new * used_per_img)
-    # ⚠️ aihubshell 은 **조각으로 받아 병합**합니다. 병합하는 순간 조각과 합친
-    #    파일이 같이 있을 수 있어서, 이 리포가 직접 경고하는 값이 zip 의 2배입니다
-    #    (src/aihub.py: "압축 해제까지 순간 최대 약 {need*2}GB 필요").
-    #    실제로 얼마인지는 안 재봤습니다 — 그래서 두 값을 다 보여줍니다.
-    dl_peak_b = zip_b * 2
+    # ⚠️ 전에 여기서 "보수 = zip × 2" 를 필요량으로 내걸었는데 **틀렸습니다.**
+    #    그 2배는 src/aihub.py:498 의 경고인데, 그 경고는 "zip 을 받은 뒤
+    #    **압축을 풀므로**" 라는 이유로 붙은 것입니다. 우리 파이프라인은
+    #    `prepare_local.py --mode zip` (기본값) 으로 **압축을 안 풉니다** —
+    #    zip 안에서 바로 읽습니다. 그래서 그 절반은 우리에게 해당이 없습니다.
+    #
+    #    남는 진짜 미지수는 하나뿐입니다: aihubshell 이 조각을 **병합할 때**
+    #    조각과 합친 파일이 잠깐 같이 있는가. 이건 **안 재봤습니다.**
+    #    추정치를 필요량에 못 박지 않고(규칙 1), 아래에 미지수로 따로 적습니다.
+    #    settle 하는 법: PC 의 aihubshell 스크립트를 직접 읽으면 됩니다
+    #    → uv run python tools/crops.py --shell-peek
 
     print(f"\n{chunk} 을(를) 받으면  ({BASE_CHUNK} {CHUNK_GB[BASE_CHUNK]}GB · "
           f"{n_base:,}장 을 기준으로 비례)\n")
@@ -202,24 +208,27 @@ def plan(s: dict, chunk: str) -> None:
         run += r["zip_b"]
         steps.append(("③ 원본 zip 도 삭제", run, f"+{human(r['zip_b'])}"))
 
-    safe = dl_peak_b + crop_b            # 리포가 경고하는 보수적 값
     fits = False
     for label, avail, note in steps:
-        okmark = avail >= safe
+        okmark = avail >= need
         fits = fits or okmark
-        m = "✅" if okmark else ("◐" if avail >= need else "❌")
+        m = "✅" if okmark else "❌"
         print(f"  {m} {label:<28} 여유 {human(avail):>10}   {note}")
 
-    print(f"\n     필요 — 낙관 {human(need):>10}   (zip {human(zip_b)} + 크롭 {human(crop_b)})")
-    print(f"     필요 — 보수 {human(safe):>10}   (다운로드 병합 중 2배 · src/aihub.py 경고)")
-    print("     ⚠️ 실제 최대치는 **안 재봤습니다.** aihubshell 이 조각을 병합할 때")
-    print("        조각과 합친 파일이 같이 있으면 보수 쪽에 가깝습니다.")
-    print("        ◐ 는 낙관값은 넘지만 보수값은 못 넘는 구간입니다 — 도박입니다.")
+    print(f"\n     필요 {human(need):>10}   (zip {human(zip_b)} + 크롭 {human(crop_b)})")
+    print("       └ 압축은 **안 풉니다** (--mode zip 이 기본). 해제본 몫은 안 듭니다.")
+    print(f"     여유 {human(run - need) if run >= need else '−' + human(need - run):>10}"
+          f"   ← 여기서 aihubshell 병합 여유가 나와야 합니다")
+    print("     ⚠️ 병합 여유는 **안 재봤습니다.** aihubshell 이 조각을 합칠 때")
+    print("        조각을 지우며 합치는지 아닌지가 관건입니다.")
+    print("        → uv run python tools/crops.py --shell-peek   (스크립트를 직접 읽습니다)")
+    if crop_b > 2 * 1024 ** 3:
+        print(f"\n     💡 크롭 {human(crop_b)} 은 줄일 수 있습니다 — 필요한 라벨만:")
+        print(f"        prepare_local.py --chunk {chunk} --margins 2.5,-320 --only A5,A6")
+        print("        (다운로드는 안 줄어듭니다. zip 은 통짜로만 줍니다)")
 
     if not fits:
-        print(f"\n  ❌ 다 치워도 보수값({human(safe)})에는 {human(safe - run)} 모자랍니다.")
-        if run >= need:
-            print(f"     낙관값({human(need)})은 넘지만, 실패하면 몇 시간을 날립니다.")
+        print(f"\n  ❌ 다 치워도 {human(need - run)} 모자랍니다.")
         print("\n  ── 그래도 하려면 ──")
         print("  1) 다른 드라이브가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
         print(f"       set DOG_SKIN_DATA=D:\\daengs_raw")
@@ -234,7 +243,7 @@ def plan(s: dict, chunk: str) -> None:
         print("  uv run python tools/crops.py --prune")
     if r["other_b"]:
         print("  uv run python tools/crops.py --prune-raw   ← zip 은 남깁니다")
-    if run - r["zip_b"] < safe <= run:
+    if run - r["zip_b"] < need <= run:
         # zip 까지 지워야 되는 경우엔 그 명령도 적어줍니다 (빠져 있었습니다)
         print(f"  del {r['path']}\\*.zip"
               f"        ⚠️ 되돌리려면 {BASE_CHUNK} 재다운로드 ({CHUNK_GB[BASE_CHUNK]}GB)")
@@ -412,14 +421,74 @@ def prune_raw(s: dict, yes: bool = False) -> None:
     print(f"\n{human(total)} 확보했습니다. zip {len(zips)}개는 그대로 있습니다.")
 
 
+# 병합 여유를 **재는 대신 읽습니다.** aihubshell 은 셸 스크립트라 소스가 그대로 있습니다.
+MERGE_HINTS = [
+    ("조각 삭제", r"\brm\b[^\n|]*part|\brm\b[^\n|]*\.[0-9]{2,}\b|unlink"),
+    ("이어붙이기", r"\bcat\b[^\n]*>>|\bcat\b[^\n]*\*"),
+    ("분할 다운로드", r"part|split|chunk|[0-9]{3}\b"),
+    ("압축 해제", r"\bunzip\b|\btar\b\s+-?x"),
+    ("임시 파일", r"download_[0-9]|\.tmp\b|mktemp"),
+]
+
+
+def shell_peek() -> None:
+    """`aihubshell` 을 읽어 **조각을 지우며 합치는지** 확인합니다.
+
+    왜 이게 필요한가 — `--plan` 의 마지막 미지수가 "병합할 때 조각과 합친 파일이
+    잠깐 같이 있는가" 입니다. 80GB 짜리를 도박으로 받아보며 재는 것보다,
+    **스크립트를 읽는 게 공짜이고 확실합니다.**
+    """
+    import re
+
+    from src import aihub
+
+    p = aihub.shell_path()
+    if not p.exists():
+        print(f"\naihubshell 이 없습니다: {p}")
+        print("  먼저 받으세요:  uv run python -c \"from src import aihub; aihub.install()\"")
+        print("  ⚠️ AI Hub 는 해외 IP 를 막습니다 — **한국 PC 에서** 돌리세요.")
+        return
+
+    try:
+        src = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(f"\n못 읽었습니다: {exc}")
+        return
+
+    print(f"\naihubshell  {p}  ({p.stat().st_size:,} bytes, {src.count(chr(10)):,}줄)\n")
+    lines = src.split("\n")
+    for name, pat in MERGE_HINTS:
+        rx = re.compile(pat, re.I)
+        hits = [(i + 1, ln.strip()) for i, ln in enumerate(lines) if rx.search(ln)]
+        print(f"  {name:<10} {len(hits):>3}줄")
+        for i, ln in hits[:6]:
+            print(f"       {i:>5}: {ln[:96]}")
+        if len(hits) > 6:
+            print(f"       … {len(hits) - 6}줄 더")
+        print()
+
+    print("  ── 읽는 법 ──")
+    print("  '이어붙이기' 가 `cat part* > 합친파일` 이면 → 병합 중 **2배** 씁니다.")
+    print("  그 뒤에 '조각 삭제' 가 붙어도, 지우는 건 합친 **다음**이라 소용없습니다.")
+    print("  반대로 조각 하나씩 `cat p >> 합친파일 && rm p` 면 → 여유는 **조각 하나**면 됩니다.")
+    print("  둘 중 어느 쪽인지 위 줄 번호로 확인하고, 결과를 docs/results/ 에 적어주세요.")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--plan", metavar="청크", help="새 청크를 받으면 얼마나 드나 (예: TL01)")
     ap.add_argument("--prune", action="store_true", help="안 쓰는 크롭 태그 삭제")
     ap.add_argument("--prune-raw", action="store_true",
                     dest="prune_raw", help="원본에서 zip·기록만 남기고 삭제")
+    ap.add_argument("--shell-peek", action="store_true", dest="shell_peek",
+                    help="aihubshell 을 읽어 병합 시 조각을 지우며 합치는지 확인")
     ap.add_argument("--yes", action="store_true", help="확인 입력 건너뛰기")
     a = ap.parse_args(argv)
+
+    if a.shell_peek:
+        shell_peek()
+        if not (a.plan or a.prune or a.prune_raw):
+            return
 
     s = survey()
     report(s)
@@ -431,8 +500,9 @@ def main(argv=None):
         prune_raw(s, a.yes)
     if a.prune:
         prune(survey() if a.prune_raw else s, a.yes)
-    if not (a.plan or a.prune or a.prune_raw):
+    if not (a.plan or a.prune or a.prune_raw or a.shell_peek):
         print("\n  --plan TL01   새 청크 용량 예상")
+        print("  --shell-peek  aihubshell 이 병합할 때 2배를 쓰는지 확인")
         print("  --prune       안 쓰는 크롭 태그 삭제 (확인 입력 필요)")
         print("  --prune-raw   원본에서 zip 만 남기고 정리 (확인 입력 필요)")
 

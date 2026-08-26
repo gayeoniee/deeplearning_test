@@ -80,11 +80,17 @@ def _die(msg: str) -> None:
 
 # ──────────────────────────────────────────────────────────────
 def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa: C901
-               mode: str = "zip") -> None:
+               mode: str = "zip", only: list[str] | None = None) -> None:
     """청크 하나: 다운로드 → 매니페스트 → 크롭 → 원본 삭제.
 
     mode="zip"     : zip 을 **풀지 않고** 안에서 바로 읽습니다. 디스크를 가장 적게 씁니다.
     mode="extract" : 반려묘·더모스코프를 뺀 선택 해제 후 처리 (디스크 여유가 있을 때)
+    only=["A5","A6"] : 그 라벨만 크롭합니다. **매니페스트는 전부 만듭니다** —
+                       나중에 마음이 바뀌면 `--recrop` 으로 zip 없이는 못 되살리니
+                       무엇이 있었는지는 기록에 남겨둡니다.
+
+    ⚠️ `--only` 는 **다운로드를 줄이지 못합니다.** AI Hub 가 zip 6개 통짜로만 주기 때문에
+       (`--list` 로 실측) 80GB 는 그대로 받아야 하고, 줄어드는 건 크롭 용량뿐입니다.
     """
     from src import aihub, crop, env, labels, scan
     from src.config import CFG
@@ -153,7 +159,20 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
         df = labels.build(root=raw, report=rep, save=False)
 
     # 3) 크롭
+    #    --only 는 **크롭할 행만** 줄입니다. 매니페스트(df)는 통째로 저장해서
+    #    "그때 뭐가 있었는지" 는 남깁니다 — 나중에 클래스 구성을 다시 재려면 필요합니다.
     print("\n[크롭]")
+    df_all = df
+    if only:
+        keep = df["label"].astype(str).isin(only)
+        print(f"  --only {','.join(only)} → {len(df):,}행 중 {int(keep.sum()):,}행만 크롭")
+        for lab, n in df["label"].value_counts().items():
+            mark = "크롭" if str(lab) in only else "  ·  "
+            print(f"     {mark}  {lab:<6}{n:>9,}장")
+        if not keep.any():
+            _die(f"--only {','.join(only)} 에 해당하는 행이 없습니다. "
+                 f"있는 라벨: {', '.join(map(str, df['label'].unique()))}")
+        df = df[keep].reset_index(drop=True)
     first = True
     for m in margins:
         # 음수는 "고정 픽셀 창" 을 뜻합니다: -320 → f320
@@ -166,6 +185,16 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
         if first:
             df = d          # 첫 항목 결과를 대표 매니페스트로 저장
             first = False
+    if only:
+        # 크롭한 행의 crop_path 를 전체 매니페스트에 되붙입니다.
+        # (크롭 안 한 행은 crop_path 가 비어 있고, 학습 때 걸러집니다)
+        import pandas as pd
+        df = df_all.merge(
+            df[[c for c in df.columns if c == "image_path" or c.startswith("crop_path")]],
+            on="image_path", how="left", suffixes=("", "_new"))
+        for c in [c for c in df.columns if c.endswith("_new")]:
+            df[c[:-4]] = df[c]
+            df = df.drop(columns=[c])
     labels.save(df, f"chunk_{name}.parquet")
 
     # 4) 원본 삭제 — 다음 청크를 위해 공간 확보
@@ -499,6 +528,9 @@ def main() -> None:
                         "매니페스트를 다시 만들지 않으므로 holdout 이 오염되지 않습니다")
     p.add_argument("--raw", metavar="폴더", default=None,
                    help="--recrop 전용. 재다운로드한 zip 이 예전과 다른 폴더면 그 위치")
+    p.add_argument("--only", metavar="라벨",
+                   help="★ 그 라벨만 크롭 (콤마 구분, 예: A5,A6). 매니페스트는 전부 만듭니다. "
+                        "다운로드는 안 줄어듭니다 — AI Hub 가 zip 통짜로만 줍니다")
     p.add_argument("--keep-raw", action="store_true", help="원본을 지우지 않음")
     p.add_argument("--mode", choices=["zip", "extract"], default="zip",
                    help="zip: 압축을 풀지 않고 바로 읽음 (디스크 최소, 기본값) / "
@@ -526,6 +558,7 @@ def main() -> None:
     env.describe()
     env.set_seed(42)
     margins = [float(x) for x in a.margins.split(",")]
+    only = [x.strip() for x in a.only.split(",") if x.strip()] if a.only else None
 
     if a.all:
         step_chunk("VL01", margins, a.keep_raw, a.mode)
@@ -537,7 +570,7 @@ def main() -> None:
         if a.scan:
             step_scan()
         if a.chunk:
-            step_chunk(a.chunk, margins, a.keep_raw, a.mode)
+            step_chunk(a.chunk, margins, a.keep_raw, a.mode, only)
         if a.recrop:
             # ⚠️ --recrop 과 --finalize 를 같이 쓰면 분할이 다시 계산돼
             #    기존 크롭·기존 측정값과의 짝이 깨집니다. 애초에 못 쓰게 막습니다.
