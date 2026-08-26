@@ -32,6 +32,14 @@ from src.agent import STAGE1_TAG, STAGE2_TAG                     # noqa: E402
 
 # 다 만들어진 청크 크기 (aihub.KNOWN_FILES_561 과 같은 값)
 CHUNK_GB = {"VL01": 21, "VS01": 21, "TL01": 90, "TL02": 80, "TS01": 90, "TS02": 80}
+
+# 다운로드 중 한순간 동시에 살아 있는 배수. **추정이 아니라 aihubshell 소스를
+# 읽은 값입니다** (2026-08-26, `--shell-peek`). docs/results/AIHUBSHELL_피크_실측.md
+#   ① curl -o download.tar                     1배
+#   ② tar -xvf download.tar (뒤에 rm 없음)      + 풀린 내용   = 2배
+#   ③ find|xargs cat > 합친파일 (조각 삭제는 그 뒤)  + 합친 것 = 3배
+# 조각(.part*)으로 안 쪼개진 청크면 ②에서 끝나 2배입니다 — 받아보기 전엔 모릅니다.
+DL_PEAK = (2.0, 3.0)
 BASE_CHUNK = "VL01"          # 지금 갖고 있는 청크 — 이걸 기준으로 비례 계산합니다
 
 
@@ -208,27 +216,39 @@ def plan(s: dict, chunk: str) -> None:
         run += r["zip_b"]
         steps.append(("③ 원본 zip 도 삭제", run, f"+{human(r['zip_b'])}"))
 
+    peak_hi = int(zip_b * DL_PEAK[1]) + crop_b
+    peak_lo = int(zip_b * DL_PEAK[0]) + crop_b
     fits = False
     for label, avail, note in steps:
-        okmark = avail >= need
+        okmark = avail >= peak_hi
         fits = fits or okmark
-        m = "✅" if okmark else "❌"
+        m = "✅" if okmark else ("◐" if avail >= peak_lo else "❌")
         print(f"  {m} {label:<28} 여유 {human(avail):>10}   {note}")
 
-    print(f"\n     필요 {human(need):>10}   (zip {human(zip_b)} + 크롭 {human(crop_b)})")
+    lo, hi = (int(zip_b * m) + crop_b for m in DL_PEAK)
+    print(f"\n     크롭이 끝난 뒤    {human(need):>10}   (zip {human(zip_b)} + 크롭 {human(crop_b)})")
     print("       └ 압축은 **안 풉니다** (--mode zip 이 기본). 해제본 몫은 안 듭니다.")
-    print(f"     여유 {human(run - need) if run >= need else '−' + human(need - run):>10}"
-          f"   ← 여기서 aihubshell 병합 여유가 나와야 합니다")
-    print("     ⚠️ 병합 여유는 **안 재봤습니다.** aihubshell 이 조각을 합칠 때")
-    print("        조각을 지우며 합치는지 아닌지가 관건입니다.")
-    print("        → uv run python tools/crops.py --shell-peek   (스크립트를 직접 읽습니다)")
+    print(f"     받는 도중 최대치  {human(lo)} ~ {human(hi)}"
+          f"   ({DL_PEAK[0]:g}~{DL_PEAK[1]:g}배)")
+    print("       └ aihubshell 이 download.tar → 조각 → 합친파일 을 겹쳐 놓습니다.")
+    print("         **추정이 아니라 소스를 읽은 값입니다** → --shell-peek")
     if crop_b > 2 * 1024 ** 3:
         print(f"\n     💡 크롭 {human(crop_b)} 은 줄일 수 있습니다 — 필요한 라벨만:")
         print(f"        prepare_local.py --chunk {chunk} --margins 2.5,-320 --only A5,A6")
         print("        (다운로드는 안 줄어듭니다. zip 은 통짜로만 줍니다)")
 
     if not fits:
-        print(f"\n  ❌ 다 치워도 {human(need - run)} 모자랍니다.")
+        short = peak_hi - run
+        print(f"\n  ❌ 다 치워도 최대치({human(peak_hi)})에 {human(short)} 모자랍니다.")
+        if run >= peak_lo:
+            print(f"     2배({human(peak_lo)})면 되긴 합니다 — 조각으로 안 쪼개져 있을 때만.")
+        try:
+            tot = shutil.disk_usage(probe).total
+            if peak_hi > tot:
+                print(f"     ⚠️ 애초에 디스크 전체({human(tot)})보다 큽니다. "
+                      "다 비워도 안 됩니다.")
+        except OSError:
+            pass
         print("\n  ── 그래도 하려면 ──")
         print("  1) 다른 드라이브가 있으면 zip 만 거기로 보냅니다 (제일 깔끔):")
         print(f"       set DOG_SKIN_DATA=D:\\daengs_raw")
@@ -243,7 +263,7 @@ def plan(s: dict, chunk: str) -> None:
         print("  uv run python tools/crops.py --prune")
     if r["other_b"]:
         print("  uv run python tools/crops.py --prune-raw   ← zip 은 남깁니다")
-    if run - r["zip_b"] < need <= run:
+    if run - r["zip_b"] < peak_hi <= run:
         # zip 까지 지워야 되는 경우엔 그 명령도 적어줍니다 (빠져 있었습니다)
         print(f"  del {r['path']}\\*.zip"
               f"        ⚠️ 되돌리려면 {BASE_CHUNK} 재다운로드 ({CHUNK_GB[BASE_CHUNK]}GB)")
@@ -495,7 +515,10 @@ def shell_peek() -> None:
                 print(f"    {k + 1:>4}{mark} {lines[k][:110]}")
             print()
 
-    # ── 자동 판정: 확실한 것만 말하고, 애매하면 애매하다고 합니다 ──
+    # ── 자동 판정 ──────────────────────────────────────────────
+    # ⚠️ 직전 버전은 `rm *.tar` 이 **어디에** 있는지를 안 봤습니다. 다운로드
+    #    **앞**에 있는 청소 줄을 "푼 뒤 지운다" 로 읽어서 반대로 판정했습니다.
+    #    이제 줄 번호 순서를 비교합니다.
     print("  ── 판정 ──")
     live = [(i + 1, ln.strip()) for i, ln in enumerate(lines)
             if not ln.lstrip().startswith("#")]
@@ -508,27 +531,50 @@ def shell_peek() -> None:
     cat_app = _find(r"\bcat\b[^>]*>>")               # cat … >> (이어붙이기)
     untar = _find(r"\btar\b\s+-?[a-z]*x")
     rm_tar = _find(r"\brm\b[^\n]*\.tar")
+    rm_part = _find(r"\brm\b[^\n]*\.part")
 
-    if cat_over:
-        print(f"  ❌ 조각→tar 이 덮어쓰기 병합입니다 (줄 {cat_over[0][0]}) → 이 구간 2배")
-    elif cat_app:
-        print(f"  ✅ 조각→tar 이 이어붙이기입니다 (줄 {cat_app[0][0]}) → 조각 하나 여유면 됩니다")
-    else:
-        print("  ◐ 조각→tar 병합 방식을 못 읽었습니다. 위 [병합] 덩어리를 직접 보세요.")
+    # 몇 배가 동시에 살아 있나 — 청크 내용물 크기를 G 라고 할 때
+    peak = 1.0                                        # ① download.tar 그 자체
+    why = ["download.tar 를 통째로 받습니다 (curl -o download.tar)"]
 
     if untar:
-        if rm_tar:
-            print(f"  ✅ tar 를 푼 뒤 지웁니다 (줄 {rm_tar[0][0]}) → 그래도 **푸는 동안**은")
-            print("     tar + 풀린 내용이 같이 있습니다. 이 구간이 최대치입니다.")
+        after = [ln for ln, _ in rm_tar if ln > untar[0][0]]
+        if after:
+            peak = max(peak, 2.0)
+            why.append(f"tar 를 풀고 → 줄 {after[0]} 에서 지웁니다 "
+                       "(푸는 **동안**은 tar + 풀린 내용 = 2배)")
         else:
-            print(f"  ❌ `tar -x` (줄 {untar[0][0]}) 뒤에 tar 를 **지우는 줄이 없습니다.**")
-            print("     download.tar 와 풀린 내용이 같이 남습니다 → 이 구간 2배.")
-            print("     다만 prepare_local.py 가 aihub.cleanup_backups(raw) 로 뒤늦게")
-            print("     치우긴 합니다 — '뒤늦게' 라서 최대치는 그대로입니다.")
-    else:
-        print("  ◐ 압축 해제 줄을 못 찾았습니다.")
+            peak = max(peak, 2.0)
+            why.append(f"tar 를 풀지만(줄 {untar[0][0]}) **그 뒤에 지우는 줄이 없습니다** "
+                       "→ tar 가 계속 남습니다 = 2배")
+            if rm_tar:
+                why.append(f"   (줄 {rm_tar[0][0]} 의 rm 은 다운로드 **앞**이라 "
+                           "이전 찌꺼기 청소입니다)")
 
-    print("\n  이 판정을 docs/results/ 에 적어주세요 — 추정이 아니라 소스를 읽은 값입니다.")
+    if cat_over:
+        peak = max(peak, 3.0 if untar and not [l for l, _ in rm_tar if l > untar[0][0]]
+                   else 2.0)
+        why.append(f"조각을 `cat … > 합친파일` 로 병합합니다 (줄 {cat_over[0][0]}) "
+                   "→ 조각과 합친 파일이 **같이** 있습니다")
+        if rm_part:
+            why.append(f"   조각 삭제는 줄 {rm_part[0][0]} — 합친 **다음**이라 "
+                       "최대치는 안 줄어듭니다")
+    elif cat_app:
+        why.append(f"조각은 `cat … >>` 로 이어붙입니다 (줄 {cat_app[0][0]}) "
+                   "→ 이 구간은 조각 하나 여유면 됩니다")
+    else:
+        why.append("조각 병합 방식을 못 읽었습니다 — 위 [병합] 덩어리를 직접 보세요")
+
+    for w in why:
+        print(f"    · {w}")
+
+    print(f"\n  ⇒ 최대치 약 **{peak:g}배** (청크 내용물 크기 기준)")
+    if cat_over and untar:
+        print("     tar + 조각 + 합친파일 이 한순간 같이 삽니다.")
+        print("     단, 그 청크가 조각으로 안 쪼개져 있으면 2배에서 끝납니다 —")
+        print("     쪼개졌는지는 받아보기 전엔 모릅니다. 그래서 **2~3배** 로 잡습니다.")
+    print("\n  이건 추정이 아니라 소스를 읽은 값입니다. docs/results/ 에 남겨주세요.")
+    return peak
 
 
 def main(argv=None):
