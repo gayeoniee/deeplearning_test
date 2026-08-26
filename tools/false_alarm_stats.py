@@ -20,11 +20,13 @@ STEP 11 에서 오류가 A2(비듬·각질)에 몰린다는 건 알아냈는데 
 | `bright` | 밝기 평균 (0~1) | 밝음 |
 | `contrast` | 밝기 표준편차 | 대비 큼 |
 | `sat` | 채도 평균 | 색이 진함 |
-| `hair` | 고주파 에너지 (털·질감 대용) | 결이 많음 |
+| `hair` | 1픽셀 차분의 크기 (fine texture) | **털처럼 가는 선**이 많음 |
 | `warm` | R−B 평균 | 노란 조명 |
 
-⚠️ `hair` 는 **털 검출기가 아닙니다.** 가는 선이 많으면 커지는 값이고,
-   각질·주름도 같이 올립니다. "질감이 많다" 까지만 말할 수 있습니다.
+⚠️ `hair` 는 **털 검출기가 아닙니다.** 가는 선이 많으면 커지는 값이라
+   털·각질·주름을 **구분하지 못합니다.** 그래서 이 값 하나로는
+   "털 때문" 이라고 못 박을 수 없습니다 — 그건 견종·부위로 따로 잽니다
+   (`--from-saved` 가 같이 보여줍니다).
 
 읽는 법
 -------
@@ -84,7 +86,7 @@ def image_stats(path: str) -> dict:
         "bright": float(g.mean()),
         "contrast": float(g.std()),
         "sat": float(((mx - mn) / (mx + 1e-6)).mean()),
-        # 가로/세로 1픽셀 차분의 크기 — 가는 결이 많을수록 커집니다
+        # 가로/세로 1픽셀 차분의 크기 — 털처럼 가는 선이 많을수록 커집니다
         "hair": float(np.abs(np.diff(g, axis=0)).mean()
                       + np.abs(np.diff(g, axis=1)).mean()),
         "warm": float((a[:, :, 0] - a[:, :, 2]).mean()),
@@ -192,14 +194,91 @@ def residualize(target, control, deg: int = 3):
     return t - X @ coef
 
 
+def by_category(df, mask_bad, mask_good, col: str, top: int = 12) -> None:
+    """견종·부위별로 헛알림률을 봅니다 — **"털 때문인가" 를 직접 묻는 방법**입니다.
+
+    `hair` 는 털·각질·주름을 구분 못 합니다. 하지만 견종은 털의 양을
+    대신 말해줍니다. 털 많은 견종에 헛알림이 몰리면 "털 때문" 이 맞고,
+    견종과 무관하게 퍼져 있으면 털이 아니라 다른 것입니다.
+    """
+    import numpy as np
+    import pandas as pd
+
+    sel = mask_bad | mask_good
+    d = df[sel]
+    if col not in d.columns or d[col].isna().all():
+        print(f"\n  ── {col} — 매니페스트에 없어서 건너뜁니다 ──")
+        return
+
+    g = pd.DataFrame({
+        "n": d.groupby(col, dropna=True).size(),
+        "헛알림": d[mask_bad.reindex(d.index).fillna(False)]
+                  .groupby(col, dropna=True).size(),
+        "hair": d.groupby(col, dropna=True)["hair"].mean(),
+    })
+    g["헛알림"] = g["헛알림"].fillna(0).astype(int)
+    g["헛알림률"] = g["헛알림"] / g["n"]
+    g = g[g["n"] >= 30].sort_values("헛알림률", ascending=False)
+    if g.empty:
+        print(f"\n  ── {col} — 30장 넘는 항목이 없습니다 ──")
+        return
+
+    base = int(mask_bad.sum()) / max(int(sel.sum()), 1)
+    print(f"\n  ── {col} 별 헛알림률 (정상 사진 30장 이상) ──")
+    print(f"     전체 평균 {base:.1%}\n")
+    print(f"     {col:<18}{'n':>7}{'헛알림':>8}{'비율':>9}{'hair 평균':>11}")
+    print("     " + "─" * 54)
+    show = pd.concat([g.head(top // 2), g.tail(top // 2)]).drop_duplicates() \
+        if len(g) > top else g
+    prev = None
+    for k, r in show.iterrows():
+        if prev is not None and g.index.get_loc(k) - g.index.get_loc(prev) > 1:
+            print(f"     {'…':<18}")
+        print(f"     {str(k)[:17]:<18}{int(r['n']):>7,}{int(r['헛알림']):>8,}"
+              f"{r['헛알림률']:>9.1%}{r['hair']:>11.4f}")
+        prev = k
+
+    # 항목별 헛알림률과 hair 평균이 같이 움직이나
+    if len(g) >= 4:
+        c = np.corrcoef(g["헛알림률"], g["hair"])[0, 1]
+        print(f"\n     {col} 별 (헛알림률 ↔ hair 평균) 상관 {c:+.3f}  "
+              f"[{len(g)}개 항목]")
+
+    # ★ 같은 항목 안에서도 hair 이 가르나 — 항목 평균을 뺀 뒤 다시 잽니다
+    res = _center_by(df.loc[sel, "hair"], d[col])
+    bad = mask_bad.reindex(d.index).fillna(False).values
+    ok = np.isfinite(res)
+    if (bad & ok).sum() >= 30 and (~bad & ok).sum() >= 30:
+        a = auroc(res[bad & ok], res[~bad & ok])
+        raw = auroc(df.loc[mask_bad, "hair"], df.loc[mask_good, "hair"])
+        print(f"\n     같은 {col} 안에서만 보면 hair AUROC {raw:.3f} → {a:.3f}")
+        if abs(a - 0.5) >= A_STRONG:
+            print(f"     ✅ {col} 이 같아도 hair 이 가릅니다 — "
+                  f"{col} 만으로 설명이 안 됩니다.")
+        elif abs(a - 0.5) >= A_WEAK:
+            print(f"     ◐ 약해졌습니다 — 상당 부분이 {col} 였습니다.")
+        else:
+            print(f"     ❌ {col} 을 고정하니 못 가릅니다 — **{col} 이 원인**입니다.")
+
+
+def _center_by(vals, groups):
+    """항목(견종 등) 평균을 뺀 순위. 범주형 판 `residualize` 입니다."""
+    import numpy as np
+    import pandas as pd
+
+    r = pd.Series(np.asarray(vals, float)).rank()
+    r.index = groups.index
+    return (r - r.groupby(groups).transform("mean")).values
+
+
 def independence(df, mask_bad, mask_good, target: str, control: str) -> float:
     """`control` 을 빼고도 `target` 이 오답을 가르는가.
 
     왜 필요한가 — `hair`(결)와 `blur`(선명도)는 **같은 걸 재고 있을 수 있습니다.**
     흐리게 하면 결이 사라지니까요 (도구 검증: 흐림 처리로 hair 0.63 → 0.0007).
-    그러면 "결이 많다" 는 그냥 "선명하다" 의 다른 말이고, 처방이 달라집니다:
+    그러면 "털이 많다" 는 그냥 "선명하다" 의 다른 말이고, 처방이 달라집니다:
 
-      · hair 가 독립  → 털·주름이 진짜 원인. 촬영 가이드(털 헤치기)가 살아납니다
+      · hair 가 독립  → 털이 진짜 원인. 견종·부위로 한 번 더 확인합니다
       · blur 로 설명  → 화질 지름길 하나. 촬영으로는 못 잡습니다
     """
     import numpy as np
@@ -242,6 +321,10 @@ COL_CANDIDATES = {
     "bbox": ["bbox"],
 }
 
+# 범주형 — "털 때문인가" 를 값 하나가 아니라 **견종·부위**로 직접 묻습니다.
+# `hair` 는 털·각질·주름을 구분 못 하지만, 견종은 털의 양을 대신 말해줍니다.
+CAT_CANDIDATES = {"breed": ["breed", "견종"], "region": ["region", "부위"]}
+
 
 def _pick(cols, names: list[str]) -> str | None:
     return next((n for n in names if n in cols), None)
@@ -273,7 +356,12 @@ def attach_manifest(df):
         raise SystemExit(f"매니페스트에 image_path 가 없습니다. 있는 것: "
                          f"{sorted(m.columns)[:20]}")
 
-    take = ["image_path"] + [v for v in found.values() if v]
+    cats = {k: _pick(m.columns, v) for k, v in CAT_CANDIDATES.items()}
+    for k, v in cats.items():
+        print(f"  {k:<12} → {v or '❌ 없음'}")
+
+    take = ["image_path"] + [v for v in found.values() if v] \
+        + [v for v in cats.values() if v]
     m = m[take].drop_duplicates("image_path")
     out = df.merge(m, on="image_path", how="left")
 
@@ -303,6 +391,9 @@ def attach_manifest(df):
         out["megapix"] = out[found["img_w"]] * out[found["img_h"]] / 1e6
     else:
         out["megapix"] = np.nan
+
+    for k, v in cats.items():
+        out[k] = out[v].astype("string") if v else pd.NA
 
     for c in EXTRA:
         n = int(out[c].notna().sum())
@@ -342,15 +433,21 @@ def _from_saved(a) -> None:
             stats=use)
     compare(df, fn, tp, "놓침 — 병변인데 괜찮다고 한 사진", "놓침", "잡음", stats=use)
 
-    print("\n" + "=" * 68)
-    print(" 무엇이 무엇의 그림자인가")
-    print("=" * 68)
     print("\n  상관 (정상 사진에서만)")
     corr = df.loc[df["is_normal"], use].corr()
     print(f"    {'':<10}" + "".join(f"{c:>10}" for c in use))
     for r in use:
         print(f"    {r:<10}" + "".join(f"{corr.loc[r, c]:>10.3f}" for c in use))
 
+    print("\n" + "=" * 68)
+    print(' 털 때문인가 — 견종·부위로 직접 묻습니다')
+    print("=" * 68)
+    for c in ("breed", "region"):
+        by_category(df, fa, tn, c)
+
+    print("\n" + "=" * 68)
+    print(" 무엇이 무엇의 그림자인가 (연속값끼리)")
+    print("=" * 68)
     pairs = [("hair", "blur"), ("blur", "hair")]
     if "area" in use:
         pairs += [("hair", "area"), ("area", "hair"),
