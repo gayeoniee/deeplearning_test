@@ -15,8 +15,20 @@ aihubshell 은 큰 파일을 조각으로 받아 이렇게 합칩니다 (232줄�
     part1, part10, part11 … part19, part2, part20 … part8, part80, part81, part9
 
 크기는 정확히 맞고 파일 앞머리도 멀쩡해서 `file` 은 "Zip archive data" 라고
-합니다. 파이썬만 `BadZipFile: File is not a zip file` 로 죽습니다 —
-zip 의 목차는 파일 **맨 뒤**에 있어야 하는데 중간에 가 있기 때문입니다.
+합니다.
+
+증상이 **두 가지**입니다 — 목차 든 조각이 어디로 가느냐에 달렸습니다:
+
+  · 밀린 경우  → `BadZipFile: File is not a zip file` 로 아예 안 열립니다
+                 (TL02, 조각 81개 = 번호 0~80. 문자열 순서의 마지막은 "9")
+  · 남은 경우  → **열립니다.** 목록도 다 나옵니다. 그런데 읽으면 대부분
+                 BadZipFile 로 깨집니다 (TL01, 조각 91개 = 번호 0~90.
+                 "90" 이 문자열 순서에서도 마지막이라 제자리에 남습니다)
+
+⚠️ 두 번째가 훨씬 위험합니다. **아무도 안 죽습니다.** TL01 에서는 읽히는
+   2.4% 만 가지고 크롭까지 다 돌고 "✅ 완료" 가 찍혔습니다.
+   그래서 이 도구는 "목차가 밀렸나" 가 아니라 **항목이 실제로 읽히나**로
+   고장을 판정합니다.
 
 ⚠️ 이건 손상이 아닙니다. **바이트는 다 있고 순서만 틀렸습니다.**
 
@@ -182,6 +194,11 @@ def _from_order(name: str, sizes: list[int], order: list[int]) -> Layout:
         phys[i] = o
         o += sizes[i]
     return Layout(name, [(corr[i], phys[i], sizes[i]) for i in range(len(sizes))])
+
+
+def identity(size: int) -> Layout:
+    """지금 파일을 **그대로** 보는 배치. 고장 판정의 기준입니다."""
+    return Layout("지금 그대로", [(0, 0, size)])
 
 
 # 다운로드 도구가 실제로 쓰는 조각 크기만 봅니다. 아무 값이나 허용하면
@@ -375,9 +392,22 @@ def main(argv=None) -> None:
         print(f"  목차가 있어야 할 곳  {e['cd_offset']:,}")
         print(f"  목차가 실제 있는 곳  {cd_phys:,}")
 
-        if e["cd_offset"] == cd_phys and e["zip_end"] == size:
-            print("\n✅ 멀쩡한 zip 입니다. 고칠 게 없습니다.")
-            return
+        # ⚠️ "목차가 밀렸나" 로만 고장을 판정하면 안 됩니다.
+        #    TL01 이 그 함정이었습니다 — 조각이 섞였는데 **목차 든 조각이 우연히
+        #    제자리에 남아서** zip 이 멀쩡히 열렸습니다. 목록도 다 나오고요.
+        #    그런데 실제로 읽으면 97.6% 가 BadZipFile 로 깨졌습니다.
+        #    그래서 **지금 파일 그대로 항목을 읽어보는 것**으로 판정합니다.
+        print("\n[고장 판정] 지금 파일 그대로 항목이 읽히는지 봅니다 …")
+        ident = identity(size)
+        ent = cd_parses(f, ident, e)
+        if ent:
+            ok, total, _ = verify(f, ident, e, ent)
+            print(f"  항목 {ok}/{total}")
+            if ok == total:
+                print("\n✅ 멀쩡한 zip 입니다. 고칠 게 없습니다.")
+                return
+        else:
+            print("  목차를 끝까지 못 읽었습니다")
 
         print("\n[순서 맞추기] 가설을 세우고 두 번씩 검산합니다 …")
         lay = solve(f, size, e,

@@ -210,6 +210,61 @@ def test_matches_the_real_TL02_numbers():
           f"{lay.to_phys(lfh):,} vs {wrong.to_phys(lfh):,}")
 
 
+def test_repairs_scramble_that_still_opens():
+    """★ TL01 이 이거였습니다 — 섞였는데 zip 이 **열립니다**.
+
+    조각 번호의 최댓값이 문자열 순서에서도 마지막이면(예: 0~90 → "90"),
+    목차가 든 마지막 조각이 제자리에 남습니다. 그러면
+      · `ZipFile` 이 열리고  · `namelist()` 도 전부 나오고
+      · 그런데 `read()` 하면 대부분 BadZipFile
+    "목차가 밀렸나" 로 고장을 판정하면 이걸 **멀쩡하다고 통과시킵니다.**
+    """
+    print("\n[열리는데 깨진 zip] TL01 의 그 모양")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "TL01.zip"
+        want = make_zip(p, 200, 40960)
+        good, size = sha(p), p.stat().st_size
+
+        # 조각 91개(번호 0~90) — 그리고 **마지막 조각이 목차를 통째로 담을 만큼**
+        # 커야 합니다. 목차가 조각 경계를 넘으면 zip 이 아예 안 열려서
+        # TL01 의 상황(열리는데 못 읽음)이 재현되지 않습니다.
+        part = int(size / 90.5)
+        n = scramble_lex(p, part, start=0)
+        check("조각 91개", n == 91, f"n={n}")
+
+        opened, read_fail = False, 0
+        try:
+            with zipfile.ZipFile(p) as z:
+                names = z.namelist()
+                opened = len(names) == len(want)
+                for nm in names[:200]:
+                    try:
+                        z.read(nm)
+                    except Exception:             # noqa: BLE001
+                        read_fail += 1
+        except zipfile.BadZipFile:
+            pass
+        check("zip 이 **열린다** (목차가 제자리)", opened)
+        check("그런데 읽으면 대부분 깨진다", read_fail > 150, f"{read_fail}/200")
+
+        with open(p, "rb") as f:
+            e = fx.find_eocd(f, size)
+            check("목차가 밀리지 않았다 (옛 판정이 속던 자리)",
+                  e["cd_offset"] == e["rec_at"] - e["cd_size"] and e["zip_end"] == size)
+            ident = fx.identity(size)
+            ent = fx.cd_parses(f, ident, e)
+            ok, total, _ = fx.verify(f, ident, e, ent or [])
+            check("지금 그대로는 항목이 안 읽힌다", ok < total, f"{ok}/{total}")
+
+        _capture(fx.main, [str(p), "--apply", "--part-size", str(part)])
+        check("고친 뒤 원본과 바이트가 같다", sha(p) == good)
+        with zipfile.ZipFile(p) as z:
+            got = {nm: z.read(nm) for nm in z.namelist()}
+        check("내용이 전부 같다", got == want, f"{len(got)}/{len(want)}개")
+
+
 def test_repairs_tail_shift():
     print("\n[뒤로 밀림] 조각 하나만 뒤로 간 경우도 고치는가")
     with tempfile.TemporaryDirectory() as tmp:
@@ -266,6 +321,7 @@ if __name__ == "__main__":
     for fn in (test_repairs_lexicographic_scramble,
                test_rejects_the_wrong_hypothesis,
                test_matches_the_real_TL02_numbers,
+               test_repairs_scramble_that_still_opens,
                test_repairs_tail_shift,
                test_leaves_a_healthy_zip_alone,
                test_preview_writes_nothing,
