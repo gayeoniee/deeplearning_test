@@ -405,6 +405,9 @@ def main(argv=None) -> None:
             print(f"  항목 {ok}/{total}")
             if ok == total:
                 print("\n✅ 멀쩡한 zip 입니다. 고칠 게 없습니다.")
+                if e["zip_end"] != size:
+                    print(f"   (뒤에 {human(size - e['zip_end'])} 가 더 붙어 있지만 "
+                          "읽는 데는 지장 없습니다)")
                 return
         else:
             print("  목차를 끝까지 못 읽었습니다")

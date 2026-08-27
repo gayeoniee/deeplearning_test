@@ -303,15 +303,45 @@ def test_preview_writes_nothing():
               not p.with_suffix(p.suffix + ".fixed").exists())
 
 
-def test_refuses_unexplainable():
-    print("\n[거절] 설명 못 하는 파일은 안 고치는가")
+def test_trailing_junk_is_not_a_scramble():
+    """뒤에 쓰레기가 붙어도 **읽히면** 멀쩡한 겁니다.
+
+    zip 은 목차만 제자리면 뒤에 뭐가 붙어도 읽힙니다. 예전 판정은
+    "파일 끝 != zip 끝" 만 보고 고장이라고 했는데, 고칠 게 없는 파일에
+    손대려 드는 건 더 나쁩니다.
+    """
+    print("\n[꼬리 쓰레기] 읽히면 안 건드리는가")
+    import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         p = Path(tmp) / "junk.zip"
         make_zip(p, 50, 2048)
         with open(p, "ab") as f:
-            f.write(b"\x00" * 5000)                 # 조각 순서 문제가 아님
+            f.write(b"\x00" * 5000)
         before = sha(p)
         _, log = _capture(fx.main, [str(p), "--apply", "--part-size", str(PART)])
+        check("멀쩡하다고 말한다", "고칠 게 없습니다" in log, log.strip()[-60:])
+        check("꼬리가 붙어 있다는 건 알려준다", "더 붙어 있지만" in log)
+        check("안 건드린다", sha(p) == before)
+
+
+def test_refuses_unexplainable():
+    """설명 못 하는 파일은 **아무것도 안 씁니다.**"""
+    print("\n[거절] 설명 못 하는 파일은 안 고치는가")
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "broken.zip"
+        make_zip(p, 300, 4096)
+        # 조각 순서가 아니라 **가운데를 뭉갭니다** — 어떤 순서로도 복원 안 됩니다
+        data = bytearray(p.read_bytes())
+        for i in range(200_000, 600_000):
+            data[i] = 0
+        p.write_bytes(bytes(data))
+        before = sha(p)
+
+        _, log = _capture(fx.main, [str(p), "--apply", "--part-size", str(PART)])
+        check("멀쩡하다고 하지 않는다", "고칠 게 없습니다" not in log, log.strip()[-60:])
         check("못 찾았다고 말한다", "못 찾았습니다" in log, log.strip()[-70:])
         check("안 건드린다", sha(p) == before)
 
@@ -325,6 +355,7 @@ if __name__ == "__main__":
                test_repairs_tail_shift,
                test_leaves_a_healthy_zip_alone,
                test_preview_writes_nothing,
+               test_trailing_junk_is_not_a_scramble,
                test_refuses_unexplainable):
         fn()
     print()
