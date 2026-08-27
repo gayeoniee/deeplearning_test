@@ -101,11 +101,65 @@ os.environ["DOG_SKIN_PERSIST"] = "/workspace/data/work"
 사라진 채 몇 시간을 돌 뻔했습니다.)
 `main` 으로 강제하려면 `export DOG_SKIN_BRANCH=main`.
 
-## 3. 크롭 가져오기 — 집에서 올리지 말고 캐글에서 받으세요
+## 3. 크롭 가져오기
 
-2.6GB 를 가정 회선으로 올리는 것보다 데이터센터에서 받는 게 훨씬 빠릅니다.
+세 갈래입니다. **`runpodctl` 이 제일 단순합니다** — 계정 연동도, 토큰도 없습니다.
 
-### 3-a. 토큰 받기 (내 PC 에서, 한 번만)
+### 3-A. runpodctl — 내 PC 에서 팟으로 직접 (권장)
+
+주피터 파일 업로드보다 훨씬 빠릅니다 (peer-to-peer).
+
+**내 PC 에 받기** (한 번만) — <https://github.com/runpod/runpodctl/releases> 에서
+`runpodctl-windows-amd64.exe` (맥은 `runpodctl-darwin-arm64`) 를 받아
+zip 이 있는 폴더에 두고 이름을 `runpodctl.exe` 로 바꿉니다.
+
+⚠️ 윈도우에서 그 exe 를 **더블클릭하면 창이 떴다 사라집니다.** CLI 라서요.
+   반드시 cmd/PowerShell 에서 실행하세요.
+
+```
+runpodctl.exe send dogskin_prepared.zip
+```
+
+이런 코드가 뜹니다:
+
+```
+Code is: 8471-purple-tiger-mango
+On the other computer run
+runpodctl receive 8471-purple-tiger-mango
+```
+
+**팟 터미널에서** (runpodctl 은 런팟 이미지에 이미 깔려 있습니다):
+
+```bash
+cd /workspace
+runpodctl receive 8471-purple-tiger-mango
+```
+
+⚠️ 파일은 **`receive` 를 실행한 폴더**에 떨어집니다. `cd` 를 먼저 하세요.
+⚠️ 전송이 **끝난 뒤에** `mv` 하세요. 아직 도착 안 한 파일을 옮기려다
+   "그런 파일 없음" 으로 헤맸습니다.
+⚠️ 코드는 일회용입니다. 끊기면 `send` 부터 다시.
+
+### 3-B. 구글 드라이브 → 팟
+
+zip 이 이미 드라이브에 있으면 팟이 **데이터센터 속도로** 받습니다
+(내 회선 업로드를 안 씁니다). 파일을 "링크가 있는 모든 사용자" 로 공유하고
+링크의 `/d/<아이디>/` 부분을 씁니다:
+
+```bash
+pip install gdown --break-system-packages
+cd /workspace
+gdown <아이디>
+```
+
+⚠️ 대용량은 드라이브 쪽 다운로드 쿼터에 걸릴 수 있습니다. 그러면 3-A 로.
+
+### 3-C. 캐글에서 받기
+
+이미 캐글에 데이터셋을 올려둔 경우에만. 토큰 형식이 바뀌어서 막힐 수 있습니다.
+
+
+#### 토큰 받기 (내 PC 에서, 한 번만)
 
 1. <https://www.kaggle.com/settings> 접속 (우측 상단 프로필 → **Settings**)
 2. **API** 항목 → **[Create New Token]**
@@ -118,7 +172,7 @@ os.environ["DOG_SKIN_PERSIST"] = "/workspace/data/work"
 ⚠️ **계정 이름은 이 파일의 `username`** 입니다. 깃허브 아이디와 다를 수 있어요.
 ⚠️ 이전에 만든 토큰이 있으면 새로 만드는 순간 **옛 토큰이 무효**가 됩니다.
 
-### 3-b. 팟에 넣기 — 환경변수가 제일 쉽습니다
+#### 팟에 넣기 — 환경변수가 제일 쉽습니다
 
 `nano` 로 JSON 을 붙여넣다 따옴표가 깨지는 일이 흔해서, **파일 없이** 갑니다:
 
@@ -146,7 +200,7 @@ chmod 600 ~/.kaggle/kaggle.json
 남습니다. `.gitignore` 가 `*apikey*` / `.env` 를 막고 있지만, 애초에 리포
 안에 두지 않는 게 확실합니다.
 
-### 3-c. 데이터셋 이름 확인 — **추측하지 말고 물어보세요**
+#### 데이터셋 이름 확인 — **추측하지 말고 물어보세요**
 
 ```bash
 kaggle datasets list --mine
