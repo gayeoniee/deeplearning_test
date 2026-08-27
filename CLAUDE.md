@@ -189,6 +189,7 @@ deeplearning_test/
 │   │  ── tools/box_error.py — 사람이 그린 네모 vs 정답 bbox (수의사 불필요)
 │   │  ── tools/crops.py    — 크롭 용량 보고 · 안 쓰는 태그 정리 · 새 청크 예상
 │   │  ── tools/merge_incoming.py — 다른 PC 에서 온 청크 합치기 (미리보기가 기본)
+│   │  ── tools/fix_split_zip.py — 조각 순서가 뒤바뀐 zip 고치기 (재다운로드 없이)
 │   ├── SERVING.md             ★ 앱 연동 — API 계약 · 서빙 크롭 · 아직 안 된 것
 │   ├── OTHER_PC.md            다른 PC 에서 청크 처리해서 크롭만 가져오기
 │   ├── results/               ★ 실측 기록 — **숫자는 전부 여기**. 추정치 금지
@@ -314,6 +315,13 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
   `stages.stage1_scores()` 를 걸면 softmax 가 **두 번** 먹어 전부 0.5 로 뭉개집니다.
   ECE 가 0.03 → 0.20 으로 나빠져서 잡았습니다. 보정된 점수가 필요하면
   **`logits / T` 를 넘기세요**
+* **aihubshell 이 붙인 zip 이 `BadZipFile` 로 죽을 수 있습니다 — 다시 받지 마세요.**
+  조각을 `find | sort -zt'.' -k2V | xargs cat` 으로 붙이는데, 정렬이 밀리면
+  **마지막 두 조각이 뒤바뀝니다.** 크기는 정확하고 `file` 도 "Zip archive data"
+  라고 합니다 (앞머리만 보니까요). 목차가 파일 끝이 아니라 중간에 있어서
+  파이썬만 죽습니다. **바이트는 다 있습니다** → `tools/fix_split_zip.py` 가
+  ZIP64 EOCD 가 적어둔 목차 위치와 실제 위치의 차이로 밀린 양을 구해
+  뒤쪽 1GB 남짓만 다시 씁니다 (80GB 재다운로드 대신 2분)
 * **다른 PC 에서 처리한 청크는 `phash` 를 들고 와야 합니다.** `--finalize` 의
   중복 제거는 **원본 사진**을 다시 읽는데, 저쪽 PC 는 크롭 후 원본을 지웁니다.
   그런데 `dedup.compute_hashes` 는 **한 장도 못 읽었을 때만** 에러를 냅니다 —
