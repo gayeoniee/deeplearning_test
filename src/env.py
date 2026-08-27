@@ -517,13 +517,32 @@ def _search_roots() -> list[Path]:
     return out
 
 
+def _has_crops(d: Path) -> bool:
+    """크롭이 **한 장이라도** 들어 있는 태그 폴더가 있는가."""
+    c = d / "crops"
+    return c.is_dir() and any(t.is_dir() and next(t.rglob("*.jpg"), None) is not None
+                              for t in c.iterdir())
+
+
+def _has_manifest(d: Path) -> bool:
+    m = d / "manifests"
+    return m.is_dir() and next(m.glob("*.parquet"), None) is not None
+
+
 def _looks_prepared(d: Path) -> bool:
-    return (d / "crops").is_dir() and (d / "manifests").is_dir()
+    """크롭과 매니페스트가 **내용까지** 있는가.
+
+    ⚠️ 폴더 존재만 보면 안 됩니다. `ensure_dirs()` 가 `crops/` 와 `manifests/`
+       를 **빈 폴더로 미리 만듭니다.** 노트북 첫 셀의 `env.describe()` 가 그걸
+       부르므로, 존재만 보면 zip 을 받아놓고도 "이미 준비됨" 으로 건너뛰고
+       나중에 `manifest_final.parquet` 을 못 찾아 죽습니다 (런팟에서 당했습니다).
+    """
+    return _has_crops(d) and _has_manifest(d)
 
 
 def _looks_partial(d: Path) -> bool:
-    """`crops/` 만 있고 매니페스트는 없는 폴더 — 태그를 나눠 올린 경우."""
-    return (d / "crops").is_dir() and not (d / "manifests").is_dir()
+    """크롭만 있고 매니페스트는 없는 폴더 — 태그를 나눠 올린 경우."""
+    return _has_crops(d) and not _has_manifest(d)
 
 
 def find_prepared(dest: Path | None = None) -> tuple[Path, str]:

@@ -883,9 +883,39 @@ def test_warning_never_reads_as_all_found():
     check("애매한 X/Y 표기를 안 쓴다", "개를 찾을 수 없습니다" not in src)
 
 
+# ──────────────────────────────────────────────────────────────
+# 빈 폴더를 "이미 준비됨" 으로 보지 않는가
+#
+# ⚠️ 런팟에서 당했습니다. 노트북 첫 셀의 env.describe() 가 ensure_dirs() 를
+#    불러 crops/ 와 manifests/ 를 **빈 폴더로** 만들어 둡니다. 그다음
+#    load_prepared() 가 폴더 존재만 보고 "이미 준비돼 있습니다" 를 찍고
+#    zip 을 안 풀었고, 몇 셀 뒤에 manifest_final.parquet 을 못 찾아 죽었습니다.
+# ──────────────────────────────────────────────────────────────
+def test_empty_dirs_are_not_prepared():
+    import tempfile
+
+    from src import env
+
+    print("\n[준비 판정] 빈 폴더를 준비됐다고 하지 않는가")
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        (d / "crops").mkdir()
+        (d / "manifests").mkdir()
+        check("빈 crops+manifests 는 준비 안 됨", not env._looks_prepared(d))
+        check("빈 폴더는 '일부만' 도 아님", not env._looks_partial(d))
+
+        (d / "crops" / "f320" / "ab").mkdir(parents=True)
+        (d / "crops" / "f320" / "ab" / "x.jpg").write_bytes(b"\xff\xd8")
+        check("크롭만 있으면 '일부만'", env._looks_partial(d))
+        check("크롭만으로는 준비 안 됨", not env._looks_prepared(d))
+
+        (d / "manifests" / "manifest_final.parquet").write_bytes(b"PAR1")
+        check("둘 다 내용이 있으면 준비됨", env._looks_prepared(d))
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
-    for fn in [test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
+    for fn in [test_empty_dirs_are_not_prepared, test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
                test_link_is_idempotent, test_zip_path_still_works,
                test_autodetect_prefers_extracted_when_no_zip,
                test_missing_gives_useful_error, test_split_upload_is_merged,
