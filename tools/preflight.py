@@ -94,6 +94,24 @@ def check_data() -> None:
     ok(f"매니페스트 {len(df):,}행", f"holdout {int(df['is_holdout'].sum()):,}")
     DATA_OK = True
 
+    # ★ --finalize 를 다시 안 돌린 채 새 청크를 올린 경우를 잡습니다.
+    #   manifest_final 은 --finalize 가 만듭니다. 청크를 합쳐놓고 그걸 안 돌리면
+    #   **옛 분할 그대로** 학습이 돌아가고 아무 말도 안 합니다.
+    chunks = sorted((w / "manifests").glob("chunk_*.parquet"))
+    if chunks:
+        n_chunk = sum(len(pd.read_parquet(c, columns=["label"])) for c in chunks)
+        names = ", ".join(c.stem.replace("chunk_", "") for c in chunks)
+        if len(df) < n_chunk * 0.5:
+            bad(f"매니페스트가 청크 합계보다 훨씬 작습니다 "
+                f"({len(df):,}행 vs 청크 {n_chunk:,}행 — {names})",
+                "--finalize 를 다시 안 돌린 것 같습니다. 그대로 두면 **옛 분할**로\n"
+                "학습이 돌아갑니다:\n"
+                "  uv run python prepare_local.py --finalize\n"
+                "  uv run python prepare_local.py --package --tags f320,m2.5")
+            DATA_OK = False
+            return
+        ok(f"청크 {len(chunks)}개와 앞뒤가 맞습니다", f"{names} 합계 {n_chunk:,}행")
+
     from src import crop
 
     tags = crop.available_tags()
