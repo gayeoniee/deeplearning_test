@@ -726,6 +726,16 @@ def load_prepared(
     dest = Path(dest) if dest else work_root()
     dest.mkdir(parents=True, exist_ok=True)
 
+    # ★ 이미 work_root 에 크롭+매니페스트가 있으면 **할 일이 없습니다.**
+    #    ⚠️ 이 검사는 find_prepared_all() **앞에** 있어야 합니다. 그 함수는
+    #       dest 자신을 후보에서 빼기 때문에(아래 `r == dest.resolve()`),
+    #       런팟처럼 데이터를 work_root 에 직접 넣은 경우 "못 찾았습니다" 로
+    #       **먼저 죽습니다.** 뒤에 두면 이 줄에 영영 도달하지 못합니다.
+    if zip_path is None and _looks_prepared(dest):
+        n = sum(1 for _ in (dest / "crops").iterdir() if _.is_dir())
+        print(f"[env] 이미 준비돼 있습니다: {dest}  (크롭 태그 {n}종) — 그대로 씁니다.")
+        return dest
+
     if zip_path is None:
         sources = find_prepared_all(dest)
     elif isinstance(zip_path, (list, tuple)):
@@ -736,13 +746,6 @@ def load_prepared(
 
     if len(sources) > 1:
         print(f"[env] 입력 {len(sources)}개를 합칩니다: {[s.name for s, _ in sources]}")
-
-    # ★ 이미 work_root 에 크롭+매니페스트가 있으면 **할 일이 없습니다.**
-    #    런팟처럼 데이터를 직접 넣는 환경에서 여기서 죽으면 안 됩니다.
-    if zip_path is None and _looks_prepared(dest):
-        n = sum(1 for _ in (dest / "crops").iterdir() if _.is_dir())
-        print(f"[env] 이미 준비돼 있습니다: {dest}  (크롭 태그 {n}종) — 그대로 씁니다.")
-        return dest
 
     marker = dest / ".prepared_from"
     seen_before = set(marker.read_text().splitlines()) if marker.exists() else set()
