@@ -234,6 +234,46 @@ ls "$DOG_SKIN_WORK/manifests"    # manifest_final.parquet
 리포 바깥(`~/.kaggle/`)에 두는 게 확실합니다.
 ⚠️ AI Hub 데이터는 **재배포 금지**입니다. 볼륨을 공개로 두지 마세요.
 
+### 3-D. ★ zip 풀기 — `unzip` 말고 `fetch_crops.py`
+
+zip 이 팟에 도착했으면 **`unzip` 을 쓰지 마세요.** 세 가지가 조용히 틀립니다.
+
+| `unzip -o/-n` | `tools/fetch_crops.py` |
+|---|---|
+| zip 안의 **423,080장 전부** 풉니다 | 매니페스트가 쓰는 **365,428장만** |
+| 디스크가 차서 죽으면 **쓰다 만 파일**이 남고 `-n` 은 그걸 "있음" 으로 건너뜁니다 | zip 이 적어둔 **크기와 대조**해 다르면 다시 꺼냅니다 |
+| 한 줄로 돌리면 ~70장/초 | 스레드 32개 = **1,000장/초 이상** |
+
+```bash
+cd /workspace/deeplearning_test
+export DOG_SKIN_WORK=/workspace/deeplearning_test/data/work
+
+# 매니페스트가 먼저 있어야 합니다 (있어야 무엇이 필요한지 압니다)
+unzip -o /root/dogskin_prepared.zip "manifests/*" -d "$DOG_SKIN_WORK"
+
+python tools/fetch_crops.py /root/dogskin_prepared.zip --tags f320,m2.5
+```
+
+미리보기가 "꺼낼 것 / 안 쓰는 것 / 순수 필요 공간" 을 GB 로 알려줍니다. 그다음:
+
+```bash
+python tools/fetch_crops.py /root/dogskin_prepared.zip --tags f320,m2.5 \
+  --apply --prune --workers 32
+```
+
+`--prune` 은 매니페스트가 **안 쓰는** 크롭을 지웁니다 (태그당 57,652장).
+공간이 빠듯하면 이걸로 먼저 자리를 만들고 꺼냅니다.
+
+끝나면 스스로 다시 세어 `f320 365,428/365,428 (100.00%)` 를 찍습니다.
+100% 가 아니면 **멈추고** 볼륨을 의심하라고 말합니다 — 여기서 통과해야 06 을 엽니다.
+
+⚠️ **`Exit 50` 은 디스크가 찼다는 뜻입니다.** 네트워크 볼륨 할당량은 `df` 에
+   **안 보입니다** (MooseFS 라 클러스터 전체 용량인 2.0P 가 찍힙니다). 런팟 콘솔
+   Storage 탭에서 크기를 보고, 모자라면 볼륨을 키우세요.
+
+⚠️ zip 을 `/root` 에 두면 컨테이너 디스크(30GB)를 먹습니다. 팟이 꺼지면 사라지니
+   **다 풀고 나면 지우세요** — 볼륨(`/workspace`)에 두면 그만큼 크롭 자리가 줍니다.
+
 ## 4. ★ preflight — 학습 전에 반드시
 
 ```bash
