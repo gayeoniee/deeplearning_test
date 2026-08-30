@@ -56,6 +56,9 @@ def train_and_measure(
     measure_blur: bool = False,
     balance: str | None = None,
     hair_alpha: float = 1.0,
+    lr: float | None = None,
+    backbone_lr_mult: float | None = None,
+    warmup_epochs: int | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """한 설정으로 학습하고 **점수와 견고성을 함께** 돌려줍니다.
@@ -70,6 +73,10 @@ def train_and_measure(
             2단계 `"class_weight"`. `"hair_weighted"` 를 주면 **털처럼 가는 선이
             많은 정상 사진**을 더 자주 뽑습니다 (`data.hair_sampler`).
         hair_alpha: `balance="hair_weighted"` 일 때의 세기. `0` 이면 균등.
+        lr / backbone_lr_mult / warmup_epochs: 학습률 축을 비교할 때 덮어씁니다.
+            ★ 셋 중 하나라도 주면 **실험 이름에 붙습니다.** 안 붙이면 네 판이
+            같은 폴더를 쓰고, `train.fit` 이 뒤의 세 판을 "이미 끝난 학습" 으로
+            조용히 건너뜁니다 — 해상도·샘플러에서 이미 두 번 당한 실패입니다.
     """
     from src import data, evaluate, models, robust, split, stages, train
     from src.config import CLASSES, CLASSES_STAGE1, CFG, with_aug, with_finetune
@@ -93,6 +100,27 @@ def train_and_measure(
                             if balance == "hair_weighted" else "")),
             finetune),
         aug)
+
+    # ── 학습률 축 (주었을 때만) ──────────────────────────────────
+    # ⚠️ 이름을 먼저 붙이고 값을 넣습니다. 순서가 바뀌어도 결과는 같지만,
+    #    **이름을 안 붙이면** 네 판이 한 폴더를 공유해 뒤의 세 판이 통째로
+    #    건너뛰어집니다. 그래도 표는 그럴듯하게 나오고 아무 에러도 안 납니다.
+    _lr_tag = ""
+    if lr is not None:
+        _lr_tag += f"_lr{lr:g}"
+    if backbone_lr_mult is not None:
+        _lr_tag += f"_bb{backbone_lr_mult:g}"
+    if warmup_epochs is not None:
+        _lr_tag += f"_wu{warmup_epochs}"
+    if _lr_tag:
+        over = {"exp_name": cfg.exp_name + _lr_tag}
+        if lr is not None:
+            over["lr"] = lr
+        if backbone_lr_mult is not None:
+            over["backbone_lr_mult"] = backbone_lr_mult
+        if warmup_epochs is not None:
+            over["warmup_epochs"] = warmup_epochs
+        cfg = CFG.from_dict({**cfg.to_dict(), **over})
 
     tr, va = split.get_fold(view, fold)
 
@@ -146,6 +174,10 @@ def train_and_measure(
         "subset_frac": subset_frac, "n_train": len(tr),
         "exp_name": cfg.exp_name, "epochs": epochs, "minutes": minutes,
         "batch_size": cfg.resolved_batch_size(),
+        # ★ 학습률 축 — 표에서 판을 갈라 보려면 이게 있어야 합니다
+        "lr": cfg.lr, "backbone_lr_mult": cfg.backbone_lr_mult,
+        "backbone_lr": cfg.lr * cfg.backbone_lr_mult,
+        "warmup_epochs": cfg.warmup_epochs,
         "best_epoch": res.best_epoch, "n_epochs": len(res.history),
         # 마지막 에폭이 최고면 아직 덜 학습된 것입니다 (에폭을 더 줘야 합니다)
         "converged": res.best_epoch < len(res.history) - 2,
@@ -291,6 +323,105 @@ def augmentation_report(runs: list[dict], *, baseline: str = "default") -> dict[
     하락폭이 크게 줄면 배포에는 그쪽이 낫습니다.
     """
     return _compare(runs, "aug", baseline, "증강 비교", fmt=str)
+
+
+# ──────────────────────────────────────────────────────────────
+# 학습률 축 (STEP 17) — "best 가 0에폭" 을 설명할 수 있나
+# ──────────────────────────────────────────────────────────────
+# STEP 16 에서 2단계(convnextv2_base, 89M)의 best 가 **0에폭**이었습니다.
+# 14에폭까지 돌려도 못 넘었고, 그 사이 train loss 가 **올라갔습니다**
+# (1.0292 → 1.2321, warmup 2에폭 구간). 설명이 둘입니다:
+#
+#   ① warmup 이라 정상이다 — 학습률이 꼭대기를 찍을 때 흔들렸다가 회복 중
+#   ② 학습률이 너무 높다   — 백본 9e-5(3e-4 × 0.3) 를 7,569스텝/에폭 먹여
+#                            사전학습 표현이 흐트러졌고 끝내 회복 못 함
+#
+# ②가 맞으면 지금 macro-F1 0.599 는 천장이 아니고, **A4 recall 0.264 와
+# 배율 하락 26.8% 도 "덜 배운 모델에서 잰 값"** 이 됩니다. STEP 9→12 에서
+# 이미 같은 일을 당했습니다 (미수렴 기준선이 교란 검사를 왜곡함).
+#
+# ⚠️ **판정 기준을 여기 못 박아 둡니다** (규칙 2). 결과를 보고 기준을 고르면
+#    무슨 숫자가 나와도 성공담이 됩니다.
+LR_MIN_BEST_EPOCH = 3      # ← 1차 기준. 점수보다 이게 먼저입니다
+MACRO_F1_NOISE = 0.02      # 같은 설정 두 실행: 0.4862 vs 0.5024 (STEP 12·13)
+
+
+def lr_report(runs: list[dict], *, baseline_lr: float = 3e-4,
+              baseline_mult: float = 0.3) -> dict[str, Any]:
+    """학습률 비교 — **1차 기준은 점수가 아니라 `best_epoch` 입니다.**
+
+    묻는 것은 "어느 판이 제일 높나" 가 아니라 **"학습이 되긴 하나"** 입니다.
+    best 가 0에폭이면 그 판도 같은 병에 걸린 것이고, 점수가 조금 높아도
+    설명이 안 됩니다.
+
+    판정 (실험 전 고정):
+      1차 — `best_epoch >= LR_MIN_BEST_EPOCH` (=3)
+      2차 — macro-F1 이 기준선 대비 `+MACRO_F1_NOISE`(0.02) 이상
+      둘 다 만족하는 판이 없으면 → **학습률 축을 닫습니다.**
+      "0에폭이 진짜 최고" 도 결론이고, 그러면 원인은 다른 데 있습니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        return {}
+
+    def key(r):
+        return (r.get("lr"), r.get("backbone_lr_mult"), r.get("warmup_epochs"))
+
+    base = next((r for r in runs
+                 if r.get("lr") == baseline_lr
+                 and r.get("backbone_lr_mult") == baseline_mult), runs[0])
+
+    print(f"\n{'=' * 74}\n 2단계 학습률 — 1차 기준은 best_epoch >= "
+          f"{LR_MIN_BEST_EPOCH}\n{'=' * 74}")
+    print(f"  {'헤드lr':>8}{'×배수':>7}{'백본lr':>10}{'warmup':>8}"
+          f"{'macro-F1':>10}{'best':>6}{'/에폭':>6}{'배율하락':>9}{'분':>6}")
+    for r in runs:
+        drop = r.get("scale_drop")
+        ds = f"{drop:>8.1%}" if drop is not None else f"{'—':>9}"
+        mark = " ★" if r is base else ""
+        print(f"  {r.get('lr', 0):>8.0e}{r.get('backbone_lr_mult', 0):>7.2f}"
+              f"{r.get('backbone_lr', 0):>10.0e}{r.get('warmup_epochs', 0):>8}"
+              f"{r['score']:>10.4f}{r.get('best_epoch', -1):>6}"
+              f"{r.get('n_epochs', 0):>6}{ds}{r['minutes']:>6.0f}{mark}")
+
+    trained = [r for r in runs if r.get("best_epoch", -1) >= LR_MIN_BEST_EPOCH]
+    better = [r for r in trained if r["score"] >= base["score"] + MACRO_F1_NOISE]
+
+    print(f"\n  기준선: macro-F1 {base['score']:.4f} (best epoch "
+          f"{base.get('best_epoch', -1)})")
+    print(f"  1차 통과 (best_epoch >= {LR_MIN_BEST_EPOCH}): "
+          f"{len(trained)}/{len(runs)}판")
+
+    if not trained:
+        verdict = "축 닫힘"
+        print("\n  ❌ **어느 판도 0~2에폭을 못 벗어났습니다.**")
+        print("     학습률 축을 닫습니다 — 0에폭 best 는 학습률 탓이 아닙니다.")
+        print("     다음 용의자: 데이터(라벨 노이즈) · 백본 크기 · 증강 강도")
+    elif not better:
+        verdict = "학습은 되나 점수는 그대로"
+        print(f"\n  ⚠️ 학습은 되는데 점수가 잡음(±{MACRO_F1_NOISE}) 안입니다.")
+        print("     '0에폭 best' 는 고쳤지만 성능은 안 올랐습니다 —")
+        print("     지금 0.599 가 데이터 천장이라는 쪽으로 기웁니다.")
+        for r in trained:
+            print(f"     · lr {r['lr']:.0e} ×{r['backbone_lr_mult']:.2f}: "
+                  f"{r['score']:.4f} ({r['score'] - base['score']:+.4f}), "
+                  f"best epoch {r['best_epoch']}")
+    else:
+        win = max(better, key=lambda r: r["score"])
+        verdict = "채택"
+        print(f"\n  ✅ **채택: 헤드 lr {win['lr']:.0e} × 배수 "
+              f"{win['backbone_lr_mult']:.2f} (백본 {win['backbone_lr']:.0e})**")
+        print(f"     macro-F1 {base['score']:.4f} → {win['score']:.4f} "
+              f"({win['score'] - base['score']:+.4f}, 잡음 ±{MACRO_F1_NOISE} 밖)")
+        print(f"     best epoch {base.get('best_epoch', -1)} → {win['best_epoch']}")
+        print("\n  ⚠️ **서브셋 결과입니다.** 확정하려면 06 을 전체 데이터로 다시")
+        print("     돌려야 합니다 — 서브셋 순위가 풀 순위와 같다는 보장은 없습니다.")
+
+    return {"verdict": verdict, "baseline": key(base),
+            "trained": [key(r) for r in trained],
+            "winner": key(max(better, key=lambda r: r["score"])) if better else None,
+            "min_best_epoch": LR_MIN_BEST_EPOCH,
+            "noise": MACRO_F1_NOISE}
 
 
 # ──────────────────────────────────────────────────────────────
