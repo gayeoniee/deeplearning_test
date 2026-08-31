@@ -337,6 +337,41 @@ check("진짜 거절은 그대로 재촬영",
       "판단이 어려운 사진" in _msg.compose_screening_message(
           _msg.Prediction(topk=[], abstain=True)))
 
+# ── 10. 기권이 판정을 뒤집지 않는가 ────────────────────────────
+#
+# 2026-08-31 배포에서 터진 것: 1단계가 95.6% 로 이상이라고 본 사진이
+# 2단계 기권 때문에 통째로 "다시 찍어주세요" 로 나갔습니다. 분포까지
+# 같이 사라졌고요. 기권은 병변 **종류**를 말할지의 판단이지 1단계 판정을
+# 뒤집는 장치가 아닙니다 (노트북 06 §5 에 그렇게 적혀 있습니다).
+print("\n[10] 기권이 1단계 판정을 뒤집지 않는가")
+
+_after = src_screen[src_screen.index("pred.abstain ="):]
+check("기권해도 retake 로 안 보냄", 'contract("retake"' not in _after)
+check("1단계가 이상이면 결론은 abnormal 하나뿐",
+      _after.count('contract("abnormal"') == 1)
+check("기권이어도 분포를 실어 보냄", "stage2=raw" in _after)
+check("기권 사실을 meta 로 알림", "stage2_low_confidence" in src_screen)
+
+# 기권 판정은 **깎기 전** 확률로 — 1단계 확률을 곱한 값과 비교하면 이중 감점입니다
+check("기권을 깎기 전 확률로 판정", "raw[0][1] < self.s2.cfg.abstain_threshold" in src_screen)
+check("깎은 값(topk)으로 기권 판정하지 않음",
+      "pred.topk[0][1] < self.s2.cfg.abstain_threshold" not in src_screen)
+
+# 문구 쪽에도 같은 구멍이 있었습니다 — 한쪽만 고치면 verdict 와 text 가 어긋납니다
+_src_msg = inspect.getsource(_msg.compose_screening_message)
+check("문구도 기권을 재촬영으로 안 바꿈", "if pred.abstain or not pred.topk:" not in _src_msg)
+
+_ab = _msg.Prediction(topk=[("A2", 0.31)], abstain=True, stage1_abnormal=0.956,
+                      confidence_band="낮음")
+_ab.stage2_probs = [("A2", 0.31), ("A3", 0.22)]
+_txt = _msg.compose_screening_message(_ab)
+check("기권이어도 이상 소견을 말함", "이상 소견이 보입니다" in _txt)
+check("기권이어도 재촬영 문구가 안 나옴", "판단이 어려운 사진" not in _txt)
+check("기권이어도 분포가 보임", CLASS_KO["A2"] in _txt)
+check("기권이어도 진료를 권함", "수의사 진료를 받아보시기를 권합니다" in _txt)
+check("기권일 때 다시 찍으라고 하지 않음",
+      "더 선명하게 다시 찍으면" not in _txt)
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

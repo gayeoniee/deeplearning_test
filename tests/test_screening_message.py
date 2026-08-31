@@ -93,10 +93,20 @@ ab = infer.compose_screening_message(infer.Prediction(topk=[], abstain=True))
 check("거절은 '다시 찍어주세요'", "다시 찍어주세요" in ab)
 check("거절에 병변 목록 없음", not any(CLASS_KO[c] in ab for c in LESION))
 
+# ⚠️ 2026-08-31 뒤집었습니다. 예전에는 "이상이어도 abstain 이면 재촬영 안내" 를
+#    기대했는데, 그게 배포에서 사고가 됐습니다 — 1단계가 95.6% 로 이상이라고 본
+#    사진이 통째로 "다시 찍어주세요" 로 나갔고 분포까지 사라졌습니다.
+#    기권은 병변 **종류**를 말할지의 판단이지 1단계 판정을 뒤집는 장치가 아닙니다
+#    (노트북 06 §5). D-023 이후로는 이름을 아예 안 말하므로 감출 것도 없습니다.
 abstained = abnormal_pred()
 abstained.abstain = True
-check("이상이어도 abstain 이면 재촬영 안내",
-      "판단이 어려운 사진입니다" in infer.compose_screening_message(abstained))
+_ab_txt = infer.compose_screening_message(abstained)
+check("기권이어도 재촬영으로 안 보냄", "판단이 어려운 사진입니다" not in _ab_txt)
+check("기권이어도 이상 소견을 말함", "이상 소견이 보입니다" in _ab_txt)
+check("기권이어도 분포가 보임", any(CLASS_KO[c] in _ab_txt for c in LESION))
+check("기권이어도 진료를 권함", "수의사 진료를 받아보시기를 권합니다" in _ab_txt)
+# 2단계의 불확실은 사진 탓이 아니라 모델 한계라, 다시 찍으라고 하면 안 됩니다
+check("기권일 때 다시 찍으라고 안 함", "더 선명하게 다시 찍으면" not in _ab_txt)
 
 # ── 6. 표 정렬 (한글은 두 칸) ─────────────────────────────────
 print("\n[6] 표 정렬")

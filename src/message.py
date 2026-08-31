@@ -168,7 +168,17 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         L.append(f"_{DISCLAIMER}_")
         return "\n".join(L)
 
-    if pred.abstain or not pred.topk:
+    # ⚠️ **`pred.abstain` 을 여기서 보지 않습니다.**
+    #
+    # 예전에는 기권이면 여기서 `compose_message()` 로 빠져 "다시 찍어주세요" 가
+    # 나갔습니다. 그런데 기권은 병변 *종류*를 말할지 말지의 판단이고, 1단계는
+    # 이미 "이상" 이라고 답을 냈습니다. 위 주석과 같은 이유입니다 —
+    # **분포가 미덥지 않다고 재촬영으로 보내면 안 됩니다.**
+    # (D-023 이후 이름을 아예 안 말하므로 기권이 감출 것도 없습니다)
+    #
+    # 확신이 낮다는 사실은 아래 `confidence_band == "낮음"` 줄이 말해 줍니다.
+    # 분포가 통째로 없는 진짜 실패(이미지 못 엶 등)는 `not pred.topk` 로 남습니다.
+    if not pred.topk:
         return compose_message(pred)          # "다시 찍어주세요" 는 그대로
 
     c0 = pred.topk[0][0]
@@ -205,7 +215,14 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
 
     L.append("")
     L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
-    if pred.confidence_band == "낮음":
+    # ⚠️ 기권일 때 "다시 찍으라" 고 하지 않습니다. 2단계의 불확실은 사진 탓이
+    #    아니라 **모델의 한계**라(다른 구조끼리 0.0026 차이로 겹칩니다) 다시
+    #    찍어도 안 좋아집니다. 그렇게 안내하면 보호자가 계속 다시 찍게 됩니다.
+    #    진료 권고는 위 줄에서 이미 했고, 여기서는 사실만 덧붙입니다.
+    if pred.abstain:
+        L.append("")
+        L.append("_특히 이번에는 어느 쪽인지 가리기 어려웠습니다. 위 숫자는 참고만 해주세요._")
+    elif pred.confidence_band == "낮음":
         L.append("")
         L.append("_사진을 더 선명하게 다시 찍으면 결과가 달라질 수 있습니다._")
     L.append("")

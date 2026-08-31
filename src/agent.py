@@ -399,13 +399,40 @@ class ScreeningAgent:
         pred.stage1_abnormal = abnormal
         pred.topk = [(c, p * abnormal) for c, p in raw]
         pred.confidence_band = band(pred.topk[0][1]) if pred.topk else "낮음"
-        pred.abstain = bool(pred.topk) and pred.topk[0][1] < self.s2.cfg.abstain_threshold
+
+        # ★ 기권은 **깎기 전** 확률로 판정합니다.
+        #
+        # ⚠️ 예전에는 `pred.topk[0][1]`(= 원본 × 1단계 확률)과 비교했습니다.
+        #    abstain_threshold 는 "2단계가 이만큼 확신하는가" 라는 뜻인데 1단계
+        #    확률을 한 번 더 곱해 비교하면 **이중 감점**이 됩니다 — 1단계가 95%
+        #    확신해도 2단계가 47% 넘게 확신해야 통과했습니다. 6종 분류에서는
+        #    거의 없는 일이라 사실상 전부 기권했습니다.
+        #    노트북 06 이 문턱을 `coverage_risk_curve(probs_after)` — 곱하지 않은
+        #    확률 — 로 뽑는 것과도 척도가 어긋나 있었습니다. 이제 맞습니다.
+        pred.abstain = bool(raw) and raw[0][1] < self.s2.cfg.abstain_threshold
+
+        # ★ **기권해도 재촬영으로 보내지 않습니다.**
+        #
+        # 기권은 병변 *종류*를 말할지 말지를 정하는 장치입니다. 1단계는 이미
+        # "이상" 이라고 판정했고, 종류를 모른다는 게 괜찮다는 뜻은 아닙니다.
+        # 노트북 06 §5 에 그렇게 적혀 있는데 코드만 어기고 있었습니다:
+        # 1단계가 95.6% 로 본 사진이 "다시 찍어주세요" 로 나갔습니다.
+        #
+        # 게다가 D-023 이후로 **병변 이름을 아예 말하지 않습니다.** 기권이
+        # 감추려던 것(못 믿을 이름)을 애초에 안 보여주므로, 기권이 판정을
+        # 뒤집을 이유가 남아 있지 않습니다. 분포는 그대로 보여주고 — 여섯 개가
+        # 고만고만한 것이 곧 "확실하지 않다" 입니다 — 확신이 낮다는 사실만
+        # meta 로 알립니다.
+        #
+        # `retake` 는 이제 **모델을 돌리기 전** 판단만 남습니다:
+        # 이미지를 못 열었을 때, 가이드 프레임이 밴드 밖일 때.
+        meta["stage2_low_confidence"] = bool(pred.abstain)
+        # ⚠️ 이름이 아니라 **숫자**입니다. 분포 1등의 확률이라 distribution[0].prob
+        #    와 같은 값이고, 새 정보를 흘리지 않습니다. 이름 필드는 만들지 마세요.
+        meta["stage2_top_prob"] = round(float(raw[0][1]), 4) if raw else None
+        meta["stage2_abstain_threshold"] = float(self.s2.cfg.abstain_threshold)
 
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
-        if pred.abstain:
-            return contract("retake", abnormal_p=abnormal, threshold=self.thr,
-                            calibrated=cal1,
-                            text=compose_screening_message(pred), meta=meta)
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
                         calibrated=cal1, stage2=raw,
                         text=compose_screening_message(pred), meta=meta)
