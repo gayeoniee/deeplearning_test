@@ -80,6 +80,73 @@ def test_finds_extracted_dir():
     check("크롭이 다 보인다 (12장)", n == 12, f"{n}장")
 
 
+def make_prepared_flat(root: Path, n: int = 6) -> Path:
+    """`crops/` 층이 **없는** 캐글 데이터셋 — `<데이터셋>/m2.5/...` 입니다.
+
+    `data/work/crops/m2.5` 를 통째로 올리면 이 모양이 됩니다.
+    """
+    src = make_prepared(root / "_staging", n=n)
+    root.mkdir(parents=True, exist_ok=True)
+    for tag in ("m1.5", "full"):
+        (src / "crops" / tag).rename(root / tag)
+    (src / "manifests").rename(root / "manifests")
+    shutil.rmtree(src, ignore_errors=True)
+    return root
+
+
+def test_dataset_without_a_crops_folder_is_found():
+    """캐글 업로드에서 `crops/` 층이 빠져도 찾아야 합니다.
+
+    실제로 여기서 막혔습니다 — 데이터셋을 붙여놓고도
+    "전처리 결과(dogskin_prepared)를 찾지 못했습니다" 로 죽었습니다.
+    """
+    from src import env
+
+    base = _TMP / "flat_input"
+    make_prepared_flat(base / "dogskin-m25-step16")
+    w = fresh_env("flat")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+
+    tags = sorted(p.name for p in (w / "crops").iterdir() if p.is_dir())
+    check("crops/ 층 없는 데이터셋도 붙는다", tags == ["full", "m1.5"], f"{tags}")
+    check("매니페스트도 온다", (w / "manifests" / "manifest_final.parquet").exists())
+    n = sum(sum(1 for _ in (w / "crops" / t).rglob("*.jpg")) for t in tags)
+    check("크롭이 다 보인다 (12장)", n == 12, f"{n}장")
+
+
+def test_manifests_is_not_linked_as_a_crop_tag():
+    """`crops/` 층이 없으면 `manifests/` 가 형제로 나란히 있습니다.
+
+    이름으로 걸러내지 않으면 매니페스트가 **크롭 태그**로 링크되어
+    `crops/manifests` 가 생기고, 태그 수 검사가 조용히 틀립니다.
+    """
+    from src import env
+
+    base = _TMP / "flat_input2"
+    src = make_prepared_flat(base / "ds")
+    w = fresh_env("flat2")
+    env.load_prepared(src, dest=w)
+    tags = sorted(p.name for p in (w / "crops").iterdir() if p.is_dir())
+    check("manifests 가 크롭 태그로 안 들어온다", "manifests" not in tags, f"{tags}")
+
+
+def test_a_plain_folder_is_not_mistaken_for_crops():
+    """아무 폴더나 태그로 받으면 남의 데이터셋이 크롭으로 잡힙니다."""
+    from src import env
+
+    base = _TMP / "not_crops"
+    (base / "ds" / "images").mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(1)
+    Image.fromarray(rng.integers(0, 255, (32, 32, 3), dtype=np.uint8)).save(
+        base / "ds" / "images" / "x.jpg")
+    check("모르는 이름의 폴더는 크롭이 아니다", env._crops_dir(base / "ds") is None)
+
+
 def test_readonly_source_is_linked_not_copied():
     """읽기 전용 원본을 복사하면 /kaggle/working 20GB 를 잡아먹습니다."""
     from src import env
@@ -982,7 +1049,10 @@ if __name__ == "__main__":
                test_real_missing_files_still_warn,
                test_warning_never_reads_as_all_found,
                test_release_carries_the_completion_record,
-               test_missing_completion_record_is_announced]:
+               test_missing_completion_record_is_announced,
+               test_dataset_without_a_crops_folder_is_found,
+               test_manifests_is_not_linked_as_a_crop_tag,
+               test_a_plain_folder_is_not_mistaken_for_crops]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()

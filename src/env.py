@@ -517,11 +517,46 @@ def _search_roots() -> list[Path]:
     return out
 
 
+#: 우리가 쓰는 크롭 태그. `crops/` 층 없이 올라온 폴더를 알아볼 때만 씁니다
+CROP_TAGS = ("m2.5", "m1.5", "f320", "full")
+
+
+def _tag_has_jpg(t: Path) -> bool:
+    try:
+        return t.is_dir() and next(t.rglob("*.jpg"), None) is not None
+    except OSError:
+        return False
+
+
+def _crops_dir(d: Path) -> Path | None:
+    """`d` 안에서 **태그 폴더들을 담고 있는 폴더**를 찾습니다. 없으면 None.
+
+    ⚠️ 캐글 데이터셋을 만들 때 `crops/` 층이 사라지는 일이 있습니다.
+       `data/work/crops/m2.5` 를 그대로 올리면 데이터셋 안이
+       `<데이터셋>/m2.5/00/....jpg` 가 됩니다 — `crops/` 가 없습니다.
+       `d/crops` 만 보면 **붙여놓고도** "전처리 결과를 찾지 못했습니다" 로
+       죽습니다 (실제로 당했습니다). 그래서 `d` 자신도 봅니다.
+
+       단 `d` 자신을 볼 때는 **이름이 아는 태그인 것만** 인정합니다. 아무
+       폴더나 태그로 받으면 남의 데이터셋이 크롭으로 잡힙니다.
+    """
+    c = d / "crops"
+    try:
+        if c.is_dir() and any(_tag_has_jpg(t) for t in c.iterdir()):
+            return c
+    except OSError:
+        pass
+    try:
+        if d.is_dir() and any(t.name in CROP_TAGS and _tag_has_jpg(t) for t in d.iterdir()):
+            return d
+    except OSError:
+        pass
+    return None
+
+
 def _has_crops(d: Path) -> bool:
     """크롭이 **한 장이라도** 들어 있는 태그 폴더가 있는가."""
-    c = d / "crops"
-    return c.is_dir() and any(t.is_dir() and next(t.rglob("*.jpg"), None) is not None
-                              for t in c.iterdir())
+    return _crops_dir(d) is not None
 
 
 def _has_manifest(d: Path) -> bool:
@@ -568,7 +603,7 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
     seen: set[Path] = set()
 
     for base in _search_roots():
-        for d in _walk(base, depth=3):
+        for d in _walk(base, depth=5):
             r = d.resolve()
             # zip 은 이 폴더 바로 아래만 봅니다 (rglob 은 심볼릭 링크로 안 들어갑니다)
             for z in sorted(d.glob("dogskin*.zip")):
@@ -588,7 +623,8 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
             + _what_is_there()
             + "\n찾는 것 (둘 중 하나):\n"
             "  · dogskin*.zip 파일\n"
-            "  · crops/ 폴더를 가진 폴더 (Kaggle 은 zip 을 자동으로 풀어둡니다)\n\n"
+            "  · crops/ 폴더를 가진 폴더 (Kaggle 은 zip 을 자동으로 풀어둡니다)\n"
+            "  · 또는 m2.5/f320/full/m1.5 를 바로 담은 폴더 (crops/ 층 없이 올린 데이터셋)\n\n"
             "확인할 것:\n"
             "  · Kaggle : 우측 패널 [Add Input] 으로 데이터셋을 붙였는지\n"
             "             (붙였으면 위 목록의 /kaggle/input 아래에 보여야 합니다)\n"
@@ -680,7 +716,11 @@ def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
     """
     dst_crops.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
-    for tag_dir in sorted(p for p in src_crops.iterdir() if p.is_dir()):
+    # ⚠️ `crops/` 층 없이 올라온 폴더(`_crops_dir` 이 폴더 자신을 돌려준 경우)에는
+    #    `manifests/` 같은 형제 폴더가 같이 있습니다. 이름으로 걸러내지 않으면
+    #    매니페스트가 **크롭 태그로 링크**됩니다.
+    for tag_dir in sorted(p for p in src_crops.iterdir()
+                          if p.is_dir() and p.name not in _SKIP_DIRS):
         # ⚠️ **빈 태그 폴더는 건너뜁니다.** 노트북 출력을 데이터셋으로 만들면
         #    work/crops/ 의 심볼릭 링크가 빈 폴더로 남는 일이 있습니다.
         #    먼저 연결된 쪽이 이기므로, 그 빈 폴더가 진짜 크롭 데이터셋을 가로막고
@@ -758,9 +798,13 @@ def load_prepared(
 
         if kind == "dir":
             # 읽기 전용일 수 있으므로 크롭은 태그별 링크, 매니페스트는 복사
-            how = _link_tags(src / "crops", dest / "crops")
+            # ⚠️ `src / "crops"` 로 못 박지 마세요 — 캐글 데이터셋은 `crops/` 층이
+            #    빠진 채 올라올 수 있습니다 (`_crops_dir` 주석 참고).
+            src_crops = _crops_dir(src) or (src / "crops")
+            where = src.name if src_crops == src else f"{src.name}/crops"
+            how = _link_tags(src_crops, dest / "crops")
             for tag, act in how.items():
-                print(f"[env] 크롭 {act}: {src.name}/crops/{tag}")
+                print(f"[env] 크롭 {act}: {where}/{tag}")
             # ⚠️ `ensure_dirs()` 가 work_root()/manifests 를 **빈 폴더로 미리 만듭니다.**
             #    "없으면 복사" 로 조건을 걸면 그 빈 폴더 때문에 영원히 복사가 안 되고,
             #    나중에 manifest_final.parquet 을 못 찾아 죽습니다. 비어 있으면 채웁니다.
