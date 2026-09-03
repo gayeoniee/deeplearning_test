@@ -227,6 +227,29 @@ def test_nb05_margin_matches_robust_default():
 
 
 
+# ──────────────────────────────────────────────────────────────
+# 앱 화면의 촬영 문구
+#
+# 헛알림을 줄일 수 있는 길로 **측정에서 살아남은 건 털 하나**입니다
+# (부위별 2.5배 + 같은 부위 안 `hair` AUROC 0.727). 촬영 거리(0.462)와
+# 조명(밝기·채도·색온도)은 기각됐습니다. 근거 없는 문구를 같이 띄우면
+# 지켜지는 문구까지 흐려지므로, **없어야 할 것**도 같이 봅니다.
+# ──────────────────────────────────────────────────────────────
+def test_demo_says_part_the_fur():
+    html = (ROOT / "demo" / "index.html").read_text(encoding="utf-8")
+
+    check("촬영 문구가 한 곳에만 정의된다", html.count("const HAIR_TIP") == 1)
+    check("문구가 '털을 헤쳐서' 를 말한다", "털을 헤쳐서" in html)
+    # 고르기 · 카메라 · 첨부 — 사진이 만들어지는 세 화면 전부
+    check("세 화면이 그 문구를 쓴다", html.count("+ HAIR_TIP") == 3,
+          f"got {html.count('+ HAIR_TIP')}")
+
+    # 기각된 축이 촬영 문구로 새어 들어왔는지 — 문구 블록 안만 봅니다
+    tip = html.split("const HAIR_TIP")[1].split("`;")[0]
+    for word in ("밝은 곳", "조명", "가까이", "거리", "멀리"):
+        check(f"기각된 축을 말하지 않는다: {word}", word not in tip)
+
+
 if __name__ == "__main__":
     print("촬영 가이드 도출 검증\n")
     for fn in (test_band_is_contiguous_around_peak,
@@ -241,7 +264,8 @@ if __name__ == "__main__":
                test_nb05_falls_back_to_checkpoint_names,
                test_nb05_stops_on_a_stale_checkpoint,
                test_nb05_passes_on_the_adopted_crop,
-               test_nb05_margin_matches_robust_default):
+               test_nb05_margin_matches_robust_default,
+               test_demo_says_part_the_fur):
         fn()
     print()
     if FAILS:
