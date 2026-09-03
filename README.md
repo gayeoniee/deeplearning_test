@@ -86,6 +86,27 @@ uv run python prepare_local.py --package
 > 🔑 API 키는 학습 노트북에서는 필요하지 않습니다 (다운로드가 로컬에서 끝났으므로).
 > 로컬에서는 환경변수 `AIHUB_API_KEY` 로 주고, **코드나 노트북 셀에 직접 붙여넣지 마세요.**
 
+### 4. 데모 화면 띄워보기 (선택 — 가중치 없어도 됩니다)
+
+```bash
+uv sync --extra serve
+uv run --extra serve python serve.py --mock      # → http://127.0.0.1:8000/
+```
+
+사진을 올리면 실제 앱이 받게 될 화면이 그대로 나옵니다. `--mock` 은 모델 없이
+**같은 모양의** 응답을 만들어 주므로 torch 도 GPU 도 필요 없습니다
+(숫자는 모델이 낸 것이 아니고, 화면에 `MOCK` 배지가 붙습니다).
+
+진짜 모델로 돌리려면:
+
+```bash
+uv run --extra train --extra serve python serve.py \
+    --ckpt1 runs/stage1_.../best.pt --ckpt2 runs/stage2_.../best.pt
+```
+
+안드로이드 앱(**DAENGS_APP**) 연동 계약과 남은 위험은
+[`docs/SERVING.md`](docs/SERVING.md) 에 있습니다.
+
 ---
 
 ## 이 프로젝트가 신경 쓴 것
@@ -260,6 +281,11 @@ uv run python tests/test_stages.py        # 잘 깔렸는지 확인
 **`06` 해외IP 다운로드 차단** · `07` Windows 로컬 환경 설정 ·
 **`08` 2단계 파이프라인 설계** · `09` 세션이 끊겼을 때
 
+### 📱 앱 연동
+
+[`docs/SERVING.md`](docs/SERVING.md) — API 계약 · 서빙 크롭이 학습 크롭과 다른 문제 ·
+합치기 전에 풀어야 할 4가지 · 데모 테마 바꾸는 법.
+
 ### 🗺️ 전체 진행표
 
 [`docs/00_로드맵.md`](docs/00_로드맵.md)
@@ -345,8 +371,20 @@ src/
 
 ## 라이선스 / 데이터 취급
 
-- **AI Hub 데이터는 재배포 금지**입니다. `.gitignore` 가 이미지·매니페스트·가중치를 막고 있습니다.
+**학습 결과물과 원본 데이터는 취급이 다릅니다.**
+
+| | |
+|---|---|
+| 학습된 **모델·서비스** (`*.pt`, API, 앱) | ✅ **영리·비영리 자유.** 판매·배포까지 됩니다 |
+| **원본 데이터** (AI Hub zip, 라벨 JSON) | ❌ 제3자 제공·공개 금지 |
+| **크롭 이미지** | ❌ "원본을 단순 가공(편집·수정)한 형태" 라 원본과 같은 취급 |
+
+가중치가 `.gitignore` 에 걸려 있는 건 라이선스가 아니라 **파일 크기** 때문입니다
+(`best.pt` 163MB / 189MB, GitHub 은 파일당 100MB 하드 리밋).
+
 - API 키는 Colab/Kaggle Secrets 에만 저장하세요.
 - 자세한 내용: [`docs/cautions/01`](docs/cautions/01_데이터_라이선스와_재배포_금지.md)
 
-출처 명시: `AI Hub 반려동물 피부 질환 데이터, 한국지능정보사회진흥원`
+**출처 표기는 약관상 의무입니다** — 모델·서비스를 쓰는 곳(앱 화면 포함)에 넣으세요.
+
+> 학습 데이터: **반려동물 피부 질환 데이터** — 출처 [AI 허브](https://aihub.or.kr) (`dataSetSn=561`)
