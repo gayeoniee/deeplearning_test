@@ -153,6 +153,51 @@ def check_calls(path: Path) -> list[str]:
     return problems
 
 
+
+# ──────────────────────────────────────────────────────────────
+# 정의하기 **전에** 쓰는 이름이 있나 (셀 순서대로 실행한다고 보고)
+#
+# ⚠️ 위쪽 check_notebook 은 노트북 전체에서 한 번이라도 대입되면 통과시킵니다.
+#    그래서 "뒤 셀에서 import 하는 걸 앞 셀에서 쓰는" 경우를 못 잡습니다.
+#    실제로 06 에서 두 번 당했습니다 — `calibrate` 는 40분짜리 학습이 끝난
+#    뒤에 NameError 로 죽었고, `json`/`np` 도 같은 셀에 숨어 있었습니다.
+#    임대 GPU 는 시간당 과금이라 이런 건 돈으로 셉니다.
+# ──────────────────────────────────────────────────────────────
+def defined_before_use(path: Path) -> list[tuple[int, str]]:
+    """(셀 번호, 이름) — 그 셀 전에 정의된 적이 없는데 쓰는 것."""
+    nb = json.loads(path.read_text(encoding="utf-8"))
+    known = set(dir(builtins)) | EXTRA
+    bad: list[tuple[int, str]] = []
+    for i, c in enumerate(nb["cells"]):
+        if c["cell_type"] != "code":
+            continue
+        try:
+            tree = ast.parse(_clean("".join(c["source"])))
+        except SyntaxError:
+            continue                      # 문법은 위쪽 검사가 봅니다
+        v = _Names()
+        v.visit(tree)
+        bad += [(i, u) for u in sorted(v.used - known - v.bound)]
+        known |= v.bound
+    return bad
+
+
+def _check_order() -> int:
+    print("\n[실행 순서] 정의하기 전에 쓰는 이름이 있는가")
+    n = 0
+    for p in sorted((ROOT / "notebooks").glob("*.ipynb")):
+        bad = defined_before_use(p)
+        if bad:
+            n += len(bad)
+            for i, name in bad:
+                print(f"  ❌ {p.name} 셀 {i}: '{name}' — 그 전에 정의가 없습니다")
+        else:
+            print(f"  ✅ {p.name}")
+    if n:
+        print(f"\n❌ {n}건 — 몇십 분 돌린 뒤에 NameError 로 죽습니다")
+    return n
+
+
 if __name__ == "__main__":
     fails = 0
     for nb_path in sorted((ROOT / "notebooks").glob("*.ipynb")):
@@ -165,4 +210,5 @@ if __name__ == "__main__":
         else:
             print(f"✅ {nb_path.name}")
     print(f"\n{'문제 없음' if not fails else f'문제 {fails}건'}")
+    fails += _check_order()
     sys.exit(1 if fails else 0)

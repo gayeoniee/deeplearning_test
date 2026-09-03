@@ -44,6 +44,18 @@ lightning_logs/
 aihubshell
 !.env.example
 
+# 내려받은 실행 파일 — 도구는 각자 받습니다
+#   runpodctl 하나가 14MB 이고, 플랫폼마다 바이너리가 다릅니다
+#   (windows-amd64 / darwin-arm64 …). 커밋하면 리포만 무거워지고
+#   맥에서 clone 한 사람에게는 못 쓰는 파일이 됩니다.
+#   받는 법: https://github.com/runpod/runpodctl/releases
+*.exe
+*.msi
+*.dmg
+*.AppImage
+runpodctl*
+!runpodctl*.md
+
 # 파이썬
 __pycache__/
 *.py[cod]
