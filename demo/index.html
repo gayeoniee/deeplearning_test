@@ -494,7 +494,7 @@ async function sampleStep() {
    네모 조작 — 카메라와 첨부가 **같은 코드**를 씁니다.
    두 곳에 따로 두면 갈라지고, 갈라지면 한쪽만 학습과 어긋납니다.
    ══════════════════════════════════════════════════════════════ */
-const BAND = {rec: [0.34, 0.56], allow: [0.28, 0.68], center: 0.10};
+const BAND = {rec: [0.28, 0.48], allow: [0.24, 0.56], center: 0.10};
 
 function attachBox(stage, hole, tip, onState) {
   // b 는 정규화 [x, y, w, h]. 이 값이 그대로 bbox 로 서버에 갑니다.

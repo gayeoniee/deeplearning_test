@@ -151,7 +151,7 @@ check("체크포인트 이름에서 크롭 태그를 읽음",
 # ── 4-b. 촬영 가이드 밴드 ─────────────────────────────────────
 print("\n[4-b] 촬영 가이드 밴드")
 check("밴드 값이 STATUS 실측과 같음",
-      agent.GUIDE_RECOMMEND == (0.34, 0.56) and agent.GUIDE_ALLOW == (0.28, 0.68))
+      agent.GUIDE_RECOMMEND == (0.28, 0.48) and agent.GUIDE_ALLOW == (0.24, 0.56))
 mid = [0.5 - 0.44 / 2, 0.5 - 0.44 / 2, 0.44, 0.44]
 check("권장 안이면 통과", agent.check_guide(mid)["ok"])
 small = [0.5 - .10 / 2, 0.5 - .10 / 2, .10, .10]
