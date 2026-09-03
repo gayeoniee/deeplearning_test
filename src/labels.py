@@ -355,6 +355,68 @@ def _closest(cands: list[Path], json_path: Path) -> Path:
 # ──────────────────────────────────────────────────────────────
 # 메인
 # ──────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────
+# JSON 읽기 — **실패를 세고, 말하고, 심하면 멈춥니다**
+#
+# ⚠️ 여기가 조용했던 탓에 TL01(90GB, JSON 263,340개)에서 **97.6% 가 사라진 채**
+#    "✅ 완료" 가 찍혔습니다. 원인이 뭐든, 몇 개를 왜 못 읽었는지는 말해야 합니다.
+#    (같은 코드로 TL02 는 177,605개 중 1개만 놓쳤습니다 — 청크마다 다릅니다)
+#
+# 인코딩도 한 번 더 시도합니다. 이 리포는 cp949 로 세 번 막힌 적이 있습니다
+# (tests/test_windows_encoding.py).
+# ──────────────────────────────────────────────────────────────
+JSON_LOSS_STOP = 0.02          # 이 비율 넘게 못 읽으면 멈춥니다
+
+
+class JsonSkips:
+    """왜 건너뛰었는지를 종류별로 셉니다."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.by_kind: dict[str, int] = {}
+        self.samples: list[str] = []
+
+    def add(self, kind: str, where: str) -> None:
+        self.n += 1
+        self.by_kind[kind] = self.by_kind.get(kind, 0) + 1
+        if len(self.samples) < 5:
+            self.samples.append(f"{kind}  {where}")
+
+    def report(self, total: int, verbose: bool = True) -> None:
+        if not self.n:
+            return
+        rate = self.n / max(total, 1)
+        head = (f"JSON {self.n:,}/{total:,}개 ({rate:.1%}) 를 못 읽었습니다\n"
+                f"  종류별: {self.by_kind}\n  예:\n    "
+                + "\n    ".join(self.samples))
+        if rate > JSON_LOSS_STOP:
+            raise RuntimeError(
+                "❌ " + head + "\n"
+                "  이대로 두면 그만큼이 **조용히 빠진 채** 학습에 들어갑니다.\n"
+                "  zip 이 온전한지, 인코딩이 다른지 확인하세요.")
+        if verbose:
+            print(f"[labels] ⚠️ {head}")
+
+
+def _load_json_bytes(raw: bytes, where: str, skips: JsonSkips):
+    """바이트 → 파이썬 객체. 실패하면 None 을 주고 이유를 남깁니다."""
+    text = None
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        skips.add("인코딩", where)
+        return None
+    try:
+        return json.loads(text)
+    except Exception as exc:                                    # noqa: BLE001
+        skips.add(f"JSON파싱({type(exc).__name__})", where)
+        return None
+
+
 def build_from_zip(
     zip_path: Path | str,
     animal_token_index: int | None = None,
@@ -396,10 +458,15 @@ def build_from_zip(
 
         unmatched = 0
         n_generic = 0
+        skips = JsonSkips()
         for jn in tqdm_maybe(jsons, verbose):
             try:
-                data = json.loads(z.read(jn).decode("utf-8-sig"))
-            except Exception:
+                raw = z.read(jn)
+            except Exception as exc:                            # noqa: BLE001
+                skips.add(f"zip읽기({type(exc).__name__})", jn)
+                continue
+            data = _load_json_bytes(raw, jn, skips)
+            if data is None:
                 continue
             axes = path_axes(Path(jn))
 
@@ -447,11 +514,14 @@ def build_from_zip(
                     **parsed,
                 })
 
+    skips.report(len(jsons), verbose)
+
     df = pd.DataFrame(rows)
     if df.empty:
         raise RuntimeError(f"{zip_path} 에서 매니페스트를 만들지 못했습니다.")
     if verbose:
-        print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건)")
+        print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건, "
+              f"JSON 못 읽음 {skips.n:,}건)")
         if n_generic:
             print(f"[labels] ⚠️ {n_generic:,}건은 561 스키마가 아니라 추론 방식으로 처리")
         if "synthetic" in df.columns:
@@ -510,11 +580,16 @@ def build(
 
     rows: list[dict] = []
     unmatched = 0
+    skips = JsonSkips()
 
     for jp in jsons:
         try:
-            data = json.loads(jp.read_text(encoding="utf-8-sig"))
-        except Exception:
+            raw = jp.read_bytes()
+        except Exception as exc:                                # noqa: BLE001
+            skips.add(f"파일읽기({type(exc).__name__})", str(jp))
+            continue
+        data = _load_json_bytes(raw, str(jp), skips)
+        if data is None:
             continue
         axes = path_axes(jp)
 
@@ -555,6 +630,8 @@ def build(
                 **merged,
             })
 
+    skips.report(len(jsons), verbose)
+
     df = pd.DataFrame(rows)
     if df.empty:
         raise RuntimeError(
@@ -564,7 +641,8 @@ def build(
         )
 
     if verbose:
-        print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건)")
+        print(f"[labels] 원시 행 {len(df):,}개 (이미지 매칭 실패 {unmatched:,}건, "
+              f"JSON 못 읽음 {skips.n:,}건)")
 
     df = _filter_scope(df, dogs_only, normal_camera_only, verbose)
     df = drop_unlabeled(df, verbose)

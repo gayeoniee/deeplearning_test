@@ -80,11 +80,17 @@ def _die(msg: str) -> None:
 
 # ──────────────────────────────────────────────────────────────
 def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa: C901
-               mode: str = "zip") -> None:
+               mode: str = "zip", only: list[str] | None = None) -> None:
     """청크 하나: 다운로드 → 매니페스트 → 크롭 → 원본 삭제.
 
     mode="zip"     : zip 을 **풀지 않고** 안에서 바로 읽습니다. 디스크를 가장 적게 씁니다.
     mode="extract" : 반려묘·더모스코프를 뺀 선택 해제 후 처리 (디스크 여유가 있을 때)
+    only=["A5","A6"] : 그 라벨만 크롭합니다. **매니페스트는 전부 만듭니다** —
+                       나중에 마음이 바뀌면 `--recrop` 으로 zip 없이는 못 되살리니
+                       무엇이 있었는지는 기록에 남겨둡니다.
+
+    ⚠️ `--only` 는 **다운로드를 줄이지 못합니다.** AI Hub 가 zip 6개 통짜로만 주기 때문에
+       (`--list` 로 실측) 80GB 는 그대로 받아야 하고, 줄어드는 건 크롭 용량뿐입니다.
     """
     from src import aihub, crop, env, labels, scan
     from src.config import CFG
@@ -98,14 +104,22 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
     print(f" 청크 {name} — {info['desc']} ({info['gb']}GB), 방식: {mode}")
     print("=" * 68)
 
-    free = env.free_disk_gb()
-    # zip 방식은 zip 자체 + 크롭본만 필요. extract 방식은 해제본까지.
-    need = info["gb"] * (1.15 if mode == "zip" else 1.7)
-    print(f" 여유 디스크 {free:.0f}GB / 필요 약 {need:.0f}GB")
-    if free < need:
-        print(" ⚠️ 공간이 부족합니다.")
-        if mode != "zip":
-            print("    --mode zip 을 쓰면 압축 해제 없이 처리해 훨씬 적게 듭니다.")
+    # ⚠️ **원본이 떨어질 드라이브**를 봐야 합니다. 기본값(리포 폴더)을 보면
+    #    DOG_SKIN_DATA 로 외장을 지정했을 때 엉뚱한 디스크를 재고 통과시킵니다.
+    free = env.free_disk_gb(env.data_root())
+    # ⚠️ 끝나고 남는 양이 아니라 **받는 도중 최대치**를 봐야 합니다.
+    #    aihubshell 이 download.tar + 푼 내용 + 합친 파일을 겹쳐 놓습니다
+    #    (소스를 읽어 확인한 2~3배. src/aihub.DL_PEAK).
+    #    예전엔 여기서 1.15배로 봤는데, 그러면 "여유 93GB / 필요 92GB → 통과" 를
+    #    찍고 받다가 디스크가 찹니다. 통과시키면 안 되는 걸 통과시켰습니다.
+    lo, hi = (info["gb"] * m for m in aihub.DL_PEAK)
+    keep = info["gb"] * 1.15                      # 다 받고 나면 남는 양 (zip + 크롭)
+    print(f" 여유 디스크 {free:.0f}GB")
+    print(f" 받는 도중 최대 {lo:.0f}~{hi:.0f}GB  ·  다 받고 나면 약 {keep:.0f}GB")
+    if free < hi:
+        worst = "❌ 최대치가 디스크보다 큽니다" if free < lo else "⚠️ 최대치에 못 미칩니다"
+        print(f" {worst} — 중간에 'No space left' 로 죽을 수 있습니다.")
+        print("    조각(.part*)으로 안 쪼개진 청크면 2배에서 끝나 될 수도 있습니다.")
         print("    그래도 진행하려면 Enter, 중단하려면 Ctrl+C")
         input()
 
@@ -153,7 +167,20 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
         df = labels.build(root=raw, report=rep, save=False)
 
     # 3) 크롭
+    #    --only 는 **크롭할 행만** 줄입니다. 매니페스트(df)는 통째로 저장해서
+    #    "그때 뭐가 있었는지" 는 남깁니다 — 나중에 클래스 구성을 다시 재려면 필요합니다.
     print("\n[크롭]")
+    df_all = df
+    if only:
+        keep = df["label"].astype(str).isin(only)
+        print(f"  --only {','.join(only)} → {len(df):,}행 중 {int(keep.sum()):,}행만 크롭")
+        for lab, n in df["label"].value_counts().items():
+            mark = "크롭" if str(lab) in only else "  ·  "
+            print(f"     {mark}  {lab:<6}{n:>9,}장")
+        if not keep.any():
+            _die(f"--only {','.join(only)} 에 해당하는 행이 없습니다. "
+                 f"있는 라벨: {', '.join(map(str, df['label'].unique()))}")
+        df = df[keep].reset_index(drop=True)
     first = True
     for m in margins:
         # 음수는 "고정 픽셀 창" 을 뜻합니다: -320 → f320
@@ -166,6 +193,42 @@ def step_chunk(name: str, margins: list[float], keep_raw: bool = False,  # noqa:
         if first:
             df = d          # 첫 항목 결과를 대표 매니페스트로 저장
             first = False
+    if only:
+        # 크롭한 행의 crop_path 를 전체 매니페스트에 되붙입니다.
+        # (크롭 안 한 행은 crop_path 가 비어 있고, 학습 때 걸러집니다)
+        import pandas as pd
+        df = df_all.merge(
+            df[[c for c in df.columns if c == "image_path" or c.startswith("crop_path")]],
+            on="image_path", how="left", suffixes=("", "_new"))
+        for c in [c for c in df.columns if c.endswith("_new")]:
+            df[c[:-4]] = df[c]
+            df = df.drop(columns=[c])
+    # 3-b) ★ phash — **원본을 지우기 전에** 재 둡니다
+    #
+    # 중복 제거는 --finalize 에서 전 청크를 합쳐 한 번에 합니다. 그런데 그때는
+    # 원본이 이미 없습니다. 이 PC 에서 계속 작업하면 zip 이 남아 있어 우연히
+    # 됐지만, **다른 PC 에서 청크를 처리해 크롭만 가져오면** 그 청크는 영영
+    # 못 읽습니다 — 그리고 dedup 은 그 경우 에러 없이 넘어갑니다
+    # (src/dedup.py 의 주석 참고). 여기서 미리 재서 매니페스트에 넣어둡니다.
+    #
+    # 비용은 zip 을 한 번 더 읽는 것뿐이고, 대신 --finalize 가 그만큼 빨라집니다.
+    print("\n[phash] 원본을 지우기 전에 지문을 재 둡니다 (--finalize 가 이걸 씁니다)")
+    try:
+        from src import dedup
+        hashes = dedup.compute_hashes(df_all, hash_size=cfg.phash_size, workers=8)
+        df["phash"] = df["image_path"].map(hashes)
+        got = int(df["phash"].notna().sum())
+        print(f"       {got:,}/{len(df):,}장 ({got / max(len(df), 1):.1%})")
+        if got < len(df) * 0.98:
+            print("  ⚠️ 못 읽은 사진이 있습니다. 그대로 두면 --finalize 가 멈춥니다 "
+                  "(멈추는 게 맞습니다 — 조용히 넘어가면 중복을 못 잡습니다).")
+    except Exception as exc:                                       # noqa: BLE001
+        # 여기서 죽으면 다운로드부터 다시 해야 합니다 — 크롭은 이미 끝났으니
+        # 매니페스트는 저장하고, 대신 무엇이 빠졌는지 크게 알립니다.
+        print(f"  ⚠️ phash 계산 실패: {type(exc).__name__}: {exc}")
+        print("     크롭과 매니페스트는 저장합니다. 다만 원본을 지우기 전에")
+        print("     --keep-raw 로 다시 돌리거나, 이 PC 에서 --finalize 까지 끝내세요.")
+
     labels.save(df, f"chunk_{name}.parquet")
 
     # 4) 원본 삭제 — 다음 청크를 위해 공간 확보
@@ -327,6 +390,50 @@ def step_download(filekeys: list[str]) -> None:
     aihub.peek()
 
 
+def step_list() -> None:
+    """★ AI Hub 가 **어느 단위까지** filekey 를 주는지 봅니다.
+
+    이게 왜 중요한가 — TL02 는 80GB 짜리 zip 한 덩어리라, 통째로 받으려면
+    디스크가 그만큼 비어 있어야 합니다. 그런데 AI Hub 가 zip **안쪽**까지
+    filekey 를 준다면 조각조각 받아서 크롭하고 지우기를 반복할 수 있습니다.
+    그러면 디스크 문제가 통째로 사라집니다.
+
+    `KNOWN_FILES_561` 에 하드코딩된 6개는 2026-08 에 **관측된** 것일 뿐,
+    API 가 그것만 준다는 뜻은 아닙니다. 실제 출력을 봐야 압니다.
+    """
+    from src import aihub, env
+
+    key = env.secret("AIHUB_API_KEY")
+    aihub.install()
+
+    print("\n" + "=" * 68)
+    print(" AI Hub 파일 목록 (-mode l 원본)")
+    print("=" * 68)
+    text = aihub.raw_listing(key)
+    print(text)
+
+    files = aihub.parse_listing(text)
+    print("\n" + "=" * 68)
+    print(f" 파싱 결과: {len(files)}개")
+    print("=" * 68)
+    if not files:
+        print(" ⚠️ 파싱 0건 — 위 원본 출력을 그대로 공유해주세요.")
+        return
+
+    for f in files:
+        print(f"   {f.filekey:>8}  {str(f.size):>10}  {f.path}/{f.name}" if f.path
+              else f"   {f.filekey:>8}  {str(f.size):>10}  {f.name}")
+
+    big = [f for f in files if "GB" in str(f.size)]
+    print(f"\n 총 {len(files)}개 중 GB 단위 {len(big)}개")
+    if len(files) > 10:
+        print(" ✅ zip 안쪽까지 filekey 가 있습니다 — **조각내서 받을 수 있습니다.**")
+        print("    → 디스크가 부족해도 조금씩 받고 크롭하고 지우기를 반복하면 됩니다.")
+    else:
+        print(" ❌ 큰 zip 단위로만 줍니다 — 통째로 받는 수밖에 없습니다.")
+        print("    → 그 크기만큼 디스크가 비어 있어야 합니다.")
+
+
 def step_scan() -> None:
     from src import scan
 
@@ -443,6 +550,9 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="VL01 만 받아 전 과정 (가장 간단)")
     p.add_argument("--download", action="store_true", help="(단독) 다운로드만")
     p.add_argument("--scan", action="store_true", help="(단독) 스캔만")
+    p.add_argument("--list", action="store_true", dest="list_files",
+                   help="★ AI Hub 가 어느 단위까지 filekey 를 주는지 확인 "
+                        "(조각내서 받을 수 있는지 판단)")
     p.add_argument("--filekey", default="517022")
     p.add_argument("--margins", default="1.5,2.5,0,-320",
                    help="크롭 방식 목록. 양수=margin 배율(m1.5), 0=중앙 정사각(full), "
@@ -452,6 +562,9 @@ def main() -> None:
                         "매니페스트를 다시 만들지 않으므로 holdout 이 오염되지 않습니다")
     p.add_argument("--raw", metavar="폴더", default=None,
                    help="--recrop 전용. 재다운로드한 zip 이 예전과 다른 폴더면 그 위치")
+    p.add_argument("--only", metavar="라벨",
+                   help="★ 그 라벨만 크롭 (콤마 구분, 예: A5,A6). 매니페스트는 전부 만듭니다. "
+                        "다운로드는 안 줄어듭니다 — AI Hub 가 zip 통짜로만 줍니다")
     p.add_argument("--keep-raw", action="store_true", help="원본을 지우지 않음")
     p.add_argument("--mode", choices=["zip", "extract"], default="zip",
                    help="zip: 압축을 풀지 않고 바로 읽음 (디스크 최소, 기본값) / "
@@ -459,20 +572,27 @@ def main() -> None:
     p.add_argument("--out", default="dogskin_prepared.zip")
     a = p.parse_args()
 
-    if not any([a.all, a.chunk, a.finalize, a.package, a.download, a.scan, a.recrop]):
+    if not any([a.all, a.chunk, a.finalize, a.package, a.download,
+                a.scan, a.recrop, a.list_files]):
         p.print_help()
         sys.exit(0)
 
-    needs_key = a.all or a.chunk or a.download
+    needs_key = a.all or a.chunk or a.download or a.list_files
     if needs_key and not os.environ.get("AIHUB_API_KEY"):
         _die('환경변수 AIHUB_API_KEY 가 없습니다.\n'
              '   Linux/Mac : export AIHUB_API_KEY="키"\n'
              "   Windows   : set AIHUB_API_KEY=키")
 
+    # 목록만 보는 건 환경 설명·시드 없이 바로 끝냅니다
+    if a.list_files:
+        step_list()
+        return
+
     from src import env
     env.describe()
     env.set_seed(42)
     margins = [float(x) for x in a.margins.split(",")]
+    only = [x.strip() for x in a.only.split(",") if x.strip()] if a.only else None
 
     if a.all:
         step_chunk("VL01", margins, a.keep_raw, a.mode)
@@ -484,7 +604,7 @@ def main() -> None:
         if a.scan:
             step_scan()
         if a.chunk:
-            step_chunk(a.chunk, margins, a.keep_raw, a.mode)
+            step_chunk(a.chunk, margins, a.keep_raw, a.mode, only)
         if a.recrop:
             # ⚠️ --recrop 과 --finalize 를 같이 쓰면 분할이 다시 계산돼
             #    기존 크롭·기존 측정값과의 짝이 깨집니다. 애초에 못 쓰게 막습니다.

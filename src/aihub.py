@@ -46,6 +46,17 @@ AIHUBSHELL_URL = "https://api.aihub.or.kr/api/aihubshell.do"
 #      (어차피 AI Hub 의 Training/Validation 구분은 개체 누수를 보장하지 않으므로
 #       그대로 쓰면 안 되고, 우리가 split.py 로 다시 나눕니다)
 # ──────────────────────────────────────────────────────────────
+# ★ 받는 도중 디스크 최대치 = zip 크기의 몇 배인가 — **소스를 읽어 실측한 값**입니다
+#   (`tools/crops.py --shell-peek`. 근거: docs/results/AIHUBSHELL_피크_실측.md)
+#   ① curl -o download.tar                          1배
+#   ② tar -xvf download.tar (뒤에 rm 이 없습니다)   + 풀린 내용 = 2배
+#   ③ cat 조각들 > 합친파일 (조각 삭제는 그 뒤)     + 합친 것   = 3배
+#   조각(.part*)으로 안 쪼개진 청크면 ②에서 끝나 2배입니다 — 받아보기 전엔 모릅니다.
+#   ⚠️ "압축 해제 때문에 2배" 라고 적었던 옛 설명은 틀렸습니다. 우리는 --mode zip
+#      으로 압축을 안 풉니다. 겹치는 건 tar 와 조각입니다.
+DL_PEAK = (2.0, 3.0)
+
+
 KNOWN_FILES_561: list[dict] = [
     {"filekey": "517021", "name": "VS01.zip", "gb": 21, "split": "Validation", "kind": "원천"},
     {"filekey": "517022", "name": "VL01.zip", "gb": 21, "split": "Validation", "kind": "라벨"},

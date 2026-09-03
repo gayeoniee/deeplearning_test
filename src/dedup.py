@@ -165,6 +165,8 @@ def run(
     workers: int = 4,
     path_col: str | None = None,
     verbose: bool = True,
+    reuse_phash: bool = True,
+    max_missing: float = 0.02,
 ) -> tuple[pd.DataFrame, dict]:
     """매니페스트에서 중복을 제거하고 `dup_cluster` 컬럼을 붙입니다.
 
@@ -183,7 +185,51 @@ def run(
     if verbose:
         print(f"[dedup] {n_uniq:,}장 해시 계산 (기준 {path_col}, hash_size={cfg.phash_size})")
 
-    hashes = compute_hashes(df, hash_size=cfg.phash_size, workers=workers, path_col=path_col)
+    # ★ 이미 계산돼 온 phash 는 다시 재지 않습니다.
+    #
+    # ⚠️ 이게 없으면 **조용히 틀립니다.** 다른 PC 에서 청크를 처리해 크롭만 가져오면
+    #    그 청크의 원본 zip 이 여기 없습니다. 그때 다시 재려 하면 그 청크만 전부
+    #    실패하는데, compute_hashes 는 **한 장도 못 읽었을 때만** 에러를 냅니다 —
+    #    VL01 이 읽히니까 에러가 안 나고, TL02 는 dup_cluster 가 "자기 자신" 으로
+    #    채워집니다. 결과: **청크 경계를 넘는 중복이 하나도 안 잡힙니다.**
+    #    그걸 막으려고 만든 단계인데 아무 말 없이 통과합니다.
+    have: dict[str, str] = {}
+    if reuse_phash and "phash" in df.columns:
+        have = (df.dropna(subset=["phash"])
+                  .drop_duplicates(subset=[path_col])
+                  .set_index(path_col)["phash"].astype(str).to_dict())
+    todo = df[~df[path_col].isin(have)] if have else df
+
+    if verbose and have:
+        print(f"[dedup] 매니페스트에 있는 phash {len(have):,}개 재사용 "
+              f"— 다시 읽을 것 {todo[path_col].nunique():,}장")
+
+    hashes = dict(have)
+    if len(todo):
+        hashes.update(compute_hashes(todo, hash_size=cfg.phash_size,
+                                     workers=workers, path_col=path_col))
+
+    # 못 읽은 것이 조금이라도 있으면 **말합니다.** 위 함정의 반쪽짜리 버전
+    # (일부만 실패) 도 여기서 걸립니다.
+    missed = sorted(set(df[path_col]) - set(hashes))
+    if missed:
+        rate = len(missed) / n_uniq
+        where = ""
+        if "chunk" in df.columns:
+            bad = df[df[path_col].isin(missed)]["chunk"].value_counts().to_dict()
+            where = f"\n  청크별: {bad}"
+        msg = (f"phash 를 못 읽은 사진 {len(missed):,}장 ({rate:.1%}){where}\n"
+               f"  못 읽은 예: {missed[0]}\n"
+               "  · 다른 PC 에서 처리한 청크라면 그 PC 에서 원본이 있을 때\n"
+               "    phash 를 계산해 chunk_*.parquet 에 담아 와야 합니다\n"
+               "    (prepare_local.py --chunk 가 자동으로 합니다).\n"
+               "  · 그냥 넘기면 그 사진들은 '중복 없음' 으로 처리돼\n"
+               "    청크 경계를 넘는 누수를 못 막습니다.")
+        if rate > max_missing:
+            raise RuntimeError("❌ " + msg)
+        if verbose:
+            print("⚠️ " + msg)
+
     clusters = cluster(hashes, max_hamming=cfg.dedup_hamming)
 
     out = df.copy()
