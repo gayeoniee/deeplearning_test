@@ -147,6 +147,54 @@ def test_a_plain_folder_is_not_mistaken_for_crops():
     check("모르는 이름의 폴더는 크롭이 아니다", env._crops_dir(base / "ds") is None)
 
 
+def test_manifest_one_level_deeper_is_found():
+    """`manifests/` 안에 층이 하나 더 있어도 찾아야 합니다.
+
+    실제로 당했습니다 — `manifests/` 폴더는 있는데 그 바로 아래에 parquet 이
+    없어서, `[env] 매니페스트 복사` 를 찍고도 **0개**를 복사했습니다.
+    8분짜리 크롭 세기를 마친 뒤 다음 셀에서
+    `FileNotFoundError: manifest_final.parquet` 로 죽었습니다.
+    """
+    from src import env
+
+    base = _TMP / "nested_man"
+    src = make_prepared_flat(base / "ds")
+    inner = src / "manifests" / "data" / "work" / "manifests"
+    inner.mkdir(parents=True)
+    (src / "manifests" / "manifest_final.parquet").rename(inner / "manifest_final.parquet")
+
+    w = fresh_env("nested_man")
+    env.load_prepared(src, dest=w)
+    check("한 층 더 들어간 매니페스트도 온다",
+          (w / "manifests" / "manifest_final.parquet").exists(),
+          f"{sorted(p.name for p in (w / 'manifests').glob('*'))}" if (w / "manifests").is_dir() else "manifests 폴더 자체가 없습니다")
+
+
+def test_manifest_at_the_dataset_root_is_found():
+    """`manifests/` 층 없이 최상위에 놓인 parquet 도 찾아야 합니다."""
+    from src import env
+
+    base = _TMP / "root_man"
+    src = make_prepared_flat(base / "ds")
+    (src / "manifests" / "manifest_final.parquet").rename(src / "manifest_final.parquet")
+    shutil.rmtree(src / "manifests")
+
+    w = fresh_env("root_man")
+    env.load_prepared(src, dest=w)
+    check("최상위 매니페스트도 온다",
+          (w / "manifests" / "manifest_final.parquet").exists())
+
+
+def test_empty_manifests_folder_does_not_look_prepared():
+    """폴더만 있고 안이 비면 '매니페스트 있음' 으로 세면 안 됩니다."""
+    from src import env
+
+    base = _TMP / "empty_man"
+    src = make_prepared_flat(base / "ds")
+    (src / "manifests" / "manifest_final.parquet").unlink()
+    check("빈 manifests 는 매니페스트가 아니다", not env._has_manifest(src))
+
+
 def test_readonly_source_is_linked_not_copied():
     """읽기 전용 원본을 복사하면 /kaggle/working 20GB 를 잡아먹습니다."""
     from src import env
@@ -1052,7 +1100,10 @@ if __name__ == "__main__":
                test_missing_completion_record_is_announced,
                test_dataset_without_a_crops_folder_is_found,
                test_manifests_is_not_linked_as_a_crop_tag,
-               test_a_plain_folder_is_not_mistaken_for_crops]:
+               test_a_plain_folder_is_not_mistaken_for_crops,
+               test_manifest_one_level_deeper_is_found,
+               test_manifest_at_the_dataset_root_is_found,
+               test_empty_manifests_folder_does_not_look_prepared]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()
