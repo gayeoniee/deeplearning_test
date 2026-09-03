@@ -559,9 +559,62 @@ def _has_crops(d: Path) -> bool:
     return _crops_dir(d) is not None
 
 
+def _manifest_files(d: Path) -> list[Path]:
+    """`d` **바로 아래**의 매니페스트 파일들 (parquet · csv)."""
+    try:
+        return sorted(p for p in d.iterdir()
+                      if p.is_file() and not p.name.startswith(".")
+                      and p.suffix in (".parquet", ".csv")
+                      and "manifest" in p.name.lower())
+    except OSError:
+        return []
+
+
+def _manifests_dir(d: Path, depth: int = 5) -> Path | None:
+    """`d` 안에서 **매니페스트 파일이 실제로 들어 있는 폴더**를 찾습니다.
+
+    ⚠️ `d / "manifests"` 로 못 박지 마세요. 캐글 데이터셋을 만들면 층이
+       하나 늘거나(`manifests/manifests/*.parquet`,
+       `manifests/data/work/manifests/*.parquet`) 아예 없어져
+       (`<데이터셋>/manifest_final.parquet`) 있는 일이 실제로 있습니다.
+       예전 코드는 `manifests/` **폴더만** 보고 "매니페스트 복사" 를 찍은 뒤
+       0개를 복사했습니다 — 8분 뒤 다음 셀에서
+       `FileNotFoundError: manifest_final.parquet` 로 죽었습니다.
+
+    크롭 태그 폴더로는 안 내려갑니다 (36만 장짜리라 훑으면 몇 분 걸립니다).
+    """
+    skip = set(CROP_TAGS) | {"crops", "reports", "checkpoints",
+                             "__pycache__", "lost+found"}
+    frontier = [d / "manifests", d]
+    seen: set[Path] = set()
+    for _ in range(depth):
+        nxt: list[Path] = []
+        for p in frontier:
+            if not p.is_dir():
+                continue
+            try:
+                r = p.resolve()
+            except OSError:
+                continue
+            if r in seen:
+                continue
+            seen.add(r)
+            if _manifest_files(p):
+                return p
+            try:
+                nxt += [c for c in sorted(p.iterdir())
+                        if c.is_dir() and c.name not in skip
+                        and not c.name.startswith(".")]
+            except OSError:
+                continue
+        if not nxt:
+            break
+        frontier = nxt
+    return None
+
+
 def _has_manifest(d: Path) -> bool:
-    m = d / "manifests"
-    return m.is_dir() and next(m.glob("*.parquet"), None) is not None
+    return _manifests_dir(d) is not None
 
 
 def _looks_prepared(d: Path) -> bool:
@@ -706,6 +759,41 @@ def _what_is_there(max_items: int = 12) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _peek(d: Path, depth: int = 3, max_items: int = 10) -> list[str]:
+    """`d` 안을 몇 층까지 훑어 사람이 읽을 줄로 만듭니다 (진단용).
+
+    크롭 태그 폴더로는 안 들어갑니다 — 36만 장을 세면 몇 분 걸립니다.
+    """
+    skip = set(CROP_TAGS) | {"crops"}
+    out: list[str] = []
+
+    def walk(p: Path, level: int, pad: str) -> None:
+        if level > depth:
+            return
+        try:
+            items = sorted(p.iterdir())
+        except OSError as exc:
+            out.append(f"{pad}(읽을 수 없음: {type(exc).__name__})")
+            return
+        if not items:
+            out.append(f"{pad}(비어 있음)")
+            return
+        for q in items[:max_items]:
+            if q.is_dir():
+                mark = " …" if q.name in skip else "/"
+                out.append(f"{pad}📁 {q.name}{mark}")
+                if q.name not in skip:
+                    walk(q, level + 1, pad + "   ")
+            else:
+                mb = q.stat().st_size / 1024**2
+                out.append(f"{pad}📄 {q.name}  ({mb:,.1f} MB)")
+        if len(items) > max_items:
+            out.append(f"{pad}… 외 {len(items) - max_items}개")
+
+    walk(d, 1, "")
+    return out
+
+
 def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
     """크롭을 **태그 단위로** 연결합니다. 여러 입력을 합칠 수 있습니다.
 
@@ -809,16 +897,24 @@ def load_prepared(
             #    "없으면 복사" 로 조건을 걸면 그 빈 폴더 때문에 영원히 복사가 안 되고,
             #    나중에 manifest_final.parquet 을 못 찾아 죽습니다. 비어 있으면 채웁니다.
             man = dest / "manifests"
-            if (src / "manifests").is_dir():
+            src_man = _manifests_dir(src)
+            if src_man is not None:
                 if force and man.exists() and not man.is_symlink():
                     shutil.rmtree(man)
                 have = sorted(man.glob("*")) if man.exists() else []
                 if not have:
                     man.mkdir(parents=True, exist_ok=True)
-                    for f in sorted((src / "manifests").iterdir()):
+                    n = 0
+                    for f in sorted(src_man.iterdir()):
                         if f.is_file():
                             shutil.copy2(f, man / f.name)
-                    print(f"[env] 매니페스트 복사: {src.name}/manifests → {man}")
+                            n += 1
+                    # ⚠️ 몇 개를 복사했는지 **반드시 찍습니다.** 예전엔 개수 없이
+                    #    "복사" 만 찍어서 0개를 복사하고도 정상처럼 보였습니다.
+                    tail = src_man.name if src_man != src else "(최상위)"
+                    print(f"[env] 매니페스트 {n}개 복사: {src.name}/{tail} → {man}")
+            else:
+                print(f"[env] {src.name} 안에 매니페스트 파일이 없습니다 (크롭만 있는 입력)")
         elif already:
             print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
         else:
@@ -865,6 +961,15 @@ def load_prepared(
         print("⚠️ manifest_final.parquet 이 없습니다.")
         print("   로컬에서 `python prepare_local.py --finalize` 를 돌렸는지 확인하세요.")
         print("   이게 없으면 개체 단위 분할(fold/holdout)이 안 되어 있습니다.")
+        # ⚠️ 여기서 **입력 안을 보여줍니다.** 안 보여주면 다음 셀에서
+        #    FileNotFoundError 만 뜨고, 데이터셋에 파일이 없는 건지 경로가
+        #    어긋난 건지 알 수 없어 8분짜리 실행을 또 돌리게 됩니다.
+        for src, kind in sources:
+            if kind != "dir":
+                continue
+            print(f"   ── {src} 안 ──")
+            for p in _peek(src):
+                print(f"      {p}")
     return dest
 
 
