@@ -166,7 +166,11 @@ class CFG:
     shift_limit: float = 0.0          # 평행이동 비율 (위치 교란 20.6% 대응)
 
     # --- 불균형 대응 ---
-    balance_strategy: str = "class_weight"   # "none" | "class_weight" | "weighted_sampler"
+    balance_strategy: str = "class_weight"
+    # "none" | "class_weight" | "weighted_sampler" | "hair_weighted"
+    #   hair_weighted — 털처럼 가는 선이 많은 **정상** 사진을 더 자주 뽑습니다.
+    #   헛알림 실측(AUROC 0.749)에서 나온 값이고, 클래스 총량은 보존합니다.
+    hair_alpha: float = 1.0   # 0=끔, 1=최상위가 최하위보다 2배 자주
     focal_gamma: float = 0.0                 # >0 이면 focal loss 사용
 
     # --- 평가 / 안전장치 ---
@@ -406,7 +410,7 @@ def with_aug(cfg: "CFG", name: str) -> "CFG":
 #    다시 import 하기 전까지 그대로입니다. src/ 만 매번 최신이 됩니다.
 #    그래서 셀을 고칠 때마다 이 값을 올리고, 노트북 첫 셀이 자기가 들고 있는
 #    값과 비교해 **낡았으면 바로 알립니다.** (몇 시간 뒤에 알게 되면 늦습니다)
-NOTEBOOK_VERSION = "2026-08-25.1"
+NOTEBOOK_VERSION = "2026-08-28.1"
 
 # ★ 채택된 2단계 크롭. STEP 4C(비교) → 4D(재기준선) 에서 확정했습니다.
 #   노트북 05 가 불러온 체크포인트의 크롭이 이것과 다르면 **멈춥니다** —
