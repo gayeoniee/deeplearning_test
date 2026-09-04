@@ -929,6 +929,40 @@ def load_prepared(
 
     crops = dest / "crops"
     mans = sorted((dest / "manifests").glob("*.parquet")) if (dest / "manifests").exists() else []
+
+    # ★ 매니페스트가 없으면 **여기서 멈춥니다.** 크롭 세기 전에요.
+    #
+    # ⚠️ 예전에는 경고만 찍고 진행했습니다. 크롭 36만 장을 세는 데 13분이
+    #    걸리고, 그 뒤 다음 셀이 `FileNotFoundError: manifest_final.parquet` 로
+    #    죽었습니다 — 20분을 버리고, 정작 원인을 알려주는 줄은 스크롤 위로
+    #    밀려 올라가 보이지도 않았습니다. 실제로 두 번 당했습니다.
+    #    **예외 메시지에 데이터셋 안을 같이 넣습니다** — 사람들이 복사해 오는
+    #    건 로그 꼬리(=트레이스백)뿐이라, 거기 없으면 전달되지 않습니다.
+    if not any("final" in m.name for m in mans):
+        found = [m.name for m in mans] or ["(하나도 없음)"]
+        lines = [
+            "manifest_final.parquet 이 없습니다. (크롭은 붙었는데 라벨이 없습니다)",
+            "",
+            f"작업 폴더 {dest / 'manifests'} 에 있는 것: {found}",
+            "",
+            "붙인 입력 안을 열어봤습니다 ↓ — 여기에 parquet 이 안 보이면",
+            "데이터셋에 매니페스트가 **안 들어간 것**입니다:",
+        ]
+        for s, kind in sources:
+            lines.append(f"  ── {s}  ({kind}) ──")
+            if kind == "dir":
+                lines += [f"     {t}" for t in _peek(s)]
+            else:
+                lines.append("     (zip)")
+        lines += [
+            "",
+            "할 일 — 둘 중 하나:",
+            "  · manifest_final.parquet 을 Private 데이터셋으로 따로 올려",
+            "    [Add Input] 으로 붙이세요. 크롭 데이터셋은 그대로 두면 됩니다",
+            "    (매니페스트는 100MB 안팎이라 몇 분이면 올라갑니다)",
+            "  · 이미 붙였는데 위 목록에 안 보이면 업로드가 덜 끝난 것입니다",
+        ]
+        raise FileNotFoundError("\n".join(lines))
     # ⚠️ `crops.rglob()` 은 **심볼릭 링크 하위 폴더로 들어가지 않습니다.**
     #    Kaggle 에서는 태그마다 링크를 걸므로 여기서 0장이 나옵니다.
     #    태그 폴더를 하나씩(= 링크 자체를 시작점으로) 훑어야 합니다.
@@ -957,19 +991,6 @@ def load_prepared(
     print(f"[env] 매니페스트 {[m.name for m in mans]}")
     if n_crop == 0:
         print("⚠️ 크롭이 하나도 없습니다. 데이터셋 내용을 확인하세요.")
-    if not any("final" in m.name for m in mans):
-        print("⚠️ manifest_final.parquet 이 없습니다.")
-        print("   로컬에서 `python prepare_local.py --finalize` 를 돌렸는지 확인하세요.")
-        print("   이게 없으면 개체 단위 분할(fold/holdout)이 안 되어 있습니다.")
-        # ⚠️ 여기서 **입력 안을 보여줍니다.** 안 보여주면 다음 셀에서
-        #    FileNotFoundError 만 뜨고, 데이터셋에 파일이 없는 건지 경로가
-        #    어긋난 건지 알 수 없어 8분짜리 실행을 또 돌리게 됩니다.
-        for src, kind in sources:
-            if kind != "dir":
-                continue
-            print(f"   ── {src} 안 ──")
-            for p in _peek(src):
-                print(f"      {p}")
     return dest
 
 
