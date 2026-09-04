@@ -613,6 +613,103 @@ def _manifests_dir(d: Path, depth: int = 5) -> Path | None:
     return None
 
 
+def _manifest_zip(d: Path, depth: int = 5, max_gb: float = 3.0) -> tuple[Path | None, list[str]]:
+    """매니페스트가 들어 있는 **zip** 과 그 안의 항목들. 없으면 `(None, [])`.
+
+    ⚠️ **캐글이 업로드한 zip 을 늘 풀어주는 건 아닙니다.** 실제로 크롭 zip 은
+       풀려서 `m2.5/00/*.jpg` 가 됐는데 `manifests.zip` 은 그대로 남아
+       있었습니다. 폴더만 보면 "매니페스트 없음" 으로 죽습니다.
+
+    크롭 zip(12GB 대)은 크기로 걸러냅니다 — 거기엔 매니페스트가 없고,
+    네트워크 마운트에서 목차를 읽으면 느립니다.
+    """
+    import zipfile
+
+    skip = set(CROP_TAGS) | {"crops", "reports", "checkpoints",
+                             "__pycache__", "lost+found"}
+    frontier, seen = [d], set()
+    for _ in range(depth):
+        nxt: list[Path] = []
+        for p in frontier:
+            if not p.is_dir():
+                continue
+            try:
+                r = p.resolve()
+            except OSError:
+                continue
+            if r in seen:
+                continue
+            seen.add(r)
+            try:
+                items = sorted(p.iterdir())
+            except OSError:
+                continue
+            for q in items:
+                if q.is_dir():
+                    if q.name not in skip and not q.name.startswith("."):
+                        nxt.append(q)
+                    continue
+                if q.suffix.lower() != ".zip":
+                    continue
+                # ⚠️ 통짜 `dogskin*.zip` 은 건드리지 않습니다 — 그건 아래
+                #    "압축 해제" 경로가 통째로 풉니다. 여기서 가로채면
+                #    크롭이 안 풀린 채 매니페스트만 옵니다.
+                if q.name.lower().startswith("dogskin"):
+                    continue
+                try:
+                    if q.stat().st_size > max_gb * 1024**3:
+                        continue                    # 크롭 zip — 여기엔 없습니다
+                    with zipfile.ZipFile(q) as f:
+                        names = [n for n in f.namelist()
+                                 if not n.endswith("/")
+                                 and "manifest" in n.rsplit("/", 1)[-1].lower()
+                                 and n.lower().endswith((".parquet", ".csv"))]
+                except (OSError, zipfile.BadZipFile):
+                    continue
+                if names:
+                    return q, names
+        frontier = nxt
+        if not frontier:
+            break
+    return None, []
+
+
+def _bring_manifests(src: Path, man: Path) -> int:
+    """`src` 안의 매니페스트를 작업 폴더로 가져옵니다. 가져온 **개수**를 돌려줍니다.
+
+    폴더로 올렸든 zip 으로 올렸든 둘 다 받습니다.
+    """
+    import zipfile
+
+    d = _manifests_dir(src)
+    if d is not None:
+        man.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for f in sorted(d.iterdir()):
+            if f.is_file():
+                shutil.copy2(f, man / f.name)
+                n += 1
+        tail = d.name if d != src else "(최상위)"
+        print(f"[env] 매니페스트 {n}개 복사: {src.name}/{tail} → {man}")
+        return n
+
+    z, members = _manifest_zip(src)
+    if z is not None:
+        man.mkdir(parents=True, exist_ok=True)
+        # ⚠️ 폴더 구조는 버리고 **파일만** 꺼냅니다. zip 안이
+        #    `data/work/manifests/manifest_final.parquet` 이어도
+        #    작업 폴더에는 `manifests/manifest_final.parquet` 이어야 합니다.
+        with zipfile.ZipFile(z) as f:
+            for m in members:
+                with f.open(m) as r, open(man / m.rsplit("/", 1)[-1], "wb") as w:
+                    shutil.copyfileobj(r, w)
+        print(f"[env] 매니페스트 {len(members)}개 풀기: {z.name} → {man}")
+        return len(members)
+
+    print(f"[env] {src.name} 안에 매니페스트가 없습니다 (크롭만 있는 입력)")
+    return 0
+
+
 def _has_manifest(d: Path) -> bool:
     return _manifests_dir(d) is not None
 
@@ -631,6 +728,17 @@ def _looks_prepared(d: Path) -> bool:
 def _looks_partial(d: Path) -> bool:
     """크롭만 있고 매니페스트는 없는 폴더 — 태그를 나눠 올린 경우."""
     return _has_crops(d) and not _has_manifest(d)
+
+
+def _looks_manifest_only(d: Path) -> bool:
+    """크롭 없이 **매니페스트만** 올린 폴더.
+
+    크롭 데이터셋은 그대로 두고 매니페스트만 따로 올려 붙이는 길을 열어둡니다
+    (크롭은 12GB 라 다시 올리는 데 몇 시간 걸립니다). 폴더든 zip 이든 받습니다.
+    """
+    if _has_crops(d):
+        return False
+    return _manifests_dir(d, depth=2) is not None or _manifest_zip(d, depth=2)[0] is not None
 
 
 def find_prepared(dest: Path | None = None) -> tuple[Path, str]:
@@ -665,7 +773,7 @@ def find_prepared_all(dest: Path | None = None) -> list[tuple[Path, str]]:
                     zips.append((z, "zip"))
             if r in seen or r == dest.resolve():
                 continue
-            if _looks_prepared(d) or _looks_partial(d):
+            if _looks_prepared(d) or _looks_partial(d) or _looks_manifest_only(d):
                 seen.add(r)
                 dirs.append((d, "dir"))
 
@@ -718,7 +826,8 @@ def _walk(base: Path, depth: int = 5, max_dirs: int = 3000) -> list[Path]:
                         continue
                     out.append(p)
                     # 여기가 이미 전처리 폴더면 더 내려갈 이유가 없습니다
-                    if not (_looks_prepared(p) or _looks_partial(p)):
+                    if not (_looks_prepared(p) or _looks_partial(p)
+                            or _looks_manifest_only(p)):
                         nxt.append(p)
             except OSError:
                 continue
@@ -888,33 +997,24 @@ def load_prepared(
             # 읽기 전용일 수 있으므로 크롭은 태그별 링크, 매니페스트는 복사
             # ⚠️ `src / "crops"` 로 못 박지 마세요 — 캐글 데이터셋은 `crops/` 층이
             #    빠진 채 올라올 수 있습니다 (`_crops_dir` 주석 참고).
-            src_crops = _crops_dir(src) or (src / "crops")
-            where = src.name if src_crops == src else f"{src.name}/crops"
-            how = _link_tags(src_crops, dest / "crops")
-            for tag, act in how.items():
-                print(f"[env] 크롭 {act}: {where}/{tag}")
+            src_crops = _crops_dir(src)
+            if src_crops is not None:
+                where = src.name if src_crops == src else f"{src.name}/crops"
+                how = _link_tags(src_crops, dest / "crops")
+                for tag, act in how.items():
+                    print(f"[env] 크롭 {act}: {where}/{tag}")
             # ⚠️ `ensure_dirs()` 가 work_root()/manifests 를 **빈 폴더로 미리 만듭니다.**
             #    "없으면 복사" 로 조건을 걸면 그 빈 폴더 때문에 영원히 복사가 안 되고,
             #    나중에 manifest_final.parquet 을 못 찾아 죽습니다. 비어 있으면 채웁니다.
             man = dest / "manifests"
-            src_man = _manifests_dir(src)
-            if src_man is not None:
-                if force and man.exists() and not man.is_symlink():
-                    shutil.rmtree(man)
-                have = sorted(man.glob("*")) if man.exists() else []
-                if not have:
-                    man.mkdir(parents=True, exist_ok=True)
-                    n = 0
-                    for f in sorted(src_man.iterdir()):
-                        if f.is_file():
-                            shutil.copy2(f, man / f.name)
-                            n += 1
-                    # ⚠️ 몇 개를 복사했는지 **반드시 찍습니다.** 예전엔 개수 없이
-                    #    "복사" 만 찍어서 0개를 복사하고도 정상처럼 보였습니다.
-                    tail = src_man.name if src_man != src else "(최상위)"
-                    print(f"[env] 매니페스트 {n}개 복사: {src.name}/{tail} → {man}")
-            else:
-                print(f"[env] {src.name} 안에 매니페스트 파일이 없습니다 (크롭만 있는 입력)")
+            if force and man.exists() and not man.is_symlink():
+                shutil.rmtree(man)
+            # ⚠️ `ensure_dirs()` 가 work_root()/manifests 를 **빈 폴더로 미리
+            #    만듭니다.** "폴더가 없으면" 으로 조건을 걸면 영영 안 가져옵니다.
+            #    `manifest_final` 이 이미 있을 때만 건너뜁니다.
+            have = sorted(man.glob("*.parquet")) if man.exists() else []
+            if not any("final" in p.name for p in have):
+                _bring_manifests(src, man)
         elif already:
             print(f"[env] 이미 풀려 있습니다: {dest}  (다시 풀려면 force=True)")
         else:

@@ -225,6 +225,63 @@ def test_missing_manifest_stops_before_counting_crops():
               "그냥 진행했습니다 — 13분 뒤 다음 셀에서 죽습니다")
 
 
+def test_manifests_uploaded_as_a_zip_is_extracted():
+    """매니페스트를 **zip 으로** 올리면 캐글이 안 풀어줄 수 있습니다.
+
+    실제로 당했습니다 — 같은 데이터셋에서 크롭 zip 은 풀려서
+    `m2.5/00/*.jpg` 가 됐는데 `manifests.zip` 은 그대로 남았습니다.
+    폴더만 보는 코드는 "매니페스트 없음" 으로 죽습니다.
+    """
+    from src import env
+
+    base = _TMP / "man_zip"
+    src = make_prepared_flat(base / "dogskin-m25-step16")
+    # 캐글이 안 푸는 상황: manifests/ 를 zip 하나로 바꿉니다
+    z = src / "manifests.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.write(src / "manifests" / "manifest_final.parquet",
+                "data/work/manifests/manifest_final.parquet")
+    shutil.rmtree(src / "manifests")
+
+    w = fresh_env("man_zip")
+    env.load_prepared(src, dest=w)
+    got = w / "manifests" / "manifest_final.parquet"
+    check("zip 으로 올린 매니페스트도 풀린다", got.exists(),
+          f"{sorted(p.name for p in (w / 'manifests').glob('*'))}"
+          if (w / "manifests").is_dir() else "manifests 폴더가 없습니다")
+    if got.exists():
+        check("푸는 중 폴더 구조는 버린다 (data/work/ 가 안 생긴다)",
+              not (w / "manifests" / "data").exists())
+        check("내용이 살아 있다", len(pd.read_parquet(got)) == 6)
+
+
+def test_manifest_only_dataset_is_picked_up():
+    """크롭은 그대로 두고 매니페스트만 따로 붙일 수 있어야 합니다.
+
+    크롭은 12GB 라 다시 올리는 데 몇 시간 걸립니다.
+    """
+    from src import env
+
+    base = _TMP / "man_only"
+    make_prepared_flat(base / "dogskin-m25-step16")
+    shutil.rmtree(base / "dogskin-m25-step16" / "manifests")
+    other = make_prepared(_TMP / "man_only_staging")
+    (base / "dogskin-manifests").mkdir(parents=True, exist_ok=True)
+    (other / "manifests").rename(base / "dogskin-manifests" / "manifests")
+
+    w = fresh_env("man_only")
+    orig = env._search_roots
+    env._search_roots = lambda: [base]
+    try:
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+    check("매니페스트만 있는 데이터셋도 붙는다",
+          (w / "manifests" / "manifest_final.parquet").exists())
+    tags = sorted(p.name for p in (w / "crops").iterdir() if p.is_dir())
+    check("크롭은 다른 데이터셋에서 그대로 온다", tags == ["full", "m1.5"], f"{tags}")
+
+
 def test_readonly_source_is_linked_not_copied():
     """읽기 전용 원본을 복사하면 /kaggle/working 20GB 를 잡아먹습니다."""
     from src import env
@@ -1134,7 +1191,9 @@ if __name__ == "__main__":
                test_manifest_one_level_deeper_is_found,
                test_manifest_at_the_dataset_root_is_found,
                test_empty_manifests_folder_does_not_look_prepared,
-               test_missing_manifest_stops_before_counting_crops]:
+               test_missing_manifest_stops_before_counting_crops,
+               test_manifests_uploaded_as_a_zip_is_extracted,
+               test_manifest_only_dataset_is_picked_up]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()
