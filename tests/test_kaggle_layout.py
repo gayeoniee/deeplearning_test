@@ -195,6 +195,36 @@ def test_empty_manifests_folder_does_not_look_prepared():
     check("빈 manifests 는 매니페스트가 아니다", not env._has_manifest(src))
 
 
+def test_missing_manifest_stops_before_counting_crops():
+    """매니페스트가 없으면 **다음 셀이 아니라 여기서** 멈춰야 합니다.
+
+    실제로 두 번 당했습니다 — 경고만 찍고 크롭 36만 장을 13분간
+    센 뒤, 다음 셀이 `FileNotFoundError: manifest_final.parquet` 로
+    죽었습니다. 원인을 알려주는 줄은 스크롤 위로 밀려 안 보였고요.
+
+    그래서 **예외 메시지 안에** 데이터셋 목록을 넣습니다 — 사람이
+    복사해 오는 건 로그 꼬리(=트레이스백)뿐입니다.
+    """
+    from src import env
+
+    base = _TMP / "no_man"
+    src = make_prepared_flat(base / "dogskin-m25-step16")
+    shutil.rmtree(src / "manifests")
+    w = fresh_env("no_man")
+    try:
+        env.load_prepared(src, dest=w)
+    except FileNotFoundError as exc:
+        msg = str(exc)
+        check("매니페스트가 없으면 멈춘다", True)
+        check("예외 안에 데이터셋 목록이 들어 있다",
+              "dogskin-m25-step16" in msg,
+              msg[:400])
+        check("뭐를 해야 하는지 적혀 있다", "Add Input" in msg, msg[-300:])
+    else:
+        check("매니페스트가 없으면 멈춘다", False,
+              "그냥 진행했습니다 — 13분 뒤 다음 셀에서 죽습니다")
+
+
 def test_readonly_source_is_linked_not_copied():
     """읽기 전용 원본을 복사하면 /kaggle/working 20GB 를 잡아먹습니다."""
     from src import env
@@ -1103,7 +1133,8 @@ if __name__ == "__main__":
                test_a_plain_folder_is_not_mistaken_for_crops,
                test_manifest_one_level_deeper_is_found,
                test_manifest_at_the_dataset_root_is_found,
-               test_empty_manifests_folder_does_not_look_prepared]:
+               test_empty_manifests_folder_does_not_look_prepared,
+               test_missing_manifest_stops_before_counting_crops]:
         print(f"\n── {fn.__name__} ──")
         try:
             fn()
