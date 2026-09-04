@@ -825,9 +825,18 @@ def _walk(base: Path, depth: int = 5, max_dirs: int = 3000) -> list[Path]:
                     if not p.is_dir() or p.name in _SKIP_DIRS or p.name.startswith("."):
                         continue
                     out.append(p)
-                    # 여기가 이미 전처리 폴더면 더 내려갈 이유가 없습니다
-                    if not (_looks_prepared(p) or _looks_partial(p)
-                            or _looks_manifest_only(p)):
+                    # 크롭이 실제로 들어 있으면 더 내려갈 이유가 없습니다.
+                    #
+                    # ⚠️ **`_looks_manifest_only` 로는 멈추면 안 됩니다.** 그 판정은
+                    #    자식 폴더 안까지(depth=2) 훑어서 parquet 을 찾습니다. 그래서
+                    #    데이터셋 **여러 개를 담고 있는 부모 폴더**가 걸립니다 —
+                    #    캐글은 `/kaggle/input/datasets/<계정>/<데이터셋>` 이라
+                    #    `<계정>` 폴더가 매니페스트 데이터셋 때문에 매치됩니다.
+                    #    거기서 멈추면 **형제인 크롭 데이터셋을 아예 안 봅니다.**
+                    #    실제로 당했습니다 (2026-09-04): 크롭을 붙여놨는데
+                    #    `찾은 입력: [('/kaggle/input/datasets/gayoniee', 'dir')]`
+                    #    하나만 나오고 "사용 가능한 태그: []" 로 죽었습니다.
+                    if not (_looks_prepared(p) or _looks_partial(p)):
                         nxt.append(p)
             except OSError:
                 continue

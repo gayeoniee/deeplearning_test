@@ -1198,11 +1198,57 @@ def test_normal_tag_folder_is_not_unwrapped():
           (w / "crops" / "m2.5" / "ab" / "x_ab0000000000.jpg").exists())
 
 
+def test_sibling_datasets_under_one_account_folder():
+    """★ 캐글의 `/kaggle/input/datasets/<계정>/<데이터셋>` — 형제 두 개.
+
+    실제로 당한 것 (2026-09-04): 크롭 데이터셋과 매니페스트 데이터셋을 나란히
+    붙였는데, 탐색이 **부모인 `<계정>` 폴더에서 멈춰** 크롭을 아예 못 봤습니다.
+
+        찾은 입력: [('/kaggle/input/datasets/gayoniee', 'dir')]
+        사용 가능한 태그: []
+
+    `<계정>` 폴더가 `_looks_manifest_only` 에 걸립니다 — 그 판정은 자식 안까지
+    훑어 parquet 을 찾기 때문입니다. 크롭은 붙어 있는데 코드가 못 본 것입니다.
+    """
+    from src import env
+
+    print("\n[형제] 계정 폴더 아래 데이터셋 두 개를 다 찾는가")
+    acct = _TMP / "kinput" / "datasets" / "someone"
+    crops_ds = acct / "dogskin-m25"
+    man_ds = acct / "dogskin-manifest"
+    (crops_ds / "m2.5" / "ab").mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(
+        crops_ds / "m2.5" / "ab" / "x_112233445566.jpg")
+    man_ds.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"image_path": ["/a.jpg"], "label": ["A1"],
+                  "animal_id": ["d1"]}).to_parquet(man_ds / "manifest_final.parquet")
+
+    w = fresh_env("siblings")
+    orig = env._search_roots
+    env._search_roots = lambda: [_TMP / "kinput"]
+    try:
+        found = [p for p, _ in env.find_prepared_all(dest=w)]
+        names = {p.name for p in found}
+        check("크롭 데이터셋을 찾는다", "dogskin-m25" in names, str(sorted(names)))
+        check("매니페스트 쪽도 찾는다",
+              any("manifest" in n for n in names)
+              or any(env._manifests_dir(p) for p in found), str(sorted(names)))
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+
+    check("크롭이 연결됐다",
+          (w / "crops" / "m2.5" / "ab" / "x_112233445566.jpg").exists(),
+          str(sorted((w / "crops").iterdir()) if (w / "crops").exists() else "없음"))
+    check("매니페스트도 왔다", (w / "manifests" / "manifest_final.parquet").exists())
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
     for fn in [test_empty_dirs_are_not_prepared,
                test_tag_folder_wrapped_one_layer_deeper,
                test_normal_tag_folder_is_not_unwrapped,
+               test_sibling_datasets_under_one_account_folder,
                test_data_already_in_work_root_is_used_as_is, test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
                test_link_is_idempotent, test_zip_path_still_works,
                test_autodetect_prefers_extracted_when_no_zip,
