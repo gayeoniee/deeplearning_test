@@ -162,6 +162,8 @@ deeplearning_test/
 │   ├── calibrate.py           온도 보정 · ECE · coverage-risk
 │   ├── explain.py             Grad-CAM 정렬도 (배경 보는지 **수치로**)
 │   ├── infer.py               단일 사진 추론 (문구는 message.py 에서 재수출)
+│   ├── effectsize.py          ★ `d` · `AUROC` · 판정 문턱 — **정의는 여기 하나뿐**
+│   ├── texture.py             `blur`/`hair` 등 사진 값 — **정의는 여기 하나뿐**
 │   ├── message.py             ★ 보호자에게 보여줄 문구. **torch 안 씁니다**
 │   │                          ⚠️ 문구 함수가 **둘**입니다 — `compose_message`
 │   │                          (단일 모델, 이름을 말함) / `compose_screening_message`
@@ -187,6 +189,8 @@ deeplearning_test/
 ├── docs/
 │   ├── 00_로드맵.md            전체 STEP (현재 위치는 STATUS.md)
 │   │  ── tools/box_error.py — 사람이 그린 네모 vs 정답 bbox (수의사 불필요)
+│   │  ── tools/class_overlap.py — ★ 두 병변이 **데이터에서** 겹치나 (모델·GPU 불필요)
+│   │  ── tools/false_alarm_stats.py — 헛알림 난 사진이 무엇과 다른가
 │   │  ── tools/crops.py    — 크롭 용량 보고 · 안 쓰는 태그 정리 · 새 청크 예상
 │   │  ── tools/merge_incoming.py — 다른 PC 에서 온 청크 합치기 (미리보기가 기본)
 │   │  ── tools/fix_split_zip.py — 조각 순서가 뒤바뀐 zip 고치기 (재다운로드 없이)
@@ -440,6 +444,13 @@ AI Hub 데이터는 **재배포 금지**입니다. `.gitignore` 가 막고 있�
   **같은 실행·같은 표본 수**에서 합니다
 * **Colab 무료 한도 초과 시 말없이 CPU 런타임을 줍니다** (20~30배 느림) →
   `env.require_gpu()` 가 막습니다
+* **갈래 축을 leave-one-out 으로 인코딩하면 AUROC 가 거꾸로 무너집니다.**
+  LOO 점수는 `(합 − 자기 y) / (n − 1)` 이라, 신호가 하나도 없는 축에서도 양성이
+  **항상** 음성보다 `1/(n−1)` 만큼 낮습니다. 순위만 보는 AUROC 는 그 미세한 차이를
+  **완벽한 분리(0.000)** 로 읽습니다 — 갈래가 하나뿐인 `synthetic`(전부 False)이
+  "차이 있음" 으로 찍혀서 잡았습니다. 그냥 인코딩하면 반대로 **부풀어** 오릅니다
+  (견종 120종에서 0.754). → **fold 를 섞는 교차 인코딩**만 0.5 근처로 옵니다
+  (`class_overlap.cat_auroc`, `tests/test_class_overlap.py`)
 * **증강 병목**: torchvision(PIL) 이 384px 한 장에 22.6ms 였습니다 →
   albumentations 로 **7.3ms** (3.1배). 단 GPU 가 112 img/s 상한이라
   실제 단축은 1.24배입니다
