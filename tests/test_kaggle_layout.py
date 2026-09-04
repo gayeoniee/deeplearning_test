@@ -1148,9 +1148,61 @@ def test_data_already_in_work_root_is_used_as_is():
           sorted(q.name for q in (w / "crops").iterdir()) == ["f320", "m2.5"])
 
 
+def test_tag_folder_wrapped_one_layer_deeper():
+    """★ `<태그>/<태그>/<hh>/*.jpg` — 캐글에 한 겹 더 싸여 올라간 경우.
+
+    실제로 당한 것 (2026-09-04): 데이터셋 안이
+    `dogskin-m25-step16/m2.5/m2.5/ab/x.jpg` 였습니다. 링크는 걸리는데
+    경로가 한 칸씩 어긋나서 `switch_tag` 가 **0/365,428장 (0.0%)** 로
+    죽었습니다. "붙었다" 고 보이는데 한 장도 안 읽히는 실패입니다.
+    """
+    from src import env
+
+    print("\n[중첩] 태그 폴더가 한 겹 더 싸여 있으면 풀어서 연결하는가")
+    base = _TMP / "wrapped"
+    inner = base / "m2.5" / "m2.5" / "ab"
+    inner.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(inner / "x_112233445566.jpg")
+
+    check("안쪽 층을 찾아낸다",
+          env._unwrap_tag_dir(base / "m2.5") == base / "m2.5" / "m2.5",
+          str(env._unwrap_tag_dir(base / "m2.5")))
+    check("크롭 폴더로 인정한다", env._has_crops(base))
+
+    w = fresh_env("wrapped")
+    how = env._link_tags(env._crops_dir(base), w / "crops")
+    check("태그 이름은 바깥 이름 그대로", list(how) == ["m2.5"], str(how))
+    check("링크 너머에 jpg 가 보인다",
+          (w / "crops" / "m2.5" / "ab" / "x_112233445566.jpg").exists(),
+          str(sorted((w / "crops" / "m2.5").iterdir()) if (w / "crops" / "m2.5").exists() else "링크 없음"))
+
+
+def test_normal_tag_folder_is_not_unwrapped():
+    """안 싸여 있으면 건드리면 안 됩니다 (한 칸 더 내려가면 그게 버그)."""
+    from src import env
+
+    print("\n[중첩] 정상 구조는 그대로 두는가")
+    base = _TMP / "flat"
+    for hh in ("ab", "cd"):
+        (base / "m2.5" / hh).mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(
+            base / "m2.5" / hh / f"x_{hh}0000000000.jpg")
+
+    check("그대로 돌려준다",
+          env._unwrap_tag_dir(base / "m2.5") == base / "m2.5",
+          str(env._unwrap_tag_dir(base / "m2.5")))
+
+    w = fresh_env("flat")
+    env._link_tags(env._crops_dir(base), w / "crops")
+    check("링크 너머에 jpg 가 보인다",
+          (w / "crops" / "m2.5" / "ab" / "x_ab0000000000.jpg").exists())
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
     for fn in [test_empty_dirs_are_not_prepared,
+               test_tag_folder_wrapped_one_layer_deeper,
+               test_normal_tag_folder_is_not_unwrapped,
                test_data_already_in_work_root_is_used_as_is, test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
                test_link_is_idempotent, test_zip_path_still_works,
                test_autodetect_prefers_extracted_when_no_zip,

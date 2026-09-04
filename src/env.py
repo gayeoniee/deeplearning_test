@@ -903,6 +903,52 @@ def _peek(d: Path, depth: int = 3, max_items: int = 10) -> list[str]:
     return out
 
 
+def _unwrap_tag_dir(t: Path, max_depth: int = 3) -> Path:
+    """태그 폴더 안이 한 겹 더 싸여 있으면 **진짜 층까지 내려갑니다.**
+
+    크롭의 실제 모양은 `<태그>/<hh>/<이름>.jpg` 입니다 (hh = 해시 앞 두 자리,
+    256개). 그런데 캐글에 올릴 때 폴더를 한 겹 더 감싸면
+    `<태그>/<태그>/<hh>/*.jpg` 가 됩니다 — 실제로 이렇게 올라갔습니다.
+
+    ⚠️ 이걸 안 풀면 **링크는 걸리는데 경로가 한 칸씩 어긋납니다.**
+       `crops/m2.5/ab/x.jpg` 를 찾는데 실제로는 `m2.5/m2.5/ab/x.jpg` 라
+       `switch_tag` 가 "0/365,428장 존재 (0.0%)" 로 죽습니다. 링크가 걸렸으니
+       "붙었다" 고 보이는데 한 장도 안 읽힙니다 — 제일 나쁜 종류의 실패입니다.
+    """
+    cur = t
+    for _ in range(max_depth):
+        if _has_shard_jpg(cur):
+            return cur
+        try:
+            subs = [q for q in cur.iterdir() if q.is_dir()]
+        except OSError:
+            break
+        if len(subs) != 1:            # 갈래가 여럿이면 여기가 맞는 층입니다
+            break
+        cur = subs[0]
+    return cur if _has_shard_jpg(cur) else t
+
+
+def _has_shard_jpg(d: Path, probe: int = 8) -> bool:
+    """`d` 바로 아래 폴더들(`<hh>`) 안에 jpg 가 있는가.
+
+    256개를 다 뒤지지 않습니다 — 네트워크 마운트에서는 왕복이 비쌉니다.
+    """
+    try:
+        n = 0
+        for sub in d.iterdir():
+            if not sub.is_dir():
+                continue
+            if next(sub.glob("*.jpg"), None) is not None:
+                return True
+            n += 1
+            if n >= probe:
+                break
+    except OSError:
+        pass
+    return False
+
+
 def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
     """크롭을 **태그 단위로** 연결합니다. 여러 입력을 합칠 수 있습니다.
 
@@ -925,20 +971,24 @@ def _link_tags(src_crops: Path, dst_crops: Path) -> dict[str, str]:
         if next(tag_dir.iterdir(), None) is None:
             out[tag_dir.name] = "비어 있어 건너뜀"
             continue
-        dst = dst_crops / tag_dir.name
+        # ★ `<태그>/<태그>/<hh>/*.jpg` 처럼 한 겹 더 싸여 있으면 풀어서 연결합니다
+        inner = _unwrap_tag_dir(tag_dir)
+        name = tag_dir.name
+        dst = dst_crops / name
+        tag_dir = inner
         if dst.is_symlink():
-            out[tag_dir.name] = ("이미 연결됨" if dst.resolve() == tag_dir.resolve()
-                                 else "다른 곳에 연결됨(유지)")
+            out[name] = ("이미 연결됨" if dst.resolve() == tag_dir.resolve()
+                         else "다른 곳에 연결됨(유지)")
             continue
         if dst.exists():
-            out[tag_dir.name] = "이미 있음"
+            out[name] = "이미 있음"
             continue
         try:
             dst.symlink_to(tag_dir.resolve(), target_is_directory=True)
-            out[tag_dir.name] = "링크"
+            out[name] = "링크"
         except OSError:
             shutil.copytree(tag_dir, dst)
-            out[tag_dir.name] = "복사"
+            out[name] = "복사"
     return out
 
 
