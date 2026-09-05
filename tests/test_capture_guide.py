@@ -250,6 +250,50 @@ def test_demo_says_part_the_fur():
         check(f"기각된 축을 말하지 않는다: {word}", word not in tip)
 
 
+def test_band_has_one_source():
+    """촬영 가이드 밴드를 쓰는 네 곳이 **같은 값**을 보고 있는가.
+
+    ⚠️ 실제로 갈라져 있었습니다 — STEP 16 에서 밴드가 (0.85, 1.4)/(0.7, 1.7)
+       → (0.7, 1.2)/(0.6, 1.4) 로 바뀐 뒤에도 `tools/box_error.py` 는 몇 주째
+       옛 값을 베껴 쓰고 있었습니다. **에러는 한 줄도 안 났고**, 그 도구가 찍는
+       "허용 안" 판정만 조용히 틀렸습니다. 이제 출처는 `src/robust.py` 하나입니다.
+    """
+    import importlib.util
+
+    from src import agent, robust
+
+    check("robust 가 밴드의 출처다",
+          robust.ZOOM_RECOMMEND == (0.7, 1.2) and robust.ZOOM_ALLOW == (0.6, 1.4))
+
+    # agent 는 화면 점유율 = 배율 ÷ 2.5 (2단계 크롭이 m2.5)
+    for name, zoom, guide in (("권장", robust.ZOOM_RECOMMEND, agent.GUIDE_RECOMMEND),
+                              ("허용", robust.ZOOM_ALLOW, agent.GUIDE_ALLOW)):
+        check(f"agent 의 {name} 밴드 = 배율 ÷ 2.5",
+              all(abs(z / 2.5 - g) < 1e-9 for z, g in zip(zoom, guide)),
+              f"{tuple(round(z / 2.5, 4) for z in zoom)} vs {guide}")
+    check("중심 허용치도 같다", agent.GUIDE_CENTER_MAX == robust.ZOOM_CENTER_MAX)
+
+    # box_error 는 네모 크기 오차 = 1 / 배율 (torch 없이 도는 도구라 따로 읽습니다)
+    spec = importlib.util.spec_from_file_location(
+        "_box_error", ROOT / "tools" / "box_error.py")
+    be = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(be)
+    check("box_error 가 밴드를 스스로 적어두지 않는다",
+          "0.85" not in (ROOT / "tools" / "box_error.py").read_text(
+              encoding="utf-8").split("SHIFT_MAX")[0].split("import")[-1])
+    for name, zoom, box in (("권장", robust.ZOOM_RECOMMEND, be.BOX_RECOMMEND),
+                            ("허용", robust.ZOOM_ALLOW, be.BOX_ALLOW)):
+        check(f"box_error 의 {name} 네모 오차 = 1 / 배율 (뒤집힘)",
+              abs(1 / zoom[1] - box[0]) < 1e-9 and abs(1 / zoom[0] - box[1]) < 1e-9,
+              f"{(round(1 / zoom[1], 4), round(1 / zoom[0], 4))} vs "
+              f"{tuple(round(v, 4) for v in box)}")
+
+    # 데모 화면도 같은 숫자를 써야 합니다 (화면과 서버가 갈라지면 아무도 모릅니다)
+    html = (ROOT / "demo" / "index.html").read_text(encoding="utf-8")
+    for v in agent.GUIDE_ALLOW + agent.GUIDE_RECOMMEND:
+        check(f"demo 에 {v} 가 있다", str(v) in html)
+
+
 if __name__ == "__main__":
     print("촬영 가이드 도출 검증\n")
     for fn in (test_band_is_contiguous_around_peak,
@@ -265,7 +309,8 @@ if __name__ == "__main__":
                test_nb05_stops_on_a_stale_checkpoint,
                test_nb05_passes_on_the_adopted_crop,
                test_nb05_margin_matches_robust_default,
-               test_demo_says_part_the_fur):
+               test_demo_says_part_the_fur,
+               test_band_has_one_source):
         fn()
     print()
     if FAILS:

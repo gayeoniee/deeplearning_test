@@ -264,9 +264,16 @@ check("네모 허용 밴드는 줌 밴드의 역수",
       and abs(be.BOX_ALLOW[1] - 1 / be.ZOOM_ALLOW[0]) < 1e-9)
 check("밴드 값이 agent 와 같은 실측에서 옴",
       be.SHIFT_MAX == agent.GUIDE_CENTER_MAX)
-check("1.5배로 그리면 허용 밖 (0.59~1.43배)",
-      not (be.BOX_ALLOW[0] <= 1.5 <= be.BOX_ALLOW[1]))
-check("1.3배는 허용 안", be.BOX_ALLOW[0] <= 1.3 <= be.BOX_ALLOW[1])
+# ⚠️ 이 두 줄은 STEP 10 밴드(0.59~1.43배)를 단언하고 있었고, `box_error.py` 가
+#    같은 옛 값을 **베껴 두고 있어서 통과했습니다.** 밴드 출처를 `src/robust.py`
+#    하나로 모으자(2026-09-06) 비로소 드러났습니다 — 두 곳이 같이 옛것이면
+#    "일치한다" 는 검사는 아무것도 못 잡습니다.
+check("1.5배로 그리면 **허용 안, 권장 밖** (STEP 16: 허용 0.71~1.67 / 권장 0.83~1.43)",
+      be.BOX_ALLOW[0] <= 1.5 <= be.BOX_ALLOW[1]
+      and not (be.BOX_RECOMMEND[0] <= 1.5 <= be.BOX_RECOMMEND[1]))
+check("1.3배는 권장 안", be.BOX_RECOMMEND[0] <= 1.3 <= be.BOX_RECOMMEND[1])
+check("1.8배는 허용 밖 (크게 그리는 쪽이 STEP 10 보다 빡빡)",
+      not (be.BOX_ALLOW[0] <= 1.8 <= be.BOX_ALLOW[1]))
 
 sm = be.summarize([be.to_perturbation([.45, .45, .10, .10], T), {"user": None}])
 check("요약이 건너뛴 장수를 셈", "건너뜀 1" in sm, sm.split("\n")[0])

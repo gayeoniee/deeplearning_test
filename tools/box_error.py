@@ -16,7 +16,7 @@
 2단계 `m2.5` 는 네모의 **크기**로 배율이 정해지므로 이 차이에 그대로 노출됩니다
 (1단계 `f320` 은 중심만 쓰므로 거의 무관합니다).
 
-그리고 **얼마나 어긋나면 얼마나 나빠지는지는 이미 재 뒀습니다** — STEP 10 의
+그리고 **얼마나 어긋나면 얼마나 나빠지는지는 이미 재 뒀습니다** — STEP 16 의
 `robust.usable_range()` 가 그 곡선입니다. 남은 건 사람이 실제로 얼마나
 어긋나게 그리는가 하나뿐이고, 그건 이 도구로 30분이면 됩니다.
 
@@ -37,10 +37,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# STEP 10 실측 밴드 (STATUS.md "촬영 가이드"). `robust.usable_range()` 가 뽑았습니다.
-ZOOM_RECOMMEND = (0.85, 1.4)      # 하락 5% 이내
-ZOOM_ALLOW = (0.7, 1.7)           # 하락 10% 이내
-SHIFT_MAX = 0.10                  # 병변이 화면 중앙에서 이만큼 이내
+# ★ 밴드를 **여기 적지 않습니다** — `src/robust.py` 가 단 하나의 출처입니다.
+#   전에는 이 파일에 STEP 10 값(0.85~1.4 / 0.7~1.7)을 베껴 뒀는데, STEP 16 에서
+#   밴드가 바뀐 뒤에도 **몇 주째 옛 값을 쓰고 있었습니다.** 에러는 한 줄도 안 났고,
+#   이 도구가 뱉는 "허용 안" 판정이 조용히 틀렸습니다.
+#   ⚠️ torch 를 안 끌어오려고 상수만 골라 읽습니다 (이 도구는 pandas/Pillow 만 씁니다).
+from src.robust import ZOOM_ALLOW, ZOOM_RECOMMEND, ZOOM_CENTER_MAX  # noqa: E402
+
+SHIFT_MAX = ZOOM_CENTER_MAX       # 병변이 화면 중앙에서 이만큼 이내
 
 # 위 밴드를 **네모 오차**로 뒤집은 값 — 앱이 실제로 알아야 하는 숫자입니다.
 # 네모를 r 배로 그리면 크롭이 r 배 넓어지므로 환산 줌은 1/r 입니다.
@@ -166,7 +170,7 @@ function finish(){
 def to_perturbation(user, truth) -> dict:
     """사람 네모와 정답 네모의 차이를 **줌/이동 배율**로 바꿉니다.
 
-    이래야 STEP 10 의 `usable_range()` 곡선에 그대로 대입할 수 있습니다.
+    이래야 STEP 16 의 `usable_range()` 곡선에 그대로 대입할 수 있습니다.
     새 실험을 하는 게 아니라, **이미 잰 곡선을 읽는 것**입니다.
 
     Args:
@@ -227,7 +231,7 @@ def summarize(rows: list[dict]) -> str:
         f"    권장 {BOX_RECOMMEND[0]:.2f} ~ {BOX_RECOMMEND[1]:.2f}배   "
         f"허용 {BOX_ALLOW[0]:.2f} ~ {BOX_ALLOW[1]:.2f}배",
         "",
-        "■ STEP 10 밴드에 대입 (usable_range 실측)",
+        "■ STEP 16 밴드에 대입 (usable_range 실측)",
         f"    배율 권장({ZOOM_RECOMMEND[0]}~{ZOOM_RECOMMEND[1]}x, 하락 5% 이내) 안  {in_rec:6.1%}",
         f"    배율 허용({ZOOM_ALLOW[0]}~{ZOOM_ALLOW[1]}x, 하락 10% 이내) 안  {in_allow:6.1%}",
         f"    위치 허용(중앙 {SHIFT_MAX:.0%} 이내) 안                {in_shift:6.1%}",
