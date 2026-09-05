@@ -123,6 +123,133 @@ def miss_sources(rep: dict, normal: str = "A7", show: bool = True) -> dict:
     return out
 
 
+# ── 멘토 지적을 수치로: "짝 혼동인가, 여러 클래스로 흩어지는가" ──────────
+#
+# 멘토(2026-09-05): *"짝(pairwise) 혼동이 아니라 한 클래스가 여러 클래스로
+# 동시에 흩어진다 — 그 클래스의 핵심 표현을 못 잡은 것"*.
+#
+# `confusion_pairs` 는 **칸을 장수 순으로** 줄 세웁니다. 그건 짝을 보는 눈이라
+# 이 질문에 답을 못 합니다 — A4 가 다섯 클래스로 골고루 흩어져도 각 칸은 작아서
+# 상위 목록에 안 올라옵니다. 그래서 **행의 모양**을 따로 잽니다.
+#
+# ⚠️ 흩어짐만 보면 절반만 보는 것입니다. 흩어지는 데도 **방향**이 있고,
+#    그 방향이 클래스 빈도 순서와 같으면 원인이 "표현 부재" 가 아니라
+#    **사전확률(prior)** 일 수 있습니다. prior 라면 재학습 없이 로짓 보정으로
+#    고쳐지므로, 둘을 갈라 놓는 게 다음 실험을 정합니다.
+
+# ── 사전등록 판정 기준 (결과를 보고 바꾸지 않습니다 — 작업 규칙 2) ──────
+#   정규화 엔트로피: 대각선 밖 분포가 균등하면 1, 한 칸에 몰리면 0
+DISPERSION_SCATTER = 0.85     # 이 위면 "흩어짐"
+DISPERSION_PAIRWISE = 0.60    # 이 아래 + 최다 행선지 비중이 아래 값 이상이면 "짝 혼동"
+PAIRWISE_TOP_SHARE = 0.50
+#   빈도 큰 쪽으로 흐르는 양 ÷ **우연히 그렇게 될 양**. 이 위면 prior 를 의심합니다.
+#   ⚠️ 날 것의 비(더 흔한 쪽 ÷ 덜 흔한 쪽)를 쓰면 안 됩니다 — 제일 드문 클래스는
+#      다른 모든 클래스가 "더 흔한 쪽" 이라 **모델과 무관하게 무한대**가 나옵니다
+#      (A6 에서 실제로 그랬습니다). 그래서 균등 분산일 때의 기대값으로 나눕니다.
+PRIOR_LIFT_SUSPECT = 1.25
+
+
+def class_dispersion(rep: dict, show: bool = True) -> list[dict]:
+    """클래스마다 오답이 **흩어지는지 한 곳으로 몰리는지**, 그리고 어느 쪽으로.
+
+    반환 항목 하나가 정답 클래스 하나입니다:
+        recall        대각선 ÷ 행 합
+        h_norm        대각선 **뺀** 행 분포의 엔트로피 ÷ ln(칸 수). 1 = 완전 균등
+        top_pred      최다 행선지, top_share 그 비중 (오답 중에서)
+        to_larger     오답 중 **더 흔한** 클래스로 간 비율
+        exp_larger    오답이 균등하게 흩어졌을 때의 to_larger (= 더 흔한 클래스 수 ÷ 칸 수)
+        lift          to_larger ÷ exp_larger. **1 이면 우연과 같음**, 크면 소수→다수 편향
+        fp, fn        열 합 − 대각선 / 행 합 − 대각선. sink 인지 source 인지
+        shape         "흩어짐" / "짝 혼동" / "그 사이"
+        prior_suspect lift 가 문턱을 넘는가
+
+    ⚠️ 빈도는 **이 행렬의 행 합**(정답 장수)으로 봅니다. 학습 장수가 아닙니다 —
+       보통 같은 방향이지만 평가셋 구성이 다르면 갈립니다.
+    """
+    cm, classes = _cm(rep)
+    from src.config import CLASS_KO
+    from src.evaluate import pad_ko
+
+    n = len(classes)
+    support = cm.sum(axis=1)
+    out: list[dict] = []
+    for i, c in enumerate(classes):
+        row = cm[i].astype(float)
+        diag = row[i]
+        off = np.delete(row, i)
+        names = [x for j, x in enumerate(classes) if j != i]
+        sup_other = np.delete(support, i)
+        tot = off.sum()
+
+        if tot <= 0:                       # 오답이 없으면 모양을 말할 수 없습니다
+            out.append({"cls": c, "recall": float(diag / support[i]) if support[i] else 0.0,
+                        "h_norm": float("nan"), "top_pred": None, "top_share": 0.0,
+                        "to_larger": 0.0, "exp_larger": float("nan"), "lift": float("nan"),
+                        "fp": int(cm[:, i].sum() - diag), "fn": 0,
+                        "shape": "오답 없음", "prior_suspect": False})
+            continue
+
+        p = off / tot
+        nz = p[p > 0]
+        h = float(-(nz * np.log(nz)).sum() / np.log(n - 1)) if n > 2 else 0.0
+        k = int(p.argmax())
+        larger = float(p[sup_other > support[i]].sum())
+        # 균등하게 흩어졌다면 이만큼이 "더 흔한 쪽" 으로 갑니다. 이걸로 나눠야
+        # 드문 클래스가 자동으로 prior 의심을 받는 일이 없습니다.
+        exp_larger = float((sup_other > support[i]).mean())
+        # ⚠️ exp_larger 가 0 이거나 1 이면 lift 는 **정보가 없습니다.**
+        #    제일 흔한 클래스는 갈 "더 흔한 쪽" 이 없고(0), 제일 드문 클래스는
+        #    다른 전부가 더 흔해서(1) lift 가 무조건 1.0 으로 나옵니다.
+        #    그걸 1.00 으로 찍으면 "우연과 같다" 는 판정처럼 읽혀서 위험합니다.
+        lift = (larger / exp_larger) if 0 < exp_larger < 1 else float("nan")
+
+        if h >= DISPERSION_SCATTER:
+            shape = "흩어짐"
+        elif h <= DISPERSION_PAIRWISE and p[k] >= PAIRWISE_TOP_SHARE:
+            shape = "짝 혼동"
+        else:
+            shape = "그 사이"
+
+        out.append({
+            "cls": c, "recall": float(diag / support[i]) if support[i] else 0.0,
+            "h_norm": h, "top_pred": names[k], "top_share": float(p[k]),
+            "to_larger": larger, "exp_larger": exp_larger, "lift": lift,
+            "fp": int(cm[:, i].sum() - diag), "fn": int(tot),
+            "shape": shape,
+            "prior_suspect": bool(lift == lift and lift >= PRIOR_LIFT_SUSPECT),
+        })
+
+    if show:
+        print("\n" + "=" * 88)
+        print(" 오답이 흩어지는가 · 어느 쪽으로 — 행에서 대각선을 뺀 모양")
+        print("=" * 88)
+        print(f"  {pad_ko('정답', 24)}{'recall':>8}{'H':>7}{'최다행선지':>12}{'비중':>7}"
+              f"{'→흔한쪽':>9}{'우연히':>8}{'lift':>7}  모양")
+        for d in out:
+            t = pad_ko(f"{d['cls']} {CLASS_KO.get(d['cls'], '')}", 24)
+            lf = "—" if d["lift"] != d["lift"] else f"{d['lift']:.2f}"
+            mark = " ⚠️prior" if d["prior_suspect"] else ""
+            print(f"  {t}{d['recall']:>8.3f}{d['h_norm']:>7.3f}"
+                  f"{str(d['top_pred'] or '—'):>12}{d['top_share']:>7.2f}"
+                  f"{d['to_larger']:>9.2f}{d['exp_larger']:>8.2f}{lf:>7}  {d['shape']}{mark}")
+        print("-" * 88)
+        print(f"  H = 대각선 뺀 행 분포의 정규화 엔트로피. ≥{DISPERSION_SCATTER} 흩어짐 /"
+              f" ≤{DISPERSION_PAIRWISE} 이면서 최다 ≥{PAIRWISE_TOP_SHARE:.0%} 면 짝 혼동")
+        print(f"  lift = 흔한 쪽으로 간 비율 ÷ **우연히 그럴 비율**."
+              f" 1.00 = 우연과 같음, ≥{PRIOR_LIFT_SUSPECT} 면 prior 의심")
+        print("  ⚠️ lift 가 '—' 인 클래스는 **제일 흔하거나 제일 드물어서** 잴 수가"
+              " 없는 것입니다 (해석 금지).")
+        print("  ⚠️ '흩어짐' 은 표현 부재의 **증상**이지 증거가 아닙니다. prior 로도"
+              " 같은 모양이 나옵니다 —")
+        print("     로짓 보정으로 쏠림이 사라지는지 보면 갈립니다 (재학습 불필요).")
+        sinks = [d["cls"] for d in out if d["fp"] > d["fn"] * 1.5]
+        sources = [d["cls"] for d in out if d["fn"] > d["fp"] * 1.5]
+        print(f"  빨아들이는 쪽(sink, FP≫FN): {sinks or '없음'}")
+        print(f"  새어나가는 쪽(source, FN≫FP): {sources or '없음'}")
+        print("=" * 88)
+    return out
+
+
 def contact_sheet(df, *, path_col: str = "crop_path", n: int = 30, cols: int = 6,
                   title: str = "", seed: int = 0, save_to=None, show: bool = True):
     """사진을 한 판에 깔아 **눈으로** 봅니다 (CAM 없이 원본만).
