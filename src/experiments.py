@@ -1076,6 +1076,219 @@ def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str
     return verdict
 
 
+# ── 1단계 놓침이 병변 탓인가 창 배치 탓인가 (STEP 24) ────────────────────
+#
+# 배경: rho(병변 크기, 1단계 점수) = -0.201 로 **큰 병변을 더 놓칩니다**
+# (STEP 17·18). STEP 20 이 "창이 작아서" 를 기각했고(f448 로 넓히니 오히려
+# 악화), 남은 설명이 둘이었습니다:
+#
+#   H-A 병변    큰 병변이 원래 어렵다 — 창이 병변으로만 꽉 차 경계가 안 보인다
+#   H-B' 창배치  네모 중심이 병변을 벗어난다 — 네모는 폴리곤의 **외접사각형**이라
+#                길쭉·굽은 윤곽에서 중심이 빈 곳에 놓인다 (우리 파이프라인 탓)
+#
+# 두 가설은 같은 값(`occ` = 창 안 병변 점유율)에 **정반대**를 예측합니다.
+# 그래서 결과를 보고 기준을 고를 수 없게 여기 먼저 박아 둡니다 (작업 규칙 2).
+#
+# ⚠️ 이 판정은 **관찰**입니다. H-B' 가 지지돼도 "창을 옮기면 낫다" 는 아직
+#    아닙니다 — 그건 폴리곤 무게중심으로 다시 잘라 재는 **개입 실험**이 말합니다
+#    (`PLACEMENT_RECOVER_MIN` 아래).
+
+PLACEMENT_BINS = 5           # occ 를 몇 층으로 나눠 볼 것인가
+PLACEMENT_RATIO_HB = 2.0     # 최저층 놓침률 ÷ 최고층 ≥ 이 값이면 H-B'
+PLACEMENT_RATIO_HA = 0.5     # 그 비가 이 값 이하면 H-A (놓침이 꽉 찬 쪽에 몰림)
+PLACEMENT_RHO_RESIDUAL = 0.08   # 층 안에서 크기 상관이 이보다 작으면 "크기 효과는 배치로 설명됨"
+PLACEMENT_MIN_MISS = 40      # 놓침이 이보다 적으면 **판정하지 않습니다**
+
+# ⚠️ **이 잠금장치는 제가 실제로 밟은 함정에서 나왔습니다** (2026-09-06).
+#    위 H-A/H-B' 판정을 `occ`(창 안 병변 점유율)로 설계했는데, 막상 재 보니
+#    `rho(occ, 폴리곤 √넓이) = +0.995` 였습니다 — **occ 는 병변 크기의 다른
+#    이름**입니다. 그러면 "occ 가 높을수록 놓친다" 는 "크면 놓친다" 의 재진술이지
+#    두 가설을 가른 게 아닙니다. 그런데 코드는 아무 말 없이 "H-A" 를 찍었습니다.
+#    가르는 변수가 가르려는 원인과 붙어 있으면 **판정 자체가 성립하지 않습니다.**
+PLACEMENT_MAX_COLLINEARITY = 0.80   # |rho(층 변수, 크기)| 가 이 이상이면 판정 거부
+
+# 개입 실험(폴리곤 무게중심으로 창을 옮김) 채택 기준
+PLACEMENT_RECOVER_MIN = 0.30  # 놓쳤던 것 중 이만큼 되살아나야 채택 후보
+PLACEMENT_LOSS_TOL = 0.01     # 이미 맞히던 것을 이보다 많이 잃으면 기각
+
+
+def stage1_placement_report(rows, *, bins: int = PLACEMENT_BINS,
+                            boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """`occ`(창 안 병변 점유율) 층별 놓침률로 H-A / H-B' 를 가릅니다.
+
+    `rows` 에 필요한 열: ``occ`` · ``miss``(bool) · ``box_px`` · ``score``.
+
+    돌려주는 값의 ``verdict`` 는 셋 중 하나입니다:
+      "창 배치(H-B')" · "병변 자체(H-A)" · "구분 불가"
+
+    ⚠️ **`occ` 가 크기와 붙어 있으면 판정을 거부합니다** — 그게 실제로 벌어졌고
+       (rho +0.995) 코드가 조용히 "H-A" 를 찍었습니다. `PLACEMENT_MAX_COLLINEARITY`.
+
+    ⚠️ 놓침이 `PLACEMENT_MIN_MISS` 미만이면 무조건 "표본 부족" 입니다.
+       VL01 val 은 놓침이 77건뿐이라 층마다 15건꼴입니다 — 부트스트랩 CI 를
+       같이 내고, **CI 가 겹치면 비가 아무리 커도 판정하지 않습니다.**
+    """
+    import numpy as np
+    import pandas as pd
+
+    d = pd.DataFrame(rows).dropna(subset=["occ", "miss"]).reset_index(drop=True)
+    n_miss = int(d["miss"].sum())
+    out: dict[str, Any] = {"n": len(d), "n_miss": n_miss, "bins": [],
+                           "verdict": "표본 부족", "why": ""}
+    # 층을 가르는 변수가 크기와 붙어 있으면 이 검사는 아무것도 못 가릅니다
+    if "box_px" in d:
+        from scipy.stats import spearmanr
+        col = float(spearmanr(d["occ"], d["box_px"]).statistic)
+        out["collinearity"] = col
+        if abs(col) >= PLACEMENT_MAX_COLLINEARITY:
+            out["verdict"] = "판정 불가(공선성)"
+            out["why"] = (
+                f"층 변수 occ 가 크기와 rho={col:+.3f} 로 붙어 있습니다 "
+                f"(>= {PLACEMENT_MAX_COLLINEARITY}). occ 로 나눈 층은 크기로 나눈 "
+                f"층과 같아서, 어떤 결과가 나와도 '크면 놓친다' 의 재진술입니다. "
+                f"크기와 분리되는 **모양** 변수(slack · center_off · 길쭉함)로 "
+                f"크기를 고정한 채 재세요.")
+            print(f"[placement] {out['why']}")
+            return out
+
+    if n_miss < PLACEMENT_MIN_MISS:
+        out["why"] = (f"놓침 {n_miss}건 < {PLACEMENT_MIN_MISS}건 — 판정하지 않습니다. "
+                      f"층마다 {n_miss / bins:.0f}건꼴이라 어떤 비도 잡음입니다.")
+        print(f"[placement] {out['why']}")
+        return out
+
+    d["층"] = pd.qcut(d["occ"], bins, labels=False, duplicates="drop")
+    rng = np.random.default_rng(seed)
+    for b in sorted(d["층"].dropna().unique()):
+        g = d[d["층"] == b]
+        m = g["miss"].to_numpy().astype(float)
+        bs = np.array([rng.choice(m, len(m), replace=True).mean() for _ in range(boot)])
+        out["bins"].append({
+            "층": int(b), "n": len(g), "occ_중앙값": float(g["occ"].median()),
+            "놓침률": float(m.mean()),
+            "ci": [float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5))],
+            "box_px_중앙값": float(g["box_px"].median()) if "box_px" in g else float("nan"),
+        })
+
+    lo, hi = out["bins"][0], out["bins"][-1]     # occ 최저층 / 최고층
+    ratio = lo["놓침률"] / hi["놓침률"] if hi["놓침률"] > 0 else float("inf")
+    overlap = not (lo["ci"][0] > hi["ci"][1] or hi["ci"][0] > lo["ci"][1])
+    out["ratio_lowest_over_highest"] = ratio
+    out["ci_overlap"] = overlap
+
+    # 크기 효과가 배치로 설명되는가 — 층 **안**에서 상관이 남는지
+    resid = []
+    if "score" in d and "box_px" in d:
+        from scipy.stats import spearmanr
+        for b in sorted(d["층"].dropna().unique()):
+            g = d[d["층"] == b].dropna(subset=["box_px", "score"])
+            if len(g) >= 50:
+                resid.append(float(spearmanr(g["box_px"], g["score"]).statistic))
+    out["rho_within_bins"] = resid
+    out["rho_within_max_abs"] = max((abs(r) for r in resid), default=float("nan"))
+    out["size_effect_explained"] = bool(
+        resid and out["rho_within_max_abs"] < PLACEMENT_RHO_RESIDUAL)
+
+    if overlap:
+        out["verdict"] = "구분 불가"
+        out["why"] = (f"최저층 {lo['놓침률']:.1%} {lo['ci']} vs 최고층 "
+                      f"{hi['놓침률']:.1%} {hi['ci']} — CI 가 겹칩니다 (비 {ratio:.2f}).")
+    elif ratio >= PLACEMENT_RATIO_HB:
+        out["verdict"] = "창 배치(H-B')"
+        out["why"] = (f"병변이 적게 담긴 창에서 {ratio:.2f}배 더 놓칩니다 "
+                      f"({lo['놓침률']:.1%} vs {hi['놓침률']:.1%}, CI 안 겹침).")
+    elif ratio <= PLACEMENT_RATIO_HA:
+        out["verdict"] = "병변 자체(H-A)"
+        out["why"] = (f"창이 병변으로 꽉 찰수록 더 놓칩니다 (비 {ratio:.2f}) — "
+                      f"경계가 안 보이는 쪽이 어렵다는 뜻입니다.")
+    else:
+        out["verdict"] = "구분 불가"
+        out["why"] = (f"비 {ratio:.2f} 가 {PLACEMENT_RATIO_HA}~{PLACEMENT_RATIO_HB} "
+                      f"사이입니다 — 어느 쪽도 아닙니다.")
+
+    print(f"\n[placement] n={out['n']:,} · 놓침 {n_miss}건")
+    print(f"{'층':>3} {'n':>6} {'occ 중앙':>9} {'네모px':>7} {'놓침률':>8}   95% CI")
+    for b in out["bins"]:
+        print(f"{b['층']:>3} {b['n']:>6,} {b['occ_중앙값']:>9.3f} "
+              f"{b['box_px_중앙값']:>7.0f} {b['놓침률']:>8.1%}   "
+              f"[{b['ci'][0]:.1%}, {b['ci'][1]:.1%}]")
+    if resid:
+        print(f"층 안 rho(네모 크기, 점수): "
+              f"{', '.join(f'{r:+.3f}' for r in resid)}  "
+              f"→ 크기 효과가 배치로 설명되나: "
+              f"{'예' if out['size_effect_explained'] else '아니오'}")
+    print(f"판정: {out['verdict']} — {out['why']}")
+    return out
+
+
+# ⚠️ **아래는 사전등록이 아니라 탐색적(exploratory) 분석입니다.** 위 `occ` 판정이
+#    공선성으로 무너진 뒤에 만들었으므로, 문턱을 결과를 보고 고른 것으로
+#    의심해야 합니다. 다만 결론이 **"신호 없음"** 쪽이라 문턱을 낮춰 잡을수록
+#    불리해집니다 — 그 방향의 자기기만은 어렵습니다. 그래도 확증으로 쓰지 말고
+#    **H-B'(창 배치)를 기각하는 근거**로만 쓰세요.
+SHAPE_RHO_MIN = 0.10          # 크기 층 안에서 이만큼은 돼야 "신호" (크기 자체는 0.20)
+SHAPE_MIN_CONSISTENT = 3      # 4개 층 중 몇 개가 같은 방향이어야 하나
+
+
+def stage1_shape_report(rows, *, size_col: str = "box_px",
+                        shape_cols=("slack", "center_off", "ecc"),
+                        bins: int = 4) -> dict[str, Any]:
+    """**크기를 고정한 채** 모양이 1단계 놓침을 예측하는가.
+
+    `occ` 판정이 못 하는 일을 합니다 — 모양 변수들은 크기와 거의 안 붙어 있어
+    (rho 0.10~0.26) 크기 층 안에서 따로 움직일 수 있습니다.
+
+    ``slack``       1 - 폴리곤/네모 넓이. 네모로 줄이며 생긴 빈 곳
+    ``center_off``  네모 중심 ↔ 폴리곤 무게중심 거리 / 네모 긴 변
+    ``ecc``         네모 긴 변 / 짧은 변 (길쭉함)
+
+    판정: 어느 모양 변수든 4개 크기 층 중 `SHAPE_MIN_CONSISTENT` 개 이상에서
+    같은 방향이고 |rho| >= `SHAPE_RHO_MIN` 이면 "모양도 관여".
+    아니면 **"크기가 전부"** — 즉 창 배치 가설(H-B') 기각.
+    """
+    import pandas as pd
+    from scipy.stats import spearmanr
+
+    d = pd.DataFrame(rows).dropna(subset=[size_col, "score"]).reset_index(drop=True)
+    d["_q"] = pd.qcut(d[size_col], bins, labels=False, duplicates="drop")
+    out: dict[str, Any] = {"n": len(d), "size_col": size_col, "shape": {}}
+
+    print(f"\n[shape] 크기({size_col}) {bins}층 안에서 모양이 점수를 예측하나  n={len(d):,}")
+    print(f"{'변수':<12}" + "".join(f"{'층'+str(i):>9}" for i in range(bins))
+          + f"{'같은방향':>9}{'판정':>10}")
+    hit = []
+    for c in shape_cols:
+        if c not in d:
+            continue
+        g = d.dropna(subset=[c])
+        rs = [float(spearmanr(x[c], x["score"]).statistic)
+              for _, x in g.groupby("_q", observed=True) if len(x) >= 50]
+        pos, neg = sum(r > 0 for r in rs), sum(r < 0 for r in rs)
+        same = max(pos, neg)
+        strong = sum(abs(r) >= SHAPE_RHO_MIN for r in rs)
+        ok = same >= SHAPE_MIN_CONSISTENT and strong >= SHAPE_MIN_CONSISTENT
+        hit.append(ok)
+        out["shape"][c] = {"rho_by_size_bin": rs, "same_direction": same,
+                           "strong": strong, "signal": ok}
+        print(f"{c:<12}" + "".join(f"{r:>+9.3f}" for r in rs)
+              + f"{same:>9}" + f"{'신호' if ok else '없음':>10}")
+
+    # 대조군 — 크기 자체는 같은 자리에서 얼마나 강한가
+    rs_size = [float(spearmanr(x[size_col], x["score"]).statistic)
+               for _, x in d.groupby("_q", observed=True) if len(x) >= 50]
+    out["rho_size_within_own_bins"] = rs_size
+    print(f"{'(대조)크기':<12}" + "".join(f"{r:>+9.3f}" for r in rs_size)
+          + "   ← 층 안에서도 크기는 남습니다" if rs_size else "")
+
+    out["verdict"] = "모양도 관여" if any(hit) else "크기가 전부 (창 배치 H-B' 기각)"
+    out["why"] = (
+        f"모양 변수 {len(hit)}개 중 신호 {sum(hit)}개. "
+        f"{SHAPE_MIN_CONSISTENT}개 층 이상에서 |rho| >= {SHAPE_RHO_MIN} 이고 방향이 "
+        f"같아야 신호로 셉니다.")
+    print(f"판정: {out['verdict']} — {out['why']}")
+    return out
+
+
 def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: int,
                      n_train: int, epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:

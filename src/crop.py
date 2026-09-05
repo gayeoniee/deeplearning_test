@@ -465,6 +465,175 @@ def bbox_in_crop(row, tag: str | None = None, cfg: CFG | None = None) -> list[fl
     return geometry_in_crop(row, tag, cfg)["bbox"]
 
 
+# ──────────────────────────────────────────────────────────────────────
+# 폴리곤 — **bbox 는 이것의 외접사각형입니다** (VL01 4,000행에서 오차 0px,
+# 표준편차 0). 즉 라벨러가 그린 원본은 폴리곤이고 네모는 우리가 뽑은 값입니다.
+# 그래서 "네모가 대충 그려졌나" 가 아니라 "네모로 줄이면서 무엇을 잃었나" 를
+# 물어야 합니다 — 아래 함수들이 그걸 잽니다. 좌표는 bbox 와 같은 원본 픽셀.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _poly(v) -> list[list[float]] | None:
+    """폴리곤을 [[x, y], ...] 실수 리스트로. 점이 3개 미만이거나 NaN 이면 None.
+
+    ⚠️ parquet 왕복 뒤에는 `numpy.ndarray` 로 돌아옵니다 — `if poly:` 를 쓰면
+       `ValueError: truth value of an array is ambiguous` 입니다 (`_box4` 와 같은 함정).
+    """
+    v = _as_list(v)
+    if v is None:
+        return None
+    try:
+        pts = [[float(a), float(b)] for a, b in v]
+    except (TypeError, ValueError):
+        return None
+    if len(pts) < 3 or any(c != c for pt in pts for c in pt):     # NaN 포함
+        return None
+    return pts
+
+
+def polygon_area(poly) -> float:
+    """신발끈 공식. 넓이(항상 0 이상), 계산 불가면 0.0.
+
+    점 순서(시계/반시계)를 모르므로 절댓값을 씁니다.
+    """
+    pts = _poly(poly)
+    if pts is None:
+        return 0.0
+    a = 0.0
+    for i in range(len(pts)):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % len(pts)]
+        a += x1 * y2 - x2 * y1
+    return abs(a) / 2.0
+
+
+def polygon_centroid(poly) -> tuple[float, float] | None:
+    """넓이 가중 무게중심. 넓이가 0(직선으로 눌린 폴리곤)이면 꼭짓점 평균.
+
+    **네모 중심과 다를 수 있습니다** — 길쭉하거나 굽은 병변에서 벌어집니다.
+    크롭 창은 네모 중심에 놓이므로 그 차이가 곧 "창이 병변을 벗어난 정도" 입니다.
+    """
+    pts = _poly(poly)
+    if pts is None:
+        return None
+    a = cx = cy = 0.0
+    for i in range(len(pts)):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % len(pts)]
+        cr = x1 * y2 - x2 * y1
+        a += cr
+        cx += (x1 + x2) * cr
+        cy += (y1 + y2) * cr
+    if abs(a) < 1e-9:
+        n = len(pts)
+        return (sum(q[0] for q in pts) / n, sum(q[1] for q in pts) / n)
+    return (cx / (3.0 * a), cy / (3.0 * a))
+
+
+def point_in_polygon(x: float, y: float, poly) -> bool:
+    """광선 투사(ray casting). 경계 위는 구현 정의 — 판정에 쓰지 마세요."""
+    pts = _poly(poly)
+    if pts is None:
+        return False
+    inside = False
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i - 1) % n]
+        if (y1 > y) != (y2 > y):
+            if x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+                inside = not inside
+    return inside
+
+
+def _clip_to_rect(pts: list[list[float]], rect) -> list[list[float]]:
+    """Sutherland-Hodgman — 볼록한 사각형으로 자릅니다 (근사 아님, 정확).
+
+    자르는 쪽이 볼록하기만 하면 되고, 잘리는 폴리곤은 오목해도 됩니다.
+    (오목한 폴리곤이 두 조각으로 갈리는 경우 잇는 선분이 생기는데, 그 선분이
+     감싸는 넓이는 0 이라 **넓이 계산에는 영향이 없습니다.**)
+    """
+    x1, y1, x2, y2 = rect
+    edges = (("x>", x1), ("y>", y1), ("x<", x2), ("y<", y2))
+
+    def inside(pt, e):
+        kind, v = e
+        return (pt[0] >= v if kind == "x>" else pt[0] <= v if kind == "x<"
+                else pt[1] >= v if kind == "y>" else pt[1] <= v)
+
+    def cross(a, b, e):
+        kind, v = e
+        if kind in ("x>", "x<"):
+            t = (v - a[0]) / (b[0] - a[0]) if b[0] != a[0] else 0.0
+            return [v, a[1] + t * (b[1] - a[1])]
+        t = (v - a[1]) / (b[1] - a[1]) if b[1] != a[1] else 0.0
+        return [a[0] + t * (b[0] - a[0]), v]
+
+    out = [list(q) for q in pts]
+    for e in edges:
+        if not out:
+            return []
+        cur, out = out, []
+        for i in range(len(cur)):
+            a, b = cur[i - 1], cur[i]
+            ia, ib = inside(a, e), inside(b, e)
+            if ib:
+                if not ia:
+                    out.append(cross(a, b, e))
+                out.append(b)
+            elif ia:
+                out.append(cross(a, b, e))
+    return out
+
+
+def polygon_in_window(row, tag: str | None = None, cfg: CFG | None = None) -> dict:
+    """크롭 창이 병변을 실제로 얼마나 담았나 — **모델 입력의 진짜 내용물**.
+
+    지금까지는 bbox 점유율로 재 왔는데(STEP 17), bbox 는 폴리곤의 외접사각형이라
+    길쭉하거나 굽은 병변에서 **실제보다 훨씬 크게** 잡힙니다. 이 함수가 그 자리를
+    대신합니다. 돌려주는 값:
+
+    ``occ``          창 넓이 대비 병변 넓이 (0~1) — 창이 병변으로 얼마나 찼나
+    ``captured``     병변 넓이 대비 창에 들어온 병변 (0~1) — 병변을 얼마나 담았나
+    ``slack``        1 - 폴리곤/네모 넓이 — 네모로 줄이며 생긴 빈 곳
+    ``center_off``   네모 중심 ↔ 폴리곤 무게중심 거리 / 네모 긴 변
+    ``center_on``    네모 중심이 병변 **안**인가 (창이 병변 위에 놓였는가)
+
+    셋 다 계산 불가면 값은 ``nan`` / ``None`` 입니다 — 0 으로 채우지 않습니다.
+    없는 것과 0 은 다르고, 섞으면 분석이 조용히 틀립니다.
+    """
+    nan = float("nan")
+    bad = {"occ": nan, "captured": nan, "slack": nan,
+           "center_off": nan, "center_on": None}
+    pts = _poly(row.get("polygon"))
+    win = crop_window(row, tag, cfg)
+    if pts is None or win is None:
+        return bad
+    wx1, wy1, wx2, wy2 = win
+    warea = (wx2 - wx1) * (wy2 - wy1)
+    parea = polygon_area(pts)
+    if warea <= 0 or parea <= 0:
+        return bad
+
+    inter = polygon_area(_clip_to_rect(pts, win)) if len(_clip_to_rect(pts, win)) >= 3 else 0.0
+
+    box = _box4(row.get("bbox"))
+    slack, off, on = nan, nan, None
+    cen = polygon_centroid(pts)
+    if box and cen is not None:
+        barea = (box[2] - box[0]) * (box[3] - box[1])
+        if barea > 0:
+            slack = 1.0 - parea / barea
+        bcx, bcy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+        long = max(box[2] - box[0], box[3] - box[1])
+        if long > 0:
+            off = ((bcx - cen[0]) ** 2 + (bcy - cen[1]) ** 2) ** 0.5 / long
+        on = point_in_polygon(bcx, bcy, pts)
+
+    return {"occ": inter / warea, "captured": inter / parea,
+            "slack": slack, "center_off": off, "center_on": on}
+
+
 def available_tags() -> list[str]:
     """만들어져 있는 크롭 태그 목록 (예: ['full', 'm1.5', 'm2.5'])."""
     d = env.work_root() / "crops"
