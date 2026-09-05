@@ -91,6 +91,10 @@ def main(argv=None) -> None:
     # ⚠️ A4 분석에 꼭 필요한 건 **2단계(m2.5)** 뿐입니다. 캐글에 f320 크롭이
     #    안 붙어 있으면 `--stages 2` 로 2단계만 돌리세요.
     ap.add_argument("--stages", default="1,2", help="돌릴 단계 (예: '2')")
+    # 자동 탐색이 못 찾을 때의 탈출구. 캐글 데이터셋이 한 겹 더 싸여 있으면
+    # (/kaggle/input/release/release/checkpoints) 여기에 그 경로를 주세요.
+    ap.add_argument("--release", default=None,
+                    help="release 폴더를 직접 지정 (자동 탐색 실패 시)")
     ap.add_argument("--out", default="data/work/reports/step18_local")
     a = ap.parse_args(argv)
 
@@ -111,7 +115,7 @@ def main(argv=None) -> None:
         env.load_prepared()
     except Exception as exc:                     # 로컬은 붙일 게 없어 실패해도 정상
         print(f"[env] load_prepared 건너뜀 ({type(exc).__name__})")
-    train.import_previous_run(verbose=True)      # 입력으로 붙인 release → 작업 폴더
+    train.import_previous_run(a.release, verbose=True)   # 입력의 release → 작업 폴더
 
     # 매니페스트: 준 경로가 없으면 작업 폴더에서 찾습니다 (캐글 경로).
     mpath = ROOT / a.manifest
@@ -140,15 +144,36 @@ def main(argv=None) -> None:
 
     # ⚠️ 실험 이름을 하드코딩하지 않고 체크포인트 폴더에서 읽습니다.
     #    1단계 effnetv2_s / 2단계 convnextv2_base 로 **서로 다릅니다.**
-    ckroot = ROOT / "data/work/checkpoints"
+    # ⚠️ **`ROOT / "data/work"` 를 쓰면 안 됩니다.** 로컬에서는 리포 폴더와
+    #    작업 폴더가 같아서 안 드러나지만, 캐글에서는 갈라집니다:
+    #        리포     /kaggle/working/deeplearning_test/data/work   ← 비어 있음
+    #        작업폴더 /kaggle/working/data/work                     ← 여기로 복사됨
+    #    `import_previous_run()` 은 `env.work_root()` 로 복사하므로 여기도 그걸
+    #    봐야 합니다. 안 그러면 release 를 제대로 붙여놓고도
+    #    "체크포인트가 없습니다" 로 죽습니다 (2026-09-05 캐글에서 실제로).
+    #    `train.ckpt_dir()` 도 같은 뿌리를 씁니다.
+    ckroot = env.work_root() / "checkpoints"
     exps = {int(p.name[5]): p.name for p in sorted(ckroot.glob("stage*"))
             if (p / "best.pt").exists()}
     want = [int(x) for x in a.stages.split(",") if x.strip()]
     miss = [k for k in want if k not in exps]
     if miss:
-        raise SystemExit(
-            f"[X] {miss}단계 체크포인트가 없습니다. 찾은 것: {sorted(exps)}\n"
-            "   release 를 Add Input 했는지 확인하세요.")
+        # ⚠️ "없습니다" 만 찍고 죽으면 30분 뒤에 원인을 모릅니다. **어디를 봤고
+        #    입력에 뭐가 있는지**를 같이 찍습니다.
+        lines = [f"[X] {miss}단계 체크포인트가 없습니다. 찾은 것: {sorted(exps)}",
+                 f"    찾아본 곳: {ckroot}",
+                 f"    (env.work_root() = {env.work_root()})"]
+        found = train.find_checkpoint_sources()
+        lines.append(f"    자동 탐색이 본 checkpoints 폴더: {found or '없음'}")
+        inp = Path("/kaggle/input")
+        if inp.is_dir():
+            lines.append(f"    /kaggle/input 목록: {[p.name for p in inp.glob('*')]}")
+            hits = list(inp.rglob("best.pt"))[:5]
+            lines.append(f"    입력 안의 best.pt: {[str(h) for h in hits] or '없음'}")
+            if hits and not found:
+                lines.append("    → best.pt 는 있는데 자동 탐색이 못 찾았습니다."
+                             " `--release <그 폴더>` 로 직접 주세요.")
+        raise SystemExit("\n".join(lines))
     for k in want:
         print(f"  {k}단계 exp = {exps[k]}")
 
