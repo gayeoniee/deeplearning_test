@@ -103,9 +103,21 @@ CO_RATIO = 1.5          # 그리고 중앙값의 몇 배 이상
 # 매니페스트 → 축
 # ──────────────────────────────────────────────────────────────
 def _bbox_xy(b):
-    """`bbox` 는 [x1, y1, x2, y2] 입니다 (labels.parse_meta)."""
+    """`bbox` 는 [x1, y1, x2, y2] 입니다 (labels.parse_meta).
+
+    ⚠️ **parquet 에서 읽으면 문자열입니다** — `'[264.0, 589.0, 592.0, 1061.0]'`.
+       리스트로 가정하고 unpack 하면 `float('[')` 에서 죽고, 이 도구는
+       "bbox 에서 크기를 하나도 못 읽었습니다" 로 멈춥니다 (실제로 그랬습니다).
+       파싱 정의는 `crop._as_list()` **한 곳에만** 둡니다 — 여기서 다시 쓰면
+       매니페스트 형식이 바뀔 때 두 곳이 갈립니다.
+    """
+    from src.crop import _as_list
+
+    v = _as_list(b)
+    if v is None:
+        return None
     try:
-        x1, y1, x2, y2 = (float(v) for v in b)
+        x1, y1, x2, y2 = (float(x) for x in v)
     except Exception:
         return None
     return abs(x2 - x1), abs(y2 - y1)
