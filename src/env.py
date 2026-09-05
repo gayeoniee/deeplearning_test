@@ -422,8 +422,27 @@ def suggest_workers() -> int:
           150~200 img/s 입니다. 절반 이상을 데이터 로딩에서 흘리고 있었습니다.
     """
     import os
+    import sys
+
+    # 환경변수로 강제 (튜닝·디버깅용). 0 이면 메인 프로세스에서 로딩합니다.
+    forced = os.environ.get("DOG_SKIN_WORKERS")
+    if forced is not None and forced.strip().lstrip("-").isdigit():
+        return max(0, int(forced))
 
     n = os.cpu_count() or 2
+
+    # ⚠️ **윈도우는 다릅니다.** 리눅스(Colab/Kaggle)는 `fork` 라 워커가 부모
+    #    메모리를 그대로 물려받지만, 윈도우는 `spawn` 이라 **워커마다 torch·
+    #    timm·src 를 통째로 다시 import** 합니다. 게다가 이 리포는 train 로더와
+    #    val 로더를 **매 에폭 새로** 만들어서(persistent_workers 안 씀) 에폭마다
+    #    16번을 다시 띄웁니다.
+    #    2026-09-05 실측: RTX 3050 + 워커 8 로 1단계를 돌리다 **교착**했습니다.
+    #    GPU 사용률 97% → 1%, 메모리는 3.6GB 를 잡은 채 CPU 시간이 584.2초에서
+    #    멈췄고(8초 뒤에도 같은 값), 워커 13개가 뜬 상태였습니다.
+    #    → 윈도우에서는 적게 씁니다. 데이터 로딩이 조금 느려도 도는 게 낫습니다.
+    if sys.platform == "win32":
+        return min(2, max(n - 1, 0))
+
     # 메인 프로세스 몫을 남기고, 너무 많으면 오히려 컨텍스트 스위칭 비용이 큽니다
     return max(2, min(n - 1, 8))
 

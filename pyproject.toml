@@ -51,3 +51,22 @@ serve = [
 # src/ 는 `from src import env` 로 **경로에서 직접** 임포트합니다.
 # 설치 대상 패키지가 아니므로 uv 가 빌드하지 않게 막습니다.
 package = false
+
+# ── 윈도우에서만 CUDA torch 를 받습니다 (2026-09-05) ──────────────────
+# PyPI 의 윈도우 torch 휠은 **CPU 전용**입니다. 그냥 `torch>=2.2` 로 두면
+# `2.13.0+cpu` 가 깔리고, `torch.cuda.is_available()` 이 조용히 False 가 됩니다.
+# 로컬 GPU(RTX 3050)로 추론을 돌리는데 몇 시간씩 걸려서야 알았습니다 —
+# `env.require_gpu()` 는 학습 노트북에서만 부르므로 도구에서는 안 걸립니다.
+#
+# ⚠️ 마커로 **윈도우에만** 묶었습니다. Colab·Kaggle(리눅스)은 이미 CUDA torch 가
+#    깔려 있고 노트북 첫 셀은 이 extra 를 안 씁니다 — 거기 해석을 건드리면 안 됩니다.
+# ⚠️ cu126 은 이 PC 드라이버(CUDA 12.6, nvidia-smi 실측)에 맞춘 것입니다.
+#    드라이버가 더 낮은 PC 로 옮기면 여기를 낮춰야 합니다.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32'" }]
+torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32'" }]
