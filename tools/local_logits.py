@@ -51,6 +51,31 @@ def _default_batch() -> int:
         return 8
 
 
+def chunks_with_crops(df: pd.DataFrame, tag: str, sample: int = 300,
+                      need: float = 0.95) -> list[str]:
+    """크롭이 실제로 있는 청크만 골라냅니다 (청크마다 `sample` 장만 확인).
+
+    ⚠️ 전수 확인은 느립니다 — 365,428번 파일 검사는 네트워크 볼륨(캐글 입력)에서
+       몇 분씩 걸립니다. 청크는 통째로 있거나 통째로 없으므로 표본이면 충분합니다.
+
+    2026-09-05 캐글 실측: `m2.5` 데이터셋에 376,074장이 붙어 있는데 **VL01
+    39,508장이 통째로 빠져** 있었습니다 (TL01·TL02 만 올라감). 그대로 돌리면
+    `switch_tag` 가 보유율 89.2% 로 멈춥니다 — 맞는 동작이지만, 어느 청크가
+    빠졌는지는 안 알려줍니다.
+    """
+    out_dir = env.work_root() / "crops"
+    keep = []
+    for ch, g in df.groupby("chunk"):
+        s = g["image_path"].sample(min(sample, len(g)), random_state=0)
+        hit = sum(Path(crop._out_path(x, out_dir, tag)).exists() for x in s)
+        rate = hit / len(s)
+        mark = "O" if rate >= need else "X"
+        print(f"  [{mark}] {ch:<12} 표본 {len(s):>3}장 중 {hit:>3}장 ({rate:.0%})")
+        if rate >= need:
+            keep.append(ch)
+    return sorted(keep)
+
+
 def _stage(df: pd.DataFrame, *, stage: int, tag: str, exp: str, key: str,
            batch: int, img_size: int, device: str) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """한 단계의 로짓을 뽑습니다. `ds.df` 를 같이 돌려줍니다 (행 순서가 정답)."""
@@ -85,8 +110,12 @@ def main(argv=None) -> None:
     # ⚠️ 로컬은 VL01 크롭만 있어서 기본이 chunk_VL01 입니다. **캐글에서는
     #    `--chunk all`** 로 전체 val 을 돌리세요 — 거기엔 TL01·TL02 크롭이
     #    이미 붙어 있고, 그러면 A4 를 제대로(전체의 88%가 TL02) 잴 수 있습니다.
+    # ⚠️ 쉼표로 **여러 개**를 줄 수 있습니다. 캐글의 m2.5 데이터셋에 VL01 크롭이
+    #    빠져 있는 경우가 있어서(2026-09-05 실측: 376,074장인데 VL01 39,508장이
+    #    없음), 그럴 땐 `--chunk chunk_TL01,chunk_TL02` 로 있는 것만 씁니다.
+    #    A4 의 88.2% 가 TL02 에 있으므로 A4 분석에는 그걸로 충분합니다.
     ap.add_argument("--chunk", default="chunk_VL01",
-                    help="크롭이 있는 청크. 'all' 이면 전부 (캐글용)")
+                    help="쓸 청크. 쉼표로 여러 개 / 'all' 전부 / 'auto' 크롭 있는 것만")
     ap.add_argument("--batch", type=int, default=None)
     # ⚠️ A4 분석에 꼭 필요한 건 **2단계(m2.5)** 뿐입니다. 캐글에 f320 크롭이
     #    안 붙어 있으면 `--stages 2` 로 2단계만 돌리세요.
@@ -130,15 +159,32 @@ def main(argv=None) -> None:
     if len(df) < 300_000:
         print(f"\n⚠️ {len(df):,}행 — 365,428 보다 훨씬 적습니다. **옛 데이터**일 수 "
               "있습니다.\n   STEP 16 과 비교가 안 됩니다. 붙인 데이터셋을 확인하세요.")
-    if a.chunk.lower() not in ("all", "*", ""):
-        have = sorted(set(df["chunk"]))
-        if a.chunk not in have:
-            raise SystemExit(f"[X] 청크 '{a.chunk}' 가 없습니다. 있는 것: {have}")
-        df = df[df["chunk"] == a.chunk].reset_index(drop=True)
-    else:
-        # 캐글: TL01·TL02 크롭이 다 붙어 있으면 전체 val 을 돌립니다.
-        df = df.reset_index(drop=True)
+    have = sorted(set(df["chunk"]))
+    if a.chunk.lower() == "auto":
+        # ⚠️ 크롭이 있는 청크만 자동으로 고릅니다. 캐글에서 한 청크가 통째로
+        #    빠져 있어도 왕복 없이 진행됩니다 (무엇을 뺐는지는 아래에 찍힙니다).
+        print("[chunk] 크롭 보유율을 청크별로 확인합니다 (표본 300장씩)")
+        want_chunks = chunks_with_crops(df, "m2.5" if 2 in
+                                        [int(x) for x in a.stages.split(",") if x.strip()]
+                                        else "f320")
+        if not want_chunks:
+            raise SystemExit("[X] 크롭이 있는 청크가 하나도 없습니다. "
+                             "데이터셋을 Add Input 했는지 확인하세요.")
+    elif a.chunk.lower() in ("all", "*", ""):
+        want_chunks = have
         print("[chunk] 전체 청크 — 크롭이 다 붙어 있어야 합니다")
+    else:
+        want_chunks = [c.strip() for c in a.chunk.split(",") if c.strip()]
+        bad = [c for c in want_chunks if c not in have]
+        if bad:
+            raise SystemExit(f"[X] 청크 {bad} 가 없습니다. 있는 것: {have}")
+    n_before = len(df)
+    df = df[df["chunk"].isin(want_chunks)].reset_index(drop=True)
+    if len(df) != n_before:
+        # ⚠️ 부분집합을 쓰는 건 **의도적으로 고른 것**일 때만 괜찮습니다.
+        #    무엇을 뺐는지 화면에 남겨야 나중에 숫자를 잘못 비교하지 않습니다.
+        print(f"[chunk] {want_chunks} 만 씁니다 — {len(df):,}/{n_before:,}행 "
+              f"({len(df)/n_before:.1%}). 뺀 청크: {sorted(set(have) - set(want_chunks))}")
     print(f"\n{a.chunk} {len(df):,}행 / 개체 {df['animal_id'].nunique():,}마리")
     print("클래스:", df["label"].value_counts().sort_index().to_dict())
 
@@ -207,7 +253,12 @@ def main(argv=None) -> None:
         print(f"  저장 → {out.name}/stage{stage}_logits.npz · stage{stage}_rows.parquet")
 
     print(f"\n완료. {out}")
-    print("⚠️ VL01 부분집합입니다 — STEP 16 전체 val 숫자와 직접 비교하지 마세요.")
+    if set(want_chunks) != set(have):
+        print(f"[!] {want_chunks} **부분집합**입니다 — STEP 16 전체 val 숫자와"
+              " 직접 비교하지 마세요 (청크마다 클래스 분포가 다릅니다)."
+              f" 쓴 청크: {want_chunks}")
+    else:
+        print("전체 val 입니다 — STEP 16 숫자와 같은 조건입니다.")
 
 
 if __name__ == "__main__":
