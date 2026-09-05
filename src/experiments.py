@@ -768,6 +768,123 @@ WINDOW_MIN_OVERFLOW_GAIN = "ci"
 WINDOW_FALSE_ALARM_TOL_PP = 0.02
 
 
+
+# ── 2단계 크롭: 비례 창 vs 고정 창 (STEP 22) ─────────────────────────────
+#
+# STEP 21 실측: VL01 안에서 A4 병변이 A1 보다 **1.68배** 큽니다. A1·A4 를 둘 다
+# 가진 개 72마리로 좁혀도 1.88배(Wilcoxon p=8.1e-05)라 "다른 개를 다르게 찍었다"
+# 로는 설명이 안 됩니다. 그런데 `m2.5` 는 창 = 병변 × 2.5 라 병변이 언제나
+# 프레임의 40% 를 차지합니다 — **절대 크기가 지워집니다.**
+#
+#     A1 117px → 창 292px → 384 입력에서 154px
+#     A4 196px → 창 490px → 384 입력에서 154px   ← 똑같아짐
+#
+# 고정 창(f320/f448)은 그 크기를 남깁니다. 그럼 A4↔A1 이 덜 헷갈릴까요?
+#
+# ⚠️ **좋아져도 바로 채택할 수 없습니다.** 절대 크기를 쓰면 배율 교란에 약해지고,
+#    배포에서 보호자의 촬영 거리는 통제되지 않습니다. 그래서 판정을 **세 갈래**로
+#    둡니다 — "정보는 있으나 배율 의존" 이 나오면 그건 진단이지 채택이 아닙니다.
+
+#   A4 recall 개선은 **그 실행에서 계산한 CI 반폭**과 비교합니다 (고정값 금지).
+S2SIZE_MAIN = "ci"
+#   A4→A1 혼동이 이만큼은 줄어야 "크기 신호가 실제로 쓰였다" 로 봅니다.
+S2SIZE_A4A1_DROP = 0.03
+
+
+def stage2_size_report(runs: list[dict], *, base_crop: str = "m2.5",
+                       focus: str = "A4", other: str = "A1") -> dict[str, Any]:
+    """2단계 **비례 창 vs 고정 창** 비교를 미리 정해둔 기준으로 판정합니다.
+
+    각 run 은 `train_and_measure` 결과에 아래를 더한 dict 를 기대합니다:
+
+        macro_f1, scale_drop           (train_and_measure 가 이미 넣습니다)
+        focus_recall, focus_recall_ci  관심 클래스 recall 과 CI 반폭
+        f2o_rate                       관심→비교 클래스 혼동률 (A4→A1)
+
+    판정 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------
+    1. **1차**: `focus_recall` 이 CI 반폭보다 크게 오를 것
+    2. `f2o_rate` 가 {S2SIZE_A4A1_DROP} 이상 줄 것
+    3. macro-F1 이 {MACRO_F1_NOISE} 넘게 떨어지지 않을 것
+    4. **배율 하락**이 {SCALE_DROP_REJECT_PP} 넘게 나빠지지 않을 것
+
+    1·2 를 만족하고 4 가 걸리면 **"정보는 있으나 배율 의존"** — 진단으로는
+    성공이지만 배포에는 못 씁니다 (보호자 촬영 거리가 통제되지 않으므로).
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def f(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>9.1%}" if pct else f"{v:>9.{nd}f}"
+
+    print("\n" + "=" * 84)
+    print(f" 2단계 크롭 — 비례 창(크기 지움) vs 고정 창(크기 보존)")
+    print("=" * 84)
+    print(f"  {'크롭':<9}{'macro-F1':>10}{focus + ' recall':>12}"
+          f"{focus + '→' + other:>10}{'배율하락':>10}{'분':>6}")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<9}{f(r.get('macro_f1'))}{f(r.get('focus_recall'), nd=3)}"
+              f"{f(r.get('f2o_rate'), pct=True)}{f(r.get('scale_drop'), pct=True)}"
+              f"{r.get('minutes', 0):>6.0f}")
+
+    verdict: dict[str, Any] = {"baseline": base_crop, "candidates": []}
+    for r in runs:
+        if r is base:
+            continue
+        d_rec = (r.get("focus_recall") or 0) - (base.get("focus_recall") or 0)
+        half = r.get("focus_recall_ci") or base.get("focus_recall_ci") or 0.0
+        d_f2o = (base.get("f2o_rate") or 0) - (r.get("f2o_rate") or 0)   # +면 개선
+        d_f1 = (r.get("macro_f1") or 0) - (base.get("macro_f1") or 0)
+        d_scale = (r.get("scale_drop") or 0) - (base.get("scale_drop") or 0)
+
+        ok_main = d_rec > half
+        ok_f2o = d_f2o >= S2SIZE_A4A1_DROP
+        ok_f1 = d_f1 > -MACRO_F1_NOISE
+        ok_scale = d_scale < SCALE_DROP_REJECT_PP
+
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    {'[O]' if ok_main else '[X]'} 1차 — {focus} recall {d_rec:+.3f} "
+              f"(CI 반폭 ±{half:.3f})")
+        print(f"    {'[O]' if ok_f2o else '[X]'} {focus}→{other} 혼동 {-d_f2o:+.1%} "
+              f"(문턱 −{S2SIZE_A4A1_DROP:.0%})")
+        print(f"    {'[O]' if ok_f1 else '[X]'} macro-F1 {d_f1:+.4f} "
+              f"(허용 −{MACRO_F1_NOISE})")
+        print(f"    {'[O]' if ok_scale else '[X]'} 배율 하락 {d_scale:+.1%} "
+              f"(허용 +{SCALE_DROP_REJECT_PP:.0%})")
+
+        if ok_main and ok_f2o and ok_f1 and ok_scale:
+            v = "채택 후보"
+        elif ok_main and ok_f2o:
+            v = "정보는 있으나 **배율 의존** — 진단 성공, 배포엔 못 씀"
+        else:
+            v = "기각 — 크기 신호가 A4 를 살리지 못합니다"
+        print(f"    → {v}")
+        verdict["candidates"].append({
+            "crop_tag": r["crop_tag"], "verdict": v, "d_focus_recall": d_rec,
+            "ci_half": half, "d_f2o": d_f2o, "d_macro_f1": d_f1,
+            "d_scale_drop": d_scale})
+
+    adopted = [c for c in verdict["candidates"] if c["verdict"] == "채택 후보"]
+    diag = [c for c in verdict["candidates"] if "배율 의존" in c["verdict"]]
+    verdict["verdict"] = ("채택 후보: " + adopted[0]["crop_tag"]) if adopted else (
+        ("배율 의존: " + diag[0]["crop_tag"]) if diag else "채택 없음")
+    print(f"\n  판정: {verdict['verdict']}")
+    print("  ⚠️ VL01 만 · 백본은 빠른 effnetv2_s 입니다. 효과가 크면 확정 백본"
+          "(convnextv2_base)으로 다시 확인해야 합니다.")
+    print("  ⚠️ 고정 창은 배포에서 **촬영 거리에 의존**합니다 — 채택 전에"
+          " 그 위험을 따로 판단하세요.")
+    print("=" * 84)
+    return verdict
+
+
 def stage1_window_report(runs: list[dict], *, base_crop: str = "f320") -> dict[str, Any]:
     """1단계 **고정 창 크기** 비교를 미리 정해둔 기준으로 판정합니다.
 
