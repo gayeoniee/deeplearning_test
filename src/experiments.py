@@ -725,6 +725,133 @@ def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[s
     return verdict
 
 
+
+# ── 1단계 고정 창 **크기** 비교 (STEP 20) ────────────────────────────────
+#
+# STEP 18 실측: 1단계는 병변이 **클수록** 점수가 낮습니다 (rho −0.201, 6개 클래스
+# 전부 음수). 2단계(`m2.5`, 병변에 비례하는 창)에서는 그 효과가 없어서, 원인이
+# "큰 병변이 어렵다" 가 아니라 **고정 창이 병변으로 꽉 차서 주변 정상 피부가
+# 안 보이는 것** 쪽으로 좁혀졌습니다. 창 안 놓침 1.8% vs 창 밖 4.6% (2.5배).
+#
+# 전체 184,735 병변 중 **23.2%** 가 320px 창을 넘칩니다 (A6 38.7% · A2 27.9%).
+# 창을 키우면 넘침은 줄지만(448 에서 12.4%) **작은 병변이 그만큼 작아집니다.**
+# 맞바꿈이라 실측이 필요합니다.
+#
+# ⚠️ 창을 **비례**로 바꾸면 안 됩니다 — STEP 9-A 에서 ROI 크롭이 정답을 흘려
+#    (정상 bbox 중앙값 0.71% vs 병변 1.25%) AUROC 가 0.8272 → 0.9477 로 갈렸습니다.
+#    **고정이라는 성질을 유지한 채 크기만** 바꿉니다.
+
+#   넘치던 병변의 놓침이 이만큼은 줄어야 "창 때문" 이 확인됩니다.
+#   ⚠️ 고정값이 아니라 **그 실행에서 계산한 부트스트랩 CI 반폭**과 비교합니다
+#      (evaluate.bootstrap_ci(metric="recall")). 작은 부분집합에서 잡음에
+#      속지 않으려는 것입니다 — A6 가 val 256장에서 2σ ±0.085 였던 전례.
+WINDOW_MIN_OVERFLOW_GAIN = "ci"
+#   헛알림이 이보다 나빠지면 탈락. STEP 15 가 "2%p 이상 줄어야 채택" 을 쓴 것과
+#   같은 폭을 반대 방향으로 씁니다.
+WINDOW_FALSE_ALARM_TOL_PP = 0.02
+
+
+def stage1_window_report(runs: list[dict], *, base_crop: str = "f320") -> dict[str, Any]:
+    """1단계 **고정 창 크기** 비교를 미리 정해둔 기준으로 판정합니다.
+
+    각 run 은 `train_and_measure` 결과에 아래를 더한 dict 를 기대합니다:
+
+        auroc                 전체 AUROC
+        blur_drop             흐림 교란 하락 (화질 지름길 감시)
+        false_alarm           recall 0.95 에서의 헛알림률
+        overflow_miss         **기준 창을 넘치던 병변**의 놓침률
+        overflow_miss_ci      그 값의 부트스트랩 CI 반폭
+        within_miss           넘치지 않던 병변의 놓침률
+
+    ⚠️ `overflow` 는 **기준 창(f320)** 기준으로 정의합니다. 창을 키우면 정의가
+       같이 움직이면 안 됩니다 — 같은 사진 집합을 두 모델이 어떻게 다루는지를
+       봐야 하니까요.
+
+    판정 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------
+    1. **1차**: `overflow_miss` 가 CI 반폭보다 크게 줄어야 합니다.
+       이게 가설의 핵심입니다. 점수보다 이게 먼저입니다.
+    2. AUROC 가 {AUROC_NOISE} 넘게 떨어지면 탈락.
+    3. 흐림 하락이 {BLUR_NOISE_PP} 넘게 나빠지면 탈락 (화질 지름길 재개방).
+    4. 헛알림이 {WINDOW_FALSE_ALARM_TOL_PP} 넘게 나빠지면 탈락.
+
+    1번만 만족하고 2~4 중 하나가 걸리면 **맞바꿈**으로 적고 채택하지 않습니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def f(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>9.1%}" if pct else f"{v:>9.{nd}f}"
+
+    print("\n" + "=" * 82)
+    print(" 1단계 고정 창 **크기** 비교 — 큰 병변이 창을 넘치는 문제")
+    print("=" * 82)
+    print(f"  {'크롭':<9}{'AUROC':>9}{'넘친것 놓침':>12}{'안넘친것':>10}"
+          f"{'헛알림':>9}{'흐림하락':>10}{'분':>6}")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<9}{f(r.get('auroc'))}{f(r.get('overflow_miss'), pct=True)}"
+              f"{f(r.get('within_miss'), pct=True)}{f(r.get('false_alarm'), pct=True)}"
+              f"{f(r.get('blur_drop'), pct=True)}{r.get('minutes', 0):>6.0f}")
+    print(f"\n  ⚠️ '넘친것' 은 **{base_crop} 기준**으로 정의합니다 (창을 키워도 같은 사진 집합).")
+
+    if not base.get("converged", True):
+        print(f"  ⚠️ 기준 '{base_crop}' 이 수렴하지 않았습니다 — 재확인 필요"
+              " (STEP 9 와 같은 함정).")
+
+    verdict: dict[str, Any] = {"baseline": base_crop, "candidates": []}
+    for r in runs:
+        if r is base:
+            continue
+        d_of = base.get("overflow_miss", 0) - r.get("overflow_miss", 0)   # +면 개선
+        half = r.get("overflow_miss_ci") or base.get("overflow_miss_ci") or 0.0
+        d_auroc = (r.get("auroc") or 0) - (base.get("auroc") or 0)
+        d_blur = ((r.get("blur_drop") or 0) - (base.get("blur_drop") or 0))
+        d_fa = ((r.get("false_alarm") or 0) - (base.get("false_alarm") or 0))
+
+        ok_main = d_of > half
+        ok_auroc = d_auroc > -AUROC_NOISE
+        ok_blur = d_blur < BLUR_NOISE_PP
+        ok_fa = d_fa < WINDOW_FALSE_ALARM_TOL_PP
+
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    {'[O]' if ok_main else '[X]'} 1차 — 넘친 병변 놓침 {d_of:+.1%} "
+              f"(CI 반폭 ±{half:.1%})")
+        print(f"    {'[O]' if ok_auroc else '[X]'} AUROC {d_auroc:+.4f} "
+              f"(허용 −{AUROC_NOISE})")
+        print(f"    {'[O]' if ok_blur else '[X]'} 흐림 하락 {d_blur:+.1%} "
+              f"(허용 +{BLUR_NOISE_PP:.0%})")
+        print(f"    {'[O]' if ok_fa else '[X]'} 헛알림 {d_fa:+.1%} "
+              f"(허용 +{WINDOW_FALSE_ALARM_TOL_PP:.0%})")
+
+        if ok_main and ok_auroc and ok_blur and ok_fa:
+            v = "채택"
+        elif ok_main:
+            v = "맞바꿈 — 넘친 병변은 좋아지나 다른 데서 잃습니다"
+        else:
+            v = "기각 — 창 크기가 원인이 아닙니다"
+        print(f"    → {v}")
+        verdict["candidates"].append({"crop_tag": r["crop_tag"], "verdict": v,
+                                      "d_overflow_miss": d_of, "ci_half": half,
+                                      "d_auroc": d_auroc, "d_blur": d_blur,
+                                      "d_false_alarm": d_fa})
+
+    adopted = [c for c in verdict["candidates"] if c["verdict"] == "채택"]
+    verdict["verdict"] = ("채택: " + adopted[0]["crop_tag"]) if adopted else "채택 없음"
+    print(f"\n  판정: {verdict['verdict']}")
+    print("  ⚠️ VL01 만으로 낸 결과라면 전체 데이터에서 다시 확인해야 합니다"
+          " (서브셋 순위가 풀 학습과 같다는 보장은 없습니다).")
+    print("=" * 82)
+    return verdict
+
+
 def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str, Any]:
     """1단계 입력(크롭 태그) 비교를 **미리 정해둔 기준**으로 판정합니다.
 
