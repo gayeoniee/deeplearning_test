@@ -384,11 +384,28 @@ def lr_report(runs: list[dict], *, baseline_lr: float = 3e-4,
               f"{r['score']:>10.4f}{r.get('best_epoch', -1):>6}"
               f"{r.get('n_epochs', 0):>6}{ds}{r['minutes']:>6.0f}{mark}")
 
+    # ★ **먼저: 기준선에서 현상이 재현됐는가.**
+    #   "best 가 0에폭" 은 한 에폭의 스텝 수가 많아서 생긴 현상입니다.
+    #   서브셋으로 줄이면 스텝/에폭도 줄어 **현상 자체가 안 나타날 수 있습니다.**
+    #   그 상태에서 B·C·D 가 좋아 보이면 "학습률이 고쳤다" 가 아니라
+    #   "원래 문제가 없었다" 입니다 — 아무것도 못 배우고 시간만 씁니다.
+    if base.get("best_epoch", -1) >= LR_MIN_BEST_EPOCH:
+        print(f"\n  🚨 **기준선 A 의 best_epoch 이 이미 "
+              f"{base['best_epoch']} 입니다 (≥ {LR_MIN_BEST_EPOCH}).**")
+        print("     STEP 16 에서 보려던 '0에폭 best' 가 이 규모에서는 재현되지")
+        print("     않았습니다. 다른 판이 좋아 보여도 학습률 덕분이라고 말할 수")
+        print("     없습니다 — **이 실험은 무효입니다.**")
+        print(f"     스텝/에폭을 STEP 16(7,569)에 가깝게 올려서 다시 하세요"
+              f" — 지금 학습 {base.get('n_train', 0):,}장.")
+        return {"verdict": "무효 — 기준선에서 현상 미재현",
+                "baseline": key(base), "trained": [], "winner": None,
+                "min_best_epoch": LR_MIN_BEST_EPOCH, "noise": MACRO_F1_NOISE}
+
     trained = [r for r in runs if r.get("best_epoch", -1) >= LR_MIN_BEST_EPOCH]
     better = [r for r in trained if r["score"] >= base["score"] + MACRO_F1_NOISE]
 
     print(f"\n  기준선: macro-F1 {base['score']:.4f} (best epoch "
-          f"{base.get('best_epoch', -1)})")
+          f"{base.get('best_epoch', -1)}) — 현상 재현됨 ✅")
     print(f"  1차 통과 (best_epoch >= {LR_MIN_BEST_EPOCH}): "
           f"{len(trained)}/{len(runs)}판")
 
