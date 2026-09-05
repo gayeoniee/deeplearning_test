@@ -51,31 +51,6 @@ def _default_batch() -> int:
         return 8
 
 
-def chunks_with_crops(df: pd.DataFrame, tag: str, sample: int = 300,
-                      need: float = 0.95) -> list[str]:
-    """크롭이 실제로 있는 청크만 골라냅니다 (청크마다 `sample` 장만 확인).
-
-    ⚠️ 전수 확인은 느립니다 — 365,428번 파일 검사는 네트워크 볼륨(캐글 입력)에서
-       몇 분씩 걸립니다. 청크는 통째로 있거나 통째로 없으므로 표본이면 충분합니다.
-
-    2026-09-05 캐글 실측: `m2.5` 데이터셋에 376,074장이 붙어 있는데 **VL01
-    39,508장이 통째로 빠져** 있었습니다 (TL01·TL02 만 올라감). 그대로 돌리면
-    `switch_tag` 가 보유율 89.2% 로 멈춥니다 — 맞는 동작이지만, 어느 청크가
-    빠졌는지는 안 알려줍니다.
-    """
-    out_dir = env.work_root() / "crops"
-    keep = []
-    for ch, g in df.groupby("chunk"):
-        s = g["image_path"].sample(min(sample, len(g)), random_state=0)
-        hit = sum(Path(crop._out_path(x, out_dir, tag)).exists() for x in s)
-        rate = hit / len(s)
-        mark = "O" if rate >= need else "X"
-        print(f"  [{mark}] {ch:<12} 표본 {len(s):>3}장 중 {hit:>3}장 ({rate:.0%})")
-        if rate >= need:
-            keep.append(ch)
-    return sorted(keep)
-
-
 def _stage(df: pd.DataFrame, *, stage: int, tag: str, exp: str, key: str,
            batch: int, img_size: int, device: str) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """한 단계의 로짓을 뽑습니다. `ds.df` 를 같이 돌려줍니다 (행 순서가 정답)."""
@@ -122,6 +97,8 @@ def main(argv=None) -> None:
     ap.add_argument("--stages", default="1,2", help="돌릴 단계 (예: '2')")
     # 자동 탐색이 못 찾을 때의 탈출구. 캐글 데이터셋이 한 겹 더 싸여 있으면
     # (/kaggle/input/release/release/checkpoints) 여기에 그 경로를 주세요.
+    ap.add_argument("--exp1", default=None, help="1단계 실험 이름을 직접 지정")
+    ap.add_argument("--exp2", default=None, help="2단계 실험 이름을 직접 지정")
     ap.add_argument("--release", default=None,
                     help="release 폴더를 직접 지정 (자동 탐색 실패 시)")
     ap.add_argument("--out", default="data/work/reports/step18_local")
@@ -163,10 +140,9 @@ def main(argv=None) -> None:
     if a.chunk.lower() == "auto":
         # ⚠️ 크롭이 있는 청크만 자동으로 고릅니다. 캐글에서 한 청크가 통째로
         #    빠져 있어도 왕복 없이 진행됩니다 (무엇을 뺐는지는 아래에 찍힙니다).
-        print("[chunk] 크롭 보유율을 청크별로 확인합니다 (표본 300장씩)")
-        want_chunks = chunks_with_crops(df, "m2.5" if 2 in
-                                        [int(x) for x in a.stages.split(",") if x.strip()]
-                                        else "f320")
+        tag = ("m2.5" if 2 in [int(x) for x in a.stages.split(",") if x.strip()]
+               else "f320")
+        want_chunks = crop.chunks_with_crops(df, tag)
         if not want_chunks:
             raise SystemExit("[X] 크롭이 있는 청크가 하나도 없습니다. "
                              "데이터셋을 Add Input 했는지 확인하세요.")
@@ -199,8 +175,41 @@ def main(argv=None) -> None:
     #    "체크포인트가 없습니다" 로 죽습니다 (2026-09-05 캐글에서 실제로).
     #    `train.ckpt_dir()` 도 같은 뿌리를 씁니다.
     ckroot = env.work_root() / "checkpoints"
-    exps = {int(p.name[5]): p.name for p in sorted(ckroot.glob("stage*"))
-            if (p / "best.pt").exists()}
+    cands: dict[int, list[str]] = {}
+    for q in sorted(ckroot.glob("stage*")):
+        if (q / "best.pt").exists() and q.name[5:6].isdigit():
+            cands.setdefault(int(q.name[5]), []).append(q.name)
+
+    # ⚠️ **같은 단계 후보가 여럿이면 조용히 고르면 안 됩니다.** 폴더 이름 앞
+    #    글자로만 단계를 읽으면 STEP 22 가 만든 `stage2_effnetv2_s_...` 가
+    #    알파벳 순으로 릴리스의 `stage2_convnextv2_base_...` 를 덮어써서,
+    #    **다른 모델의 로짓이 나오는데 아무 말도 안 합니다**
+    #    (2026-09-05 에 정확도가 0.6689 → 0.6267 로 조용히 바뀌어 잡았습니다).
+    #    릴리스가 어느 실험인지 이미 적어두므로 그걸 먼저 봅니다.
+    thr = env.work_root() / "stage1_threshold.json"
+    named: dict[int, str] = {}
+    if thr.exists():
+        rec = json.loads(thr.read_text(encoding="utf-8"))
+        for k, key in ((1, "stage1_exp"), (2, "stage2_exp")):
+            if rec.get(key):
+                named[k] = rec[key]
+        print(f"[exp] stage1_threshold.json 이 지정한 실험을 씁니다: {named}")
+
+    for k, v in ((1, a.exp1), (2, a.exp2)):      # CLI 가 최우선
+        if v:
+            named[k] = v
+    exps: dict[int, str] = {}
+    for k, names in cands.items():
+        if k in named and named[k] in names:
+            exps[k] = named[k]
+        elif len(names) == 1:
+            exps[k] = names[0]
+        else:
+            raise SystemExit(
+                f"[X] {k}단계 체크포인트가 여러 개인데 어느 것인지 알 수 없습니다:\n"
+                + "".join(f"      {n}\n" for n in names)
+                + f"    stage1_threshold.json 을 {env.work_root()} 에 두거나\n"
+                  f"    `--exp{k} <이름>` 으로 지정하세요.")
     want = [int(x) for x in a.stages.split(",") if x.strip()]
     miss = [k for k in want if k not in exps]
     if miss:

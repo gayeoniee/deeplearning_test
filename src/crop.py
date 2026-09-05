@@ -474,6 +474,44 @@ def available_tags() -> list[str]:
 MIN_CROP_COVERAGE = 0.95   # 이 아래면 부분 데이터 학습을 막습니다
 
 
+def chunks_with_crops(df, tags, sample: int = 300, need: float = 0.95,
+                      verbose: bool = True) -> list[str]:
+    """크롭이 실제로 있는 청크만 골라냅니다 — `tags` **전부** 있어야 통과.
+
+        crop.chunks_with_crops(df, ["m2.5", "f320"])
+
+    ⚠️ 전수 확인은 느립니다. 365,428번 파일 검사는 네트워크 볼륨(캐글 입력)에서
+       몇 분씩 걸리고 그동안 화면이 조용합니다. 청크는 **통째로 있거나 통째로
+       없으므로** 청크마다 `sample` 장만 봅니다.
+
+    2026-09-05 캐글 실측: `m2.5` 데이터셋에 376,074장이 붙어 있는데 **VL01
+    39,508장이 통째로 빠져** 있었습니다 (TL01·TL02 만 올라감). 그대로 돌리면
+    `switch_tag` 가 보유율 89.2% 로 멈추는데, **어느 청크가 빠졌는지는 안
+    알려줍니다.** 이 함수가 그걸 대신합니다.
+
+    ⚠️ 크롭 **비교** 실험에서는 태그를 여러 개 넘기세요. 한 태그만 있는 청크를
+       쓰면 판이 서로 다른 사진을 보게 됩니다.
+    """
+    tags = [tags] if isinstance(tags, str) else list(tags)
+    out_dir = env.work_root() / "crops"
+    keep = []
+    if verbose:
+        print(f"[crop] 청크별 보유율 확인 — 태그 {tags}, 표본 {sample}장씩")
+    for ch, g in df.groupby("chunk"):
+        rates = {}
+        for t in tags:
+            q = g["image_path"].sample(min(sample, len(g)), random_state=0)
+            hit = sum(Path(_out_path(x, out_dir, t)).exists() for x in q)
+            rates[t] = hit / len(q)
+        ok = all(v >= need for v in rates.values())
+        if verbose:
+            detail = "  ".join(f"{t} {v:.0%}" for t, v in rates.items())
+            print(f"  [{'O' if ok else 'X'}] {ch:<12} {detail}")
+        if ok:
+            keep.append(ch)
+    return sorted(keep)
+
+
 def switch_tag(df: pd.DataFrame, tag: str, verbose: bool = True,
                allow_missing: bool = False) -> pd.DataFrame:
     """같은 매니페스트를 다른 크롭 버전으로 갈아 끼웁니다.
