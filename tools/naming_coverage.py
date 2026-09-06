@@ -154,6 +154,13 @@ def main() -> int:
             print(f"         온도 보정 T={T2:.4f} 적용 (릴리스에만 있습니다)")
         P2[name] = _softmax(_infer(exp, frame, dev, a.batch).astype(np.float64) / T2)
 
+    # 배열을 남깁니다 — 알갱이(STEP 28)를 바꿔 볼 때 추론을 다시 안 하려고.
+    dump = ROOT / "data/work/reports/step27_arrays.npz"
+    np.savez_compressed(dump, p1=p1[flag], truth=sub["label_orig"].to_numpy(),
+                        **{f"p2_{i}": P2[n] for i, (n, _, _) in enumerate(ARMS)},
+                        arm_names=np.array([n for n, _, _ in ARMS], dtype=object))
+    print(f"  배열 저장: {dump}")
+
     truth = sub["label_orig"].to_numpy()
     is_norm = truth == stages.NORMAL_LABEL
     a6 = CLASSES.index("A6")

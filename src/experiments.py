@@ -1547,3 +1547,77 @@ def naming_report(rows: dict, *, target=NAMING_TARGET_ERROR,
     print(f"판정: {verdict}"
           f"   (≥{NAMING_MIN_COVERAGE:.0%} 논의 / <{NAMING_CLOSE_COVERAGE:.0%} 닫음)")
     return out
+
+# ── STEP 28 — "무엇을 말할 것인가" (알갱이 크기) 판정 기준 ──────────────
+#
+# STEP 27 이 "6종 이름" 으로는 커버리지 33.7% 라고 했습니다. 그런데 우리가
+# 물은 것이 **"6종 이름을 말할 것인가"** 였지 **"무엇을 말할 것인가"** 가
+# 아니었습니다. 말할 수 있는 것은 여러 알갱이가 있습니다:
+#
+#   6종 이름      "농포·여드름으로 보입니다"
+#   형태 계열     "융기·발진 계열로 보입니다"      (A1·A4 / A2·A3 / A5·A6)
+#   긴급도        "조기 진료를 권합니다"            (관찰 / 진료 권장 / 조기 진료)
+#   A6 이진       "덩어리가 의심됩니다"
+#   두 이름       "구진 또는 농포로 보입니다"
+#
+# ⚠️ 묶음은 `config.URGENCY_TIER` / `config.MORPH_GROUP` 에서 가져옵니다 —
+#    **임상 문서에 먼저 있던 것**이고 혼동행렬을 보고 만들지 않았습니다.
+
+UNDER_TRIAGE_MAX = 0.05
+"""★ 안전 관문. 말한 것 중 **긴급도를 낮춰 말한** 비율의 상한.
+
+임상 해설이 위험한 혼동으로 A6→A2 · A5→A1 · A6→A1 을 꼽는데 셋의 공통점이
+"급한 걸 안 급하다고 말했다" 입니다. 반대 방향(안 급한 걸 급하다고)은
+병원에 가게 만들 뿐이라 안전합니다 — 1단계 헛알림도 같은 종류입니다.
+
+⚠️ 0.05 는 계산에서 나온 값이 아니라 **처음 박는 말뚝**입니다. 이름을 아예
+안 말하면 이 값은 정의상 0 이므로, 어떤 문턱을 놓든 '0 보다 나쁜 것을
+받아들인다' 는 판단이 들어갑니다. 그 판단은 사람이 해야 합니다."""
+
+GRANULARITY_MIN_COVERAGE = NAMING_MIN_COVERAGE
+"""알갱이를 굵게 해서 얻은 커버리지에도 **같은 문턱**을 씁니다 (50%).
+굵게 말한다고 문턱을 낮추면 무슨 묶음이든 통과합니다."""
+
+
+def granularity_report(name: str, rows: dict, *, target=NAMING_TARGET_ERROR) -> dict:
+    """알갱이 하나에 대한 커버리지 + **긴급도 하향** 관문.
+
+    `rows` 에 필요한 것 (전부 같은 길이·같은 순서, 1단계가 넘긴 사진만):
+
+        conf        확신도 (내림차순으로 말할 것을 고릅니다)
+        wrong       그 알갱이 기준으로 틀렸는가 (정상 사진은 항상 True)
+        tier_true   실제 긴급도 등급 (정상 사진은 -1 — 하향이 성립 안 함)
+        tier_said   우리가 말한 것의 긴급도 등급
+    """
+    import numpy as np
+
+    conf = np.asarray(rows["conf"], dtype=float)
+    wrong = np.asarray(rows["wrong"], dtype=bool)
+    tt = np.asarray(rows["tier_true"], dtype=int)
+    ts = np.asarray(rows["tier_said"], dtype=int)
+    n = len(conf)
+    if not (len(wrong) == len(tt) == len(ts) == n):
+        raise ValueError("네 배열의 길이가 다릅니다")
+
+    order = np.argsort(-conf)
+    err = np.cumsum(wrong[order]) / np.arange(1, n + 1)
+    ok = np.flatnonzero(err <= target)
+    k = int(ok[-1]) + 1 if len(ok) else 0
+    cov = k / n if k else 0.0
+
+    spoken = order[:k]
+    # 긴급도 하향 = 실제 등급이 말한 등급보다 높음. 정상 사진(-1)은 제외합니다
+    # (거기엔 낮출 긴급도가 없습니다 — 그건 헛알림 문제이고 1단계 몫입니다).
+    real = tt[spoken] >= 0
+    under = float((tt[spoken][real] > ts[spoken][real]).mean()) if real.any() else 0.0
+
+    passed = cov >= GRANULARITY_MIN_COVERAGE and under <= UNDER_TRIAGE_MAX
+    verdict = ("논의할 가치 있음" if passed else
+               f"기각 (커버리지 {cov:.1%}" +
+               (f" · 긴급도 하향 {under:.1%}" if under > UNDER_TRIAGE_MAX else "") + ")")
+
+    print(f"  {name:22} 커버리지 {cov:>6.1%}   긴급도 하향 {under:>6.1%}"
+          f"   {'통과' if passed else '기각'}")
+    return {"granularity": name, "coverage": cov, "n_spoken": k,
+            "under_triage": under, "verdict": verdict,
+            "threshold": float(conf[order][k - 1]) if k else float("inf")}
