@@ -1289,6 +1289,97 @@ def stage1_shape_report(rows, *, size_col: str = "box_px",
     return out
 
 
+# ── 2단계 크롭 뷰 앙상블 채택 기준 (STEP 25) ─────────────────────────
+#
+# 같은 사진을 다르게 자른 모델들의 **확률을 평균**합니다. 재학습이 없습니다.
+# STEP 22·23 에서 `m2.5`(비례 창)와 `f320`(고정 창)이 각각 단독으로는 상대를
+# 못 이겼는데, **서로 다른 실수를 한다면** 합이 둘 다를 이깁니다.
+#
+# ⚠️ **STEP 23 에서 제 기준에 구멍이 있었습니다.** "짝 혼동(A4→A1)이 줄 것" 은
+#    통과했는데, 줄어든 만큼 정답이 아니라 **나머지 클래스로 흩어졌습니다**
+#    (그 밖 36.8% → 42.1%). 행선지 하나만 보면 악화를 개선으로 읽습니다.
+#    → 그래서 `ENS_NO_SCATTER` 를 넣습니다. 이번엔 안 놓칩니다.
+#
+# ⚠️ 앙상블은 **추론 비용이 팔 수만큼 곱해집니다.** 서빙은 사진 한 장에
+#    CPU 1~3초인데 2팔이면 2~6초입니다. macro-F1 이 올라도 그 값을 치를지는
+#    별도 판단입니다 — 이 함수는 성능만 봅니다.
+
+ENS_MIN_GAIN = MACRO_F1_NOISE      # macro-F1 이 이만큼은 올라야 (0.02)
+ENS_CI_MUST_EXCLUDE_ZERO = True    # 짝지은 부트스트랩 CI 가 0 을 안 넘을 것
+ENS_SCALE_TOL_PP = SCALE_DROP_REJECT_PP   # 배율 하락이 이보다 더 나빠지면 기각
+ENS_NO_CLASS_LOSS = 0.03           # 어느 클래스도 recall 이 이보다 더 떨어지면 안 됨
+ENS_NO_SCATTER = 0.0               # 주목 클래스의 '그 밖으로' 비율이 늘면 기각
+
+
+def stage2_ensemble_report(base: dict, cand: dict, *, focus: str = "A4",
+                           other: str = "A1") -> dict[str, Any]:
+    """앙상블을 채택할지 — 네 관문을 **전부** 통과해야 합니다.
+
+    `base` / `cand` 에 필요한 열:
+      ``macro_f1`` · ``d_macro_f1_ci`` (차이의 95% CI, [lo, hi]) ·
+      ``scale_drop`` · ``recall`` (클래스→recall dict) ·
+      ``focus_to_other`` · ``focus_to_rest``
+
+    관문
+      1. macro-F1 이득 >= `ENS_MIN_GAIN` **그리고** 차이 CI 가 0 을 안 넘음
+      2. 배율 하락 악화 <= `ENS_SCALE_TOL_PP`
+      3. 어떤 클래스도 recall 이 `ENS_NO_CLASS_LOSS` 넘게 떨어지지 않음
+      4. 주목 클래스가 **흩어지지 않음** (`focus_to_rest` 가 늘지 않음) ← STEP 23 의 구멍
+    """
+    g = {}
+    d = cand["macro_f1"] - base["macro_f1"]
+    lo, hi = cand.get("d_macro_f1_ci", [float("nan")] * 2)
+    g["1. macro-F1"] = (d >= ENS_MIN_GAIN and lo > 0,
+                        f"{d:+.4f} (문턱 {ENS_MIN_GAIN}) · CI [{lo:+.4f}, {hi:+.4f}]")
+
+    # ⚠️ **안 잰 것을 '통과' 로 찍지 않습니다.** 이 리포가 반복해 당한 모양입니다
+    #    (export_release 의 temperature.json 이 빠져도 T=1.0 으로 조용히 물러섬,
+    #     unzip -n 이 잘린 파일을 '있으니 건너뜀' 으로 처리, …).
+    #    못 잰 관문이 있으면 판정은 **'미완'** 이지 '채택 후보' 가 아닙니다.
+    if base.get("scale_drop") is None or cand.get("scale_drop") is None:
+        ds = float("nan")
+        g["2. 배율 하락"] = (None, "**못 쟀습니다** — 재기 전에는 채택 불가")
+    else:
+        ds = cand["scale_drop"] - base["scale_drop"]
+        g["2. 배율 하락"] = (ds <= ENS_SCALE_TOL_PP,
+                         f"{base['scale_drop']:.1%} → {cand['scale_drop']:.1%} "
+                         f"({ds:+.1%}, 허용 +{ENS_SCALE_TOL_PP:.0%})")
+
+    worst_c, worst_d = None, 0.0
+    for c, v in base.get("recall", {}).items():
+        dd = cand["recall"].get(c, float("nan")) - v
+        if dd < worst_d:
+            worst_c, worst_d = c, dd
+    g["3. 클래스 손실"] = (worst_d >= -ENS_NO_CLASS_LOSS,
+                      f"최악 {worst_c or '없음'} {worst_d:+.3f} (허용 −{ENS_NO_CLASS_LOSS})")
+
+    dr = cand["focus_to_rest"] - base["focus_to_rest"]
+    g["4. 흩어짐"] = (dr <= ENS_NO_SCATTER,
+                   f"{focus}→그밖 {base['focus_to_rest']:.1%} → "
+                   f"{cand['focus_to_rest']:.1%} ({dr:+.1%})")
+
+    print("\n[ensemble] 채택 관문")
+    for k, (ok, why) in g.items():
+        print(f"  {'못 잼' if ok is None else ('통과' if ok else '실패'):5} {k:14} {why}")
+    failed = any(ok is False for ok, _ in g.values())
+    unknown = any(ok is None for ok, _ in g.values())
+    passed = not failed and not unknown
+    out = {"gates": {k: {"pass": None if ok is None else bool(ok), "detail": w}
+                     for k, (ok, w) in g.items()},
+           "verdict": "기각" if failed else
+                      ("미완(못 잰 관문 있음)" if unknown else "채택 후보"),
+           "d_macro_f1": d, "d_scale_drop": ds}
+    extra = ("" if passed else
+             "  한 관문이라도 실패하면 채택하지 않습니다." if failed else
+             "  못 잰 관문이 있으면 '통과' 가 아닙니다 — 재고 다시 부르세요.")
+    print(f"판정: {out['verdict']}{extra}")
+    if passed:
+        print("  ⚠️ **후보**입니다 — VL01 결과라면 전체 val 확인 전에 채택 금지 "
+              "(STEP 22 → 23 에서 정확히 이걸로 뒤집혔습니다).")
+        print("  ⚠️ 추론 비용이 팔 수만큼 곱해집니다. 서빙 지연을 따로 재세요.")
+    return out
+
+
 def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: int,
                      n_train: int, epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
