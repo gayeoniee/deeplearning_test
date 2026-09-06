@@ -1,0 +1,183 @@
+"""데모 서버를 **실제로 띄워** 앱 계약을 확인합니다 (문서 말고 응답).
+
+    uv run --extra serve python tests/test_serve_contract.py
+
+왜 필요한가 — 계약이 갈라지는 경로가 셋입니다:
+
+1. **mock 과 진짜가 다른 키를 냅니다.** 앱은 둘을 구분 못 합니다. 앱을 mock
+   으로 만들었다가 진짜 모델에서 `undefined` 를 만납니다.
+   실제로 `meta.stage1_temperature` 가 **진짜에만** 있었습니다.
+2. **데모 화면이 없는 필드를 읽습니다.** 화면은 조용히 빈칸이 됩니다.
+3. **금지 필드가 슬쩍 들어옵니다.** "1등 병변" 을 주면 앱은 그걸 제일 크게
+   띄웁니다 — holdout 에서 46.3% 틀린 이름을요.
+
+`tests/test_agent.py` 는 함수 단위로 봅니다. 여기는 **HTTP 를 통과한 실제
+응답**을 봅니다 — `serve.py` 가 계약을 갈아버릴 수도 있으니까요.
+
+⚠️ 가중치가 없으면 mock 만 검사하고 **그 사실을 크게 찍습니다** (조용히
+   건너뛰면 "통과" 가 거짓말이 됩니다).
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+ok = fail = 0
+
+
+def check(name, cond, msg=""):
+    global ok, fail
+    if cond:
+        ok += 1
+        print(f"  PASS  {name}")
+    else:
+        fail += 1
+        print(f"  FAIL  {name}" + (f"\n        {msg}" if msg else ""))
+
+
+try:
+    import numpy as np
+    from fastapi.testclient import TestClient
+    from PIL import Image
+except ImportError as exc:
+    print(f"[skip] 서빙 의존성이 없습니다 ({exc}) — `uv sync --extra serve`")
+    raise SystemExit(0)
+
+import serve  # noqa: E402
+from src.agent import GUIDE_ALLOW, GUIDE_CENTER_MAX, MockAgent  # noqa: E402
+
+#: 계약에 **절대** 들어오면 안 되는 이름 (앱이 제일 크게 띄웁니다)
+BANNED = {"top1", "predicted", "diagnosis", "disease", "label_top", "best", "answer"}
+
+
+def photo(seed: int, w: int = 1920, h: int = 1080) -> bytes:
+    b = io.BytesIO()
+    Image.fromarray(np.random.default_rng(seed).integers(
+        0, 255, (h, w, 3), dtype=np.uint8)).save(b, format="JPEG")
+    return b.getvalue()
+
+
+def call(app, seed: int, box=None):
+    c = TestClient(app)
+    data = {"box": json.dumps(box)} if box is not None else {}
+    r = c.post("/v1/screen",
+               files={"photo": (f"{seed}.jpg", photo(seed), "image/jpeg")}, data=data)
+    return r.status_code, r.json()
+
+
+def shape(o, path: str = "") -> set[str]:
+    """응답의 **키 구조**만 뽑습니다 (값은 안 봅니다)."""
+    if isinstance(o, dict):
+        out: set[str] = set()
+        for k, v in o.items():
+            out |= {f"{path}.{k}"} | shape(v, f"{path}.{k}")
+        return out
+    if isinstance(o, list) and o:
+        return shape(o[0], path + "[]")
+    return set()
+
+
+#: 밴드 **안쪽** 네모 (권장 구간, 중앙)
+GOOD = [0.32, 0.32, 0.36, 0.36]
+
+
+def survey(app, label: str) -> tuple[set[str], set[str]]:
+    """여러 사진으로 normal·abnormal 을 **둘 다** 만들어 키 구조를 모읍니다.
+
+    ⚠️ 한 장만 보면 안 됩니다 — `verdict` 에 따라 `stage2.distribution` 이
+       비어 있어서, 빈 배열끼리 비교하면 차이가 안 보입니다. 처음에 이걸로
+       "mock 에만 있는 키" 를 잘못 봤습니다.
+    """
+    keys, verdicts = set(), set()
+    for seed in range(12):
+        code, j = call(app, seed, GOOD)
+        if code != 200:
+            continue
+        keys |= shape(j)
+        verdicts.add(j.get("verdict"))
+    return keys, verdicts
+
+
+print("[1] mock 서버 — 계약의 기본형")
+mock_app = serve.build_app(MockAgent(), mock=True)
+mk, mv = survey(mock_app, "mock")
+check("HTTP 200 으로 응답한다", bool(mk))
+check("normal 과 abnormal 을 둘 다 만든다 (빈 분포로 비교하면 안 됩니다)",
+      {"normal", "abnormal"} <= mv, f"나온 verdict: {sorted(mv)}")
+for k in (".contract_version", ".verdict", ".headline", ".body", ".action",
+          ".disclaimer", ".stage1.abnormal_prob", ".stage1.threshold",
+          ".stage1.calibrated", ".stage2.shown", ".stage2.distribution",
+          ".meta.mock", ".meta.box_source", ".meta.crop_note",
+          ".meta.stage1_temperature"):
+    check(f"계약에 {k} 가 있다", k in mk)
+
+print("\n[2] ★ 금지 필드 — 주는 순간 앱이 제일 크게 띄웁니다")
+hit = sorted(k for k in mk if k.rsplit(".", 1)[-1].rstrip("[]") in BANNED)
+check("'1등 병변' 계열 필드가 없다", not hit, str(hit))
+
+print("\n[3] ★ 가이드 밴드 밖이면 **모델 돌리기 전에** 돌려보낸다")
+lo, hi = GUIDE_ALLOW
+for why, box in (("허용보다 큼", [0.05, 0.05, hi + 0.1, hi + 0.1]),
+                 ("허용보다 작음", [0.48, 0.48, lo - 0.05, lo - 0.05]),
+                 ("중앙에서 벗어남", [0.5 + GUIDE_CENTER_MAX, 0.5, 0.3, 0.3])):
+    _, j = call(mock_app, 0, box)
+    check(f"{why} → retake",
+          j["verdict"] == "retake" and bool(j["meta"].get("retake_reason")),
+          f"{j['verdict']} / {j['meta'].get('retake_reason')}")
+_, j = call(mock_app, 0, GOOD)
+check("밴드 안쪽은 통과한다", j["verdict"] != "retake", j["verdict"])
+
+print("\n[4] box 를 안 주면 중앙으로 물러서고 **그걸 밝힌다**")
+_, j = call(mock_app, 0, None)
+check("box_source 가 center", j["meta"].get("box_source") == "center")
+check("crop_note 로 한계를 실어 보낸다", bool(j["meta"].get("crop_note")))
+
+print("\n[5] ★ demo/index.html 이 읽는 필드가 응답에 실제로 있는가")
+html = (ROOT / "demo" / "index.html").read_text(encoding="utf-8")
+reads = sorted(set(re.findall(r"\bj\.([a-zA-Z_]+(?:\.[a-zA-Z_]+)*)", html)))
+check("데모가 응답을 읽고 있다 (형식이 안 바뀌었다)", len(reads) >= 5, str(reads))
+#: retake 때만 오는 것 — 데모가 `j.meta && j.meta.retake_reason` 으로 지킵니다
+OPTIONAL = {"meta.retake_reason", "detail"}
+for r in reads:
+    if r in OPTIONAL:
+        continue
+    check(f"j.{r} 가 응답에 있다",
+          any(k.lstrip(".").startswith(r) for k in mk))
+_, jr = call(mock_app, 0, [0.05, 0.05, 0.9, 0.9])
+check("j.meta.retake_reason 은 retake 일 때 온다",
+      "retake_reason" in jr["meta"])
+
+print("\n[6] ★ mock 과 진짜가 **같은 키**를 내는가")
+CK = ROOT / "data" / "work" / "checkpoints"
+c1 = CK / "stage1_effnetv2_s_f320_384_n233k_moderate_photometric" / "best.pt"
+c2 = CK / "stage2_convnextv2_base_m2.5_384_n121k_moderate" / "best.pt"
+thr_f = ROOT / "data" / "work" / "stage1_threshold.json"
+if not (c1.exists() and c2.exists() and thr_f.exists()):
+    print("  ⚠️ 가중치가 없어 **이 검사를 못 했습니다** (mock 만 봤습니다).")
+    print("     릴리스가 있는 환경에서 한 번은 돌려주세요 — 여기서 실제로")
+    print("     `meta.stage1_temperature` 가 진짜에만 있는 걸 잡았습니다.")
+else:
+    from src.agent import ScreeningAgent
+
+    real = ScreeningAgent.load(
+        c1, c2, threshold=json.loads(thr_f.read_text(encoding="utf-8"))["threshold"],
+        device="cpu")
+    rk, rv = survey(serve.build_app(real, mock=False), "real")
+    check("진짜도 normal·abnormal 을 둘 다 만든다", {"normal", "abnormal"} <= rv,
+          f"나온 verdict: {sorted(rv)} — 표본이 한쪽으로만 나오면 비교가 무의미합니다")
+    only_m, only_r = sorted(mk - rk), sorted(rk - mk)
+    check("mock 에만 있는 키가 없다", not only_m, str(only_m))
+    check("진짜에만 있는 키가 없다", not only_r, str(only_r))
+    hit = sorted(k for k in rk if k.rsplit(".", 1)[-1].rstrip("[]") in BANNED)
+    check("진짜 응답에도 금지 필드가 없다", not hit, str(hit))
+
+print("\n" + "=" * 60)
+print(f" 통과 {ok} / {ok + fail}")
+raise SystemExit(1 if fail else 0)

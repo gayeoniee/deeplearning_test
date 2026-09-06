@@ -23,6 +23,7 @@ holdout 에서 그 이름이 56.6% 틀렸습니다. 앱이 고를 수 없게 계
 
 from __future__ import annotations
 
+import json
 import hashlib
 import time
 from pathlib import Path
@@ -482,7 +483,24 @@ class MockAgent:
     ⚠️ 확률은 **모델이 낸 것이 아닙니다.** 응답의 `meta.mock` 이 true 입니다.
     """
 
-    def __init__(self, threshold: float = 0.1823):
+    #: mock 전용 임계값. **릴리스 값이 아닙니다** — 릴리스는
+    #: `stage1_threshold.json` 에 있고 `ScreeningAgent` 는 그게 없으면
+    #: **아예 안 뜹니다**(기본값을 쓰면 recall 이 조용히 무너지므로).
+    #: 여기 값은 화면만 볼 때 쓰는 자리표시자이고, 있으면 진짜 값을 읽습니다.
+    MOCK_THRESHOLD = 0.1823
+
+    def __init__(self, threshold: float | None = None):
+        if threshold is None:
+            threshold = self.MOCK_THRESHOLD
+            try:                       # 릴리스가 옆에 있으면 그걸 씁니다
+                from src import env
+
+                f = env.work_root() / "stage1_threshold.json"
+                if f.is_file():
+                    threshold = float(json.loads(f.read_text(encoding="utf-8"))
+                                      ["threshold"])
+            except Exception:          # 데이터가 없는 환경(앱 개발용)이면 그냥 넘어갑니다
+                pass
         self.thr = float(threshold)
         self.tag1, self.tag2 = STAGE1_TAG, STAGE2_TAG
 
@@ -496,7 +514,12 @@ class MockAgent:
         except Exception as exc:
             return contract("retake", meta={"mock": True, "error": str(exc)})
 
+        # ⚠️ 키 구조는 진짜와 **똑같아야** 합니다. 앱은 mock 과 진짜를 구분
+        #    못 하므로, mock 에만 없는 키가 있으면 앱이 mock 으로 만들어졌다가
+        #    진짜 모델에서 undefined 를 만납니다 (실제로 `stage1_temperature`
+        #    가 진짜에만 있었습니다). `tests/test_serve_contract.py` 가 감시합니다.
         meta = {"mock": True, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
+                "stage1_temperature": 1.0,      # mock 은 보정을 안 합니다
                 "box_source": "user" if box is not None else "center",
                 "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
         if box is not None:
@@ -522,5 +545,13 @@ class MockAgent:
                           confidence_band=band(raw[0][1] * abnormal),
                           stage1_abnormal=abnormal)
         pred.stage2_probs = raw
+        # ⚠️ 진짜(`ScreeningAgent`)가 내는 meta 키를 **전부** 냅니다.
+        #    `tests/test_serve_contract.py` 가 셋을 잡아냈습니다 — 앱이 mock 으로
+        #    만들어졌다가 진짜에서 처음 보는 키를 만나면 안 됩니다(그 반대도).
+        from src.config import CFG as _CFG
+
+        meta["stage2_low_confidence"] = bool(pred.abstain)
+        meta["stage2_top_prob"] = round(float(raw[0][1]), 4) if raw else None
+        meta["stage2_abstain_threshold"] = float(_CFG().abstain_threshold)
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
                         stage2=raw, text=compose_screening_message(pred), meta=meta)
