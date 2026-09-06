@@ -36,6 +36,44 @@ def check(name: str, cond: bool, msg: str = "") -> None:
     print(f"{'✅' if cond else '❌'} {name}" + (f"\n     {msg}" if msg and not cond else ""))
 
 
+def _symlinks_work() -> bool:
+    """이 환경에서 심볼릭 링크를 **만들 수 있는가**.
+
+    ⚠️ 윈도우는 개발자 모드나 관리자 권한 없이는 `os.symlink` 가 OSError 로
+       죽습니다. `env._link_tags()` 는 그때 **`copytree` 로 물러섭니다** —
+       올바른 동작입니다(캐글은 리눅스라 링크가 됩니다). 그런데 이 검사는
+       링크를 무조건 요구해서, 윈도우에서 **세 개가 늘 빨갰습니다.**
+       "원래 깨져 있는 검사" 가 되면 진짜 회귀도 같이 묻힙니다.
+    """
+    d = _TMP / "_symlink_probe"
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        (d / "l").symlink_to(d, target_is_directory=True)
+        (d / "l").unlink()
+        return True
+    except OSError:
+        return False
+
+
+SYMLINKS = _symlinks_work()
+if not SYMLINKS:
+    print("⚠️ 이 환경에서는 심볼릭 링크를 못 만듭니다 (윈도우 개발자 모드 꺼짐).\n"
+          "   env 는 복사로 물러섭니다 — 올바른 동작입니다. 다만 '링크로 걸린다'\n"
+          "   는 **캐글(리눅스)에서만 검증됩니다.** 여기서는 복사본이 원본과\n"
+          "   같은지만 봅니다.\n")
+
+
+def _linked_or_copied(dst: Path, src: Path) -> tuple[bool, str]:
+    """링크면 링크가 맞는지, 복사면 내용이 같은지."""
+    if SYMLINKS:
+        return dst.is_symlink(), "복사되었습니다 — Kaggle 20GB 제한에 걸립니다"
+    if dst.is_symlink():
+        return True, ""
+    a = sorted(p.name for p in dst.rglob("*") if p.is_file())
+    b = sorted(p.name for p in src.rglob("*") if p.is_file())
+    return bool(a) and a == b, f"복사본이 원본과 다릅니다: {len(a)} vs {len(b)}"
+
+
 def make_prepared(root: Path, n: int = 6) -> Path:
     """prepare_local.py 산출물과 같은 구조를 만듭니다."""
     (root / "crops" / "m1.5").mkdir(parents=True, exist_ok=True)
@@ -292,10 +330,12 @@ def test_readonly_source_is_linked_not_copied():
     crops = w / "crops"
     # 태그 단위로 링크합니다 (여러 데이터셋의 태그를 합칠 수 있어야 하므로)
     tags = sorted(p.name for p in crops.iterdir() if p.is_dir())
-    check("크롭은 태그별 링크다 (복사 아님)", all((crops / t).is_symlink() for t in tags),
-          f"복사되었습니다 — Kaggle 20GB 제한에 걸립니다: {tags}")
-    check("링크가 원본을 가리킨다",
-          all((crops / t).resolve() == (src / "crops" / t).resolve() for t in tags))
+    _oks = [_linked_or_copied(crops / t, src / "crops" / t) for t in tags]
+    check(f"크롭은 태그별 {'링크다 (복사 아님)' if SYMLINKS else '복사본이 원본과 같다'}",
+          all(o for o, _ in _oks), " / ".join(m for o, m in _oks if not o) + f" {tags}")
+    check("링크가 원본을 가리킨다" if SYMLINKS else "복사본이 제자리에 있다",
+          all((crops / t).resolve() == (src / "crops" / t).resolve() for t in tags)
+          if SYMLINKS else all((crops / t).is_dir() for t in tags))
     # 매니페스트는 복사여야 합니다 (원본이 읽기 전용일 수 있으므로)
     man = w / "manifests"
     check("매니페스트는 복사한다", man.exists() and not man.is_symlink())
@@ -394,7 +434,10 @@ def test_split_upload_is_merged():
     tags = sorted(p.name for p in (w / "crops").iterdir())
     check("두 데이터셋의 태그가 합쳐진다", tags == ["f320", "full", "m1.5"], f"{tags}")
     check("매니페스트는 가진 쪽에서 온다", (w / "manifests" / "manifest_final.parquet").exists())
-    check("태그마다 개별 링크다", all((w / "crops" / t).is_symlink() for t in tags),
+    check("태그마다 개별 링크다" if SYMLINKS else "태그마다 개별 폴더다",
+          all((w / "crops" / t).is_symlink() for t in tags) if SYMLINKS
+          else all((w / "crops" / t).is_dir() and any((w / "crops" / t).rglob("*.jpg"))
+                   for t in tags),
           f"{[(t, (w / 'crops' / t).is_symlink()) for t in tags]}")
 
 

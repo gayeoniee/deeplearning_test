@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -80,7 +81,11 @@ assert got == forced, f"강제 푸시를 못 따라옴: {got[:8]}"
 assert (Path(DIR) / "f.txt").read_text() == "v3-rewritten"
 
 print("── ④ 클론이 깨졌을 때 (.git 만 있고 내용 없음)")
-shutil.rmtree(Path(DIR) / ".git"); (Path(DIR) / ".git").mkdir()
+# ⚠️ 지우지 말고 **옮깁니다.** 윈도우에서 `.git/objects` 안은 읽기 전용이라
+#    `shutil.rmtree` 가 PermissionError(WinError 5) 로 죽습니다 — `chmod` 로도
+#    안 풀렸습니다(이 기계에서 실측). 이 검사에 필요한 건 *".git 은 있는데
+#    알맹이가 없는 상태"* 뿐이라 옮기면 충분하고, 양쪽 OS 에서 똑같이 됩니다.
+os.replace(Path(DIR) / ".git", tmp / "_broken_git"); (Path(DIR) / ".git").mkdir()
 exec(block, env)
 got = git("-C", DIR, "rev-parse", "HEAD").stdout.strip()
 print("   HEAD:", got[:8])
@@ -102,6 +107,20 @@ if _bad:
         "뒤처져 있으면 셀은 최신인데 src/ 만 옛것인 채로 돕니다.")
 print(f"   {len(list((ROOT / 'notebooks').glob('*.ipynb')))}개 전부 NB_BRANCH 로 고정됨")
 
-shutil.rmtree(tmp)
+# ⚠️ 검사는 위에서 다 끝났습니다 — 여기는 뒷정리입니다. 그런데 윈도우에서는
+#    `.git/objects` 안이 **읽기 전용**이라 `shutil.rmtree` 가 PermissionError
+#    (WinError 5) 로 죽었고, 그래서 이 검사는 **다 통과해놓고 빨갛게** 떴습니다.
+#    몇 주 동안 "원래 깨져 있는 검사" 로 취급됐습니다.
+#    → 쓰기 권한을 주고 다시 시도하되, **뒷정리 실패로 검사를 실패시키지
+#      않습니다** (임시 폴더는 OS 가 치웁니다).
+def _chmod_retry(func, path, _exc):
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+try:
+    shutil.rmtree(tmp, onexc=_chmod_retry)
+except (OSError, TypeError):
+    shutil.rmtree(tmp, ignore_errors=True)
 print("\n✅ 네 경우 다 통과 — 없을 때 / 새 커밋 / 강제푸시 / 깨진 클론")
 print("all checks passed")

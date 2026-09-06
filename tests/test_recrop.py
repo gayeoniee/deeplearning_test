@@ -69,8 +69,12 @@ def _build(tmp: Path, n: int = 6) -> tuple[Path, Path]:
 def _run(work: Path, *args: str) -> subprocess.CompletedProcess:
     e = dict(os.environ, DOG_SKIN_WORK=str(work), DOG_SKIN_DATA=str(work.parent / "raw"),
              PYTHONIOENCODING="utf-8")
+    # ⚠️ 자식에게 PYTHONIOENCODING 을 넘겨도 **부모가 디코드**할 때는 로캘을
+    #    씁니다 — 윈도우에서 cp949 로 읽다가 UnicodeDecodeError 로 죽었습니다.
+    #    한글이 섞인 출력을 읽는 subprocess 는 encoding 을 반드시 박으세요.
     return subprocess.run([sys.executable, str(ROOT / "prepare_local.py"), *args],
-                          capture_output=True, text=True, env=e, cwd=str(ROOT))
+                          capture_output=True, text=True, env=e, cwd=str(ROOT),
+                          encoding="utf-8", errors="replace")
 
 
 def test_recrop_adds_a_tag_without_touching_the_split():
