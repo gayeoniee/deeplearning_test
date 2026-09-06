@@ -96,7 +96,20 @@ check("인자로 받은 값을 씀",
       and agent.contract("normal")["stage1"]["calibrated"] is False)
 sc = inspect.getsource(agent.ScreeningAgent.screen)
 check("엔진의 실제 T 를 보고 정함", 'getattr(self.s1, "T"' in sc)
-check("T 를 meta 에도 실음", "stage1_temperature" in sc)
+# ⚠️ 예전엔 `screen()` 의 **소스 문자열**에 "stage1_temperature" 가 있는지
+#    봤습니다. 그 meta 를 `agent.base_meta()` 로 빼내자 동작은 그대로인데
+#    검사만 깨졌습니다 — 소스를 뒤지는 검사는 리팩터링을 막을 뿐입니다.
+#    → **응답을 봅니다.** MockAgent 는 가중치 없이 돌고, 이제 진짜와 같은
+#      함수로 meta 를 만들므로 이 한 줄이 양쪽을 다 지킵니다.
+import numpy as _np                                              # noqa: E402
+from PIL import Image as _Image                                  # noqa: E402
+
+_m = agent.MockAgent().screen(_Image.fromarray(
+    _np.random.default_rng(0).integers(0, 255, (64, 64, 3), dtype=_np.uint8)))
+check("T 를 meta 에도 실음", "stage1_temperature" in _m["meta"])
+check("계약에 calibrated 가 온다", "calibrated" in _m["stage1"])
+check("meta 를 만드는 곳이 하나다 (base_meta)",
+      "stage1_temperature" in inspect.getsource(agent.base_meta))
 
 # ── 5. 노트북 06 이 1단계를 보정하는가 ───────────────────────
 print("\n[5] 노트북 06")
