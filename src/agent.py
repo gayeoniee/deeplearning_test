@@ -159,6 +159,31 @@ CROP_NOTE = {
     "center": ("가이드 프레임 없이 화면 중앙을 잘랐습니다. 1단계는 중심만 쓰므로 "
                "큰 차이가 없지만, 2단계는 학습 크롭과 어긋납니다."),
 }
+
+def base_meta(*, mock: bool, tag1: str, tag2: str, temperature: float, box) -> dict:
+    """응답 `meta` 의 **공통 부분 — 여기 한 곳에서만 만듭니다.**
+
+    ⚠️ 예전엔 `ScreeningAgent` 와 `MockAgent` 가 각자 dict 를 썼습니다. 그래서
+       진짜에만 있는 키가 **넷** 생겼고(`stage1_temperature` ·
+       `stage2_low_confidence` · `stage2_top_prob` · `stage2_abstain_threshold`),
+       앱이 mock 으로 만들어졌다가 진짜에서 처음 보는 키를 만날 뻔했습니다.
+       `--mock` 의 존재 이유가 *"가중치 없이 **같은 모양의** 응답"* 인데
+       그 약속이 깨져 있었습니다.
+       → 같은 계약을 **두 곳에 적지 않습니다.** 갈라지면 아무도 모릅니다.
+    """
+    return {"mock": bool(mock), "stage1_crop": tag1, "stage2_crop": tag2,
+            "stage1_temperature": float(temperature),
+            "box_source": "user" if box is not None else "center",
+            "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+
+
+def stage2_meta(pred, raw, abstain_threshold: float) -> dict:
+    """2단계까지 갔을 때 붙는 `meta` — 이것도 **한 곳에서만**."""
+    return {"stage2_low_confidence": bool(getattr(pred, "abstain", False)),
+            "stage2_top_prob": round(float(raw[0][1]), 4) if raw else None,
+            "stage2_abstain_threshold": float(abstain_threshold)}
+
+
 def _dist(probs: list[tuple[str, float]]) -> list[dict]:
     """분포를 앱이 그대로 그릴 수 있는 모양으로. **정렬은 하되 자르지 않습니다.**"""
     return [{"code": c,
@@ -361,10 +386,8 @@ class ScreeningAgent:
             return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
 
         cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0)
-        meta = {"mock": False, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
-                "stage1_temperature": getattr(self.s1, "T", 1.0),
-                "box_source": "user" if box is not None else "center",
-                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+        meta = base_meta(mock=False, tag1=self.tag1, tag2=self.tag2,
+                         temperature=getattr(self.s1, "T", 1.0), box=box)
 
         # ★ 밴드 밖 사진은 **모델에 넣기 전에** 돌려보냅니다.
         #   그 구간에서 성능이 떨어지는 걸 이미 재 뒀는데(STEP 10), 넣고 나서
@@ -440,11 +463,10 @@ class ScreeningAgent:
         #
         # `retake` 는 이제 **모델을 돌리기 전** 판단만 남습니다:
         # 이미지를 못 열었을 때, 가이드 프레임이 밴드 밖일 때.
-        meta["stage2_low_confidence"] = bool(pred.abstain)
-        # ⚠️ 이름이 아니라 **숫자**입니다. 분포 1등의 확률이라 distribution[0].prob
-        #    와 같은 값이고, 새 정보를 흘리지 않습니다. 이름 필드는 만들지 마세요.
-        meta["stage2_top_prob"] = round(float(raw[0][1]), 4) if raw else None
-        meta["stage2_abstain_threshold"] = float(self.s2.cfg.abstain_threshold)
+        # ⚠️ `stage2_top_prob` 은 이름이 아니라 **숫자**입니다. 분포 1등의
+        #    확률이라 distribution[0].prob 와 같은 값이고, 새 정보를 흘리지
+        #    않습니다. 이름 필드는 만들지 마세요.
+        meta.update(stage2_meta(pred, raw, self.s2.cfg.abstain_threshold))
 
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
@@ -514,14 +536,9 @@ class MockAgent:
         except Exception as exc:
             return contract("retake", meta={"mock": True, "error": str(exc)})
 
-        # ⚠️ 키 구조는 진짜와 **똑같아야** 합니다. 앱은 mock 과 진짜를 구분
-        #    못 하므로, mock 에만 없는 키가 있으면 앱이 mock 으로 만들어졌다가
-        #    진짜 모델에서 undefined 를 만납니다 (실제로 `stage1_temperature`
-        #    가 진짜에만 있었습니다). `tests/test_serve_contract.py` 가 감시합니다.
-        meta = {"mock": True, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
-                "stage1_temperature": 1.0,      # mock 은 보정을 안 합니다
-                "box_source": "user" if box is not None else "center",
-                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+        # 진짜와 **같은 함수**로 만듭니다 — 계약을 두 곳에 적지 않습니다.
+        meta = base_meta(mock=True, tag1=self.tag1, tag2=self.tag2,
+                         temperature=1.0, box=box)   # mock 은 보정을 안 합니다
         if box is not None:
             g = check_guide(box)
             meta["guide"] = g
@@ -545,13 +562,8 @@ class MockAgent:
                           confidence_band=band(raw[0][1] * abnormal),
                           stage1_abnormal=abnormal)
         pred.stage2_probs = raw
-        # ⚠️ 진짜(`ScreeningAgent`)가 내는 meta 키를 **전부** 냅니다.
-        #    `tests/test_serve_contract.py` 가 셋을 잡아냈습니다 — 앱이 mock 으로
-        #    만들어졌다가 진짜에서 처음 보는 키를 만나면 안 됩니다(그 반대도).
         from src.config import CFG as _CFG
 
-        meta["stage2_low_confidence"] = bool(pred.abstain)
-        meta["stage2_top_prob"] = round(float(raw[0][1]), 4) if raw else None
-        meta["stage2_abstain_threshold"] = float(_CFG().abstain_threshold)
+        meta.update(stage2_meta(pred, raw, _CFG().abstain_threshold))
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
                         stage2=raw, text=compose_screening_message(pred), meta=meta)
