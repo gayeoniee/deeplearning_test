@@ -330,9 +330,16 @@ def blur_stress(model, df, cfg: CFG | None = None, classes: list[str] | None = N
 # ⚠️ 데이터가 늘거나 크롭이 바뀌면 `usable_range()` 를 **다시 돌려** 여기를
 #    고치세요. 2단계를 고정 창(f320)으로 바꾸면 촬영 거리 의존이 커지므로
 #    반드시 다시 뽑아야 합니다 (STEP 22·23).
-ZOOM_RECOMMEND = (0.7, 1.2)     # 최고점 대비 하락 5% 이내 (STEP 16, n=2,000)
-ZOOM_ALLOW = (0.6, 1.4)         # 하락 10% 이내
-ZOOM_CENTER_MAX = 0.10          # 병변이 화면 중앙에서 이만큼 이내
+# ★ 값 자체는 `src/config.py` 에 있습니다. 여기서 다시 내보내는 이유:
+#   이 모듈은 **torch 를 import** 하는데, 밴드를 읽어야 하는 쪽에는 torch 가
+#   없는 데가 있습니다 (`tools/box_error.py` 는 `uv run python` 으로 도는
+#   측정 도구입니다). 상수를 여기 두면 그쪽이 torch 를 끌어오게 됩니다.
+#   ⚠️ 실제로 그래서 **백엔드 사본이 깨졌습니다** — 사본의 파일 목록에
+#      `robust.py` 가 없어 `box_error.py` 가 ModuleNotFoundError 로 죽었습니다
+#      (2026-09-06, DAENGS_dev#280 에서 검사를 돌리다 발견).
+#   → 상수는 **의존성이 없는 config 에**, 무거운 계산은 여기에.
+from src.config import (ZOOM_ALLOW, ZOOM_CENTER_MAX,  # noqa: E402,F401
+                        ZOOM_RECOMMEND)
 
 
 def usable_range(

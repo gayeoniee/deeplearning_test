@@ -42,7 +42,7 @@ sys.path.insert(0, str(ROOT))
 #   밴드가 바뀐 뒤에도 **몇 주째 옛 값을 쓰고 있었습니다.** 에러는 한 줄도 안 났고,
 #   이 도구가 뱉는 "허용 안" 판정이 조용히 틀렸습니다.
 #   ⚠️ torch 를 안 끌어오려고 상수만 골라 읽습니다 (이 도구는 pandas/Pillow 만 씁니다).
-from src.robust import ZOOM_ALLOW, ZOOM_RECOMMEND, ZOOM_CENTER_MAX  # noqa: E402
+from src.config import ZOOM_ALLOW, ZOOM_RECOMMEND, ZOOM_CENTER_MAX  # noqa: E402
 
 SHIFT_MAX = ZOOM_CENTER_MAX       # 병변이 화면 중앙에서 이만큼 이내
 
