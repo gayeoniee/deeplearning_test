@@ -36,6 +36,44 @@ def check(name: str, cond: bool, msg: str = "") -> None:
     print(f"{'✅' if cond else '❌'} {name}" + (f"\n     {msg}" if msg and not cond else ""))
 
 
+def _symlinks_work() -> bool:
+    """이 환경에서 심볼릭 링크를 **만들 수 있는가**.
+
+    ⚠️ 윈도우는 개발자 모드나 관리자 권한 없이는 `os.symlink` 가 OSError 로
+       죽습니다. `env._link_tags()` 는 그때 **`copytree` 로 물러섭니다** —
+       올바른 동작입니다(캐글은 리눅스라 링크가 됩니다). 그런데 이 검사는
+       링크를 무조건 요구해서, 윈도우에서 **세 개가 늘 빨갰습니다.**
+       "원래 깨져 있는 검사" 가 되면 진짜 회귀도 같이 묻힙니다.
+    """
+    d = _TMP / "_symlink_probe"
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        (d / "l").symlink_to(d, target_is_directory=True)
+        (d / "l").unlink()
+        return True
+    except OSError:
+        return False
+
+
+SYMLINKS = _symlinks_work()
+if not SYMLINKS:
+    print("⚠️ 이 환경에서는 심볼릭 링크를 못 만듭니다 (윈도우 개발자 모드 꺼짐).\n"
+          "   env 는 복사로 물러섭니다 — 올바른 동작입니다. 다만 '링크로 걸린다'\n"
+          "   는 **캐글(리눅스)에서만 검증됩니다.** 여기서는 복사본이 원본과\n"
+          "   같은지만 봅니다.\n")
+
+
+def _linked_or_copied(dst: Path, src: Path) -> tuple[bool, str]:
+    """링크면 링크가 맞는지, 복사면 내용이 같은지."""
+    if SYMLINKS:
+        return dst.is_symlink(), "복사되었습니다 — Kaggle 20GB 제한에 걸립니다"
+    if dst.is_symlink():
+        return True, ""
+    a = sorted(p.name for p in dst.rglob("*") if p.is_file())
+    b = sorted(p.name for p in src.rglob("*") if p.is_file())
+    return bool(a) and a == b, f"복사본이 원본과 다릅니다: {len(a)} vs {len(b)}"
+
+
 def make_prepared(root: Path, n: int = 6) -> Path:
     """prepare_local.py 산출물과 같은 구조를 만듭니다."""
     (root / "crops" / "m1.5").mkdir(parents=True, exist_ok=True)
@@ -292,10 +330,12 @@ def test_readonly_source_is_linked_not_copied():
     crops = w / "crops"
     # 태그 단위로 링크합니다 (여러 데이터셋의 태그를 합칠 수 있어야 하므로)
     tags = sorted(p.name for p in crops.iterdir() if p.is_dir())
-    check("크롭은 태그별 링크다 (복사 아님)", all((crops / t).is_symlink() for t in tags),
-          f"복사되었습니다 — Kaggle 20GB 제한에 걸립니다: {tags}")
-    check("링크가 원본을 가리킨다",
-          all((crops / t).resolve() == (src / "crops" / t).resolve() for t in tags))
+    _oks = [_linked_or_copied(crops / t, src / "crops" / t) for t in tags]
+    check(f"크롭은 태그별 {'링크다 (복사 아님)' if SYMLINKS else '복사본이 원본과 같다'}",
+          all(o for o, _ in _oks), " / ".join(m for o, m in _oks if not o) + f" {tags}")
+    check("링크가 원본을 가리킨다" if SYMLINKS else "복사본이 제자리에 있다",
+          all((crops / t).resolve() == (src / "crops" / t).resolve() for t in tags)
+          if SYMLINKS else all((crops / t).is_dir() for t in tags))
     # 매니페스트는 복사여야 합니다 (원본이 읽기 전용일 수 있으므로)
     man = w / "manifests"
     check("매니페스트는 복사한다", man.exists() and not man.is_symlink())
@@ -394,7 +434,10 @@ def test_split_upload_is_merged():
     tags = sorted(p.name for p in (w / "crops").iterdir())
     check("두 데이터셋의 태그가 합쳐진다", tags == ["f320", "full", "m1.5"], f"{tags}")
     check("매니페스트는 가진 쪽에서 온다", (w / "manifests" / "manifest_final.parquet").exists())
-    check("태그마다 개별 링크다", all((w / "crops" / t).is_symlink() for t in tags),
+    check("태그마다 개별 링크다" if SYMLINKS else "태그마다 개별 폴더다",
+          all((w / "crops" / t).is_symlink() for t in tags) if SYMLINKS
+          else all((w / "crops" / t).is_dir() and any((w / "crops" / t).rglob("*.jpg"))
+                   for t in tags),
           f"{[(t, (w / 'crops' / t).is_symlink()) for t in tags]}")
 
 
@@ -1148,9 +1191,107 @@ def test_data_already_in_work_root_is_used_as_is():
           sorted(q.name for q in (w / "crops").iterdir()) == ["f320", "m2.5"])
 
 
+def test_tag_folder_wrapped_one_layer_deeper():
+    """★ `<태그>/<태그>/<hh>/*.jpg` — 캐글에 한 겹 더 싸여 올라간 경우.
+
+    실제로 당한 것 (2026-09-04): 데이터셋 안이
+    `dogskin-m25-step16/m2.5/m2.5/ab/x.jpg` 였습니다. 링크는 걸리는데
+    경로가 한 칸씩 어긋나서 `switch_tag` 가 **0/365,428장 (0.0%)** 로
+    죽었습니다. "붙었다" 고 보이는데 한 장도 안 읽히는 실패입니다.
+    """
+    from src import env
+
+    print("\n[중첩] 태그 폴더가 한 겹 더 싸여 있으면 풀어서 연결하는가")
+    base = _TMP / "wrapped"
+    inner = base / "m2.5" / "m2.5" / "ab"
+    inner.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(inner / "x_112233445566.jpg")
+
+    check("안쪽 층을 찾아낸다",
+          env._unwrap_tag_dir(base / "m2.5") == base / "m2.5" / "m2.5",
+          str(env._unwrap_tag_dir(base / "m2.5")))
+    check("크롭 폴더로 인정한다", env._has_crops(base))
+
+    w = fresh_env("wrapped")
+    how = env._link_tags(env._crops_dir(base), w / "crops")
+    check("태그 이름은 바깥 이름 그대로", list(how) == ["m2.5"], str(how))
+    check("링크 너머에 jpg 가 보인다",
+          (w / "crops" / "m2.5" / "ab" / "x_112233445566.jpg").exists(),
+          str(sorted((w / "crops" / "m2.5").iterdir()) if (w / "crops" / "m2.5").exists() else "링크 없음"))
+
+
+def test_normal_tag_folder_is_not_unwrapped():
+    """안 싸여 있으면 건드리면 안 됩니다 (한 칸 더 내려가면 그게 버그)."""
+    from src import env
+
+    print("\n[중첩] 정상 구조는 그대로 두는가")
+    base = _TMP / "flat"
+    for hh in ("ab", "cd"):
+        (base / "m2.5" / hh).mkdir(parents=True, exist_ok=True)
+        Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(
+            base / "m2.5" / hh / f"x_{hh}0000000000.jpg")
+
+    check("그대로 돌려준다",
+          env._unwrap_tag_dir(base / "m2.5") == base / "m2.5",
+          str(env._unwrap_tag_dir(base / "m2.5")))
+
+    w = fresh_env("flat")
+    env._link_tags(env._crops_dir(base), w / "crops")
+    check("링크 너머에 jpg 가 보인다",
+          (w / "crops" / "m2.5" / "ab" / "x_ab0000000000.jpg").exists())
+
+
+def test_sibling_datasets_under_one_account_folder():
+    """★ 캐글의 `/kaggle/input/datasets/<계정>/<데이터셋>` — 형제 두 개.
+
+    실제로 당한 것 (2026-09-04): 크롭 데이터셋과 매니페스트 데이터셋을 나란히
+    붙였는데, 탐색이 **부모인 `<계정>` 폴더에서 멈춰** 크롭을 아예 못 봤습니다.
+
+        찾은 입력: [('/kaggle/input/datasets/gayoniee', 'dir')]
+        사용 가능한 태그: []
+
+    `<계정>` 폴더가 `_looks_manifest_only` 에 걸립니다 — 그 판정은 자식 안까지
+    훑어 parquet 을 찾기 때문입니다. 크롭은 붙어 있는데 코드가 못 본 것입니다.
+    """
+    from src import env
+
+    print("\n[형제] 계정 폴더 아래 데이터셋 두 개를 다 찾는가")
+    acct = _TMP / "kinput" / "datasets" / "someone"
+    crops_ds = acct / "dogskin-m25"
+    man_ds = acct / "dogskin-manifest"
+    (crops_ds / "m2.5" / "ab").mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.zeros((8, 8, 3), np.uint8)).save(
+        crops_ds / "m2.5" / "ab" / "x_112233445566.jpg")
+    man_ds.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"image_path": ["/a.jpg"], "label": ["A1"],
+                  "animal_id": ["d1"]}).to_parquet(man_ds / "manifest_final.parquet")
+
+    w = fresh_env("siblings")
+    orig = env._search_roots
+    env._search_roots = lambda: [_TMP / "kinput"]
+    try:
+        found = [p for p, _ in env.find_prepared_all(dest=w)]
+        names = {p.name for p in found}
+        check("크롭 데이터셋을 찾는다", "dogskin-m25" in names, str(sorted(names)))
+        check("매니페스트 쪽도 찾는다",
+              any("manifest" in n for n in names)
+              or any(env._manifests_dir(p) for p in found), str(sorted(names)))
+        env.load_prepared(dest=w)
+    finally:
+        env._search_roots = orig
+
+    check("크롭이 연결됐다",
+          (w / "crops" / "m2.5" / "ab" / "x_112233445566.jpg").exists(),
+          str(sorted((w / "crops").iterdir()) if (w / "crops").exists() else "없음"))
+    check("매니페스트도 왔다", (w / "manifests" / "manifest_final.parquet").exists())
+
+
 if __name__ == "__main__":
     print(f"작업 폴더: {_TMP}\n")
     for fn in [test_empty_dirs_are_not_prepared,
+               test_tag_folder_wrapped_one_layer_deeper,
+               test_normal_tag_folder_is_not_unwrapped,
+               test_sibling_datasets_under_one_account_folder,
                test_data_already_in_work_root_is_used_as_is, test_finds_extracted_dir, test_readonly_source_is_linked_not_copied,
                test_link_is_idempotent, test_zip_path_still_works,
                test_autodetect_prefers_extracted_when_no_zip,

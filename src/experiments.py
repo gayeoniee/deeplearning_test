@@ -384,11 +384,28 @@ def lr_report(runs: list[dict], *, baseline_lr: float = 3e-4,
               f"{r['score']:>10.4f}{r.get('best_epoch', -1):>6}"
               f"{r.get('n_epochs', 0):>6}{ds}{r['minutes']:>6.0f}{mark}")
 
+    # ★ **먼저: 기준선에서 현상이 재현됐는가.**
+    #   "best 가 0에폭" 은 한 에폭의 스텝 수가 많아서 생긴 현상입니다.
+    #   서브셋으로 줄이면 스텝/에폭도 줄어 **현상 자체가 안 나타날 수 있습니다.**
+    #   그 상태에서 B·C·D 가 좋아 보이면 "학습률이 고쳤다" 가 아니라
+    #   "원래 문제가 없었다" 입니다 — 아무것도 못 배우고 시간만 씁니다.
+    if base.get("best_epoch", -1) >= LR_MIN_BEST_EPOCH:
+        print(f"\n  🚨 **기준선 A 의 best_epoch 이 이미 "
+              f"{base['best_epoch']} 입니다 (≥ {LR_MIN_BEST_EPOCH}).**")
+        print("     STEP 16 에서 보려던 '0에폭 best' 가 이 규모에서는 재현되지")
+        print("     않았습니다. 다른 판이 좋아 보여도 학습률 덕분이라고 말할 수")
+        print("     없습니다 — **이 실험은 무효입니다.**")
+        print(f"     스텝/에폭을 STEP 16(7,569)에 가깝게 올려서 다시 하세요"
+              f" — 지금 학습 {base.get('n_train', 0):,}장.")
+        return {"verdict": "무효 — 기준선에서 현상 미재현",
+                "baseline": key(base), "trained": [], "winner": None,
+                "min_best_epoch": LR_MIN_BEST_EPOCH, "noise": MACRO_F1_NOISE}
+
     trained = [r for r in runs if r.get("best_epoch", -1) >= LR_MIN_BEST_EPOCH]
     better = [r for r in trained if r["score"] >= base["score"] + MACRO_F1_NOISE]
 
     print(f"\n  기준선: macro-F1 {base['score']:.4f} (best epoch "
-          f"{base.get('best_epoch', -1)})")
+          f"{base.get('best_epoch', -1)}) — 현상 재현됨 ✅")
     print(f"  1차 통과 (best_epoch >= {LR_MIN_BEST_EPOCH}): "
           f"{len(trained)}/{len(runs)}판")
 
@@ -725,6 +742,250 @@ def backbone_report(runs: list[dict], *, base_model: str = "resnet50") -> dict[s
     return verdict
 
 
+
+# ── 1단계 고정 창 **크기** 비교 (STEP 20) ────────────────────────────────
+#
+# STEP 18 실측: 1단계는 병변이 **클수록** 점수가 낮습니다 (rho −0.201, 6개 클래스
+# 전부 음수). 2단계(`m2.5`, 병변에 비례하는 창)에서는 그 효과가 없어서, 원인이
+# "큰 병변이 어렵다" 가 아니라 **고정 창이 병변으로 꽉 차서 주변 정상 피부가
+# 안 보이는 것** 쪽으로 좁혀졌습니다. 창 안 놓침 1.8% vs 창 밖 4.6% (2.5배).
+#
+# 전체 184,735 병변 중 **23.2%** 가 320px 창을 넘칩니다 (A6 38.7% · A2 27.9%).
+# 창을 키우면 넘침은 줄지만(448 에서 12.4%) **작은 병변이 그만큼 작아집니다.**
+# 맞바꿈이라 실측이 필요합니다.
+#
+# ⚠️ 창을 **비례**로 바꾸면 안 됩니다 — STEP 9-A 에서 ROI 크롭이 정답을 흘려
+#    (정상 bbox 중앙값 0.71% vs 병변 1.25%) AUROC 가 0.8272 → 0.9477 로 갈렸습니다.
+#    **고정이라는 성질을 유지한 채 크기만** 바꿉니다.
+
+#   넘치던 병변의 놓침이 이만큼은 줄어야 "창 때문" 이 확인됩니다.
+#   ⚠️ 고정값이 아니라 **그 실행에서 계산한 부트스트랩 CI 반폭**과 비교합니다
+#      (evaluate.bootstrap_ci(metric="recall")). 작은 부분집합에서 잡음에
+#      속지 않으려는 것입니다 — A6 가 val 256장에서 2σ ±0.085 였던 전례.
+WINDOW_MIN_OVERFLOW_GAIN = "ci"
+#   헛알림이 이보다 나빠지면 탈락. STEP 15 가 "2%p 이상 줄어야 채택" 을 쓴 것과
+#   같은 폭을 반대 방향으로 씁니다.
+WINDOW_FALSE_ALARM_TOL_PP = 0.02
+
+
+
+# ── 2단계 크롭: 비례 창 vs 고정 창 (STEP 22) ─────────────────────────────
+#
+# STEP 21 실측: VL01 안에서 A4 병변이 A1 보다 **1.68배** 큽니다. A1·A4 를 둘 다
+# 가진 개 72마리로 좁혀도 1.88배(Wilcoxon p=8.1e-05)라 "다른 개를 다르게 찍었다"
+# 로는 설명이 안 됩니다. 그런데 `m2.5` 는 창 = 병변 × 2.5 라 병변이 언제나
+# 프레임의 40% 를 차지합니다 — **절대 크기가 지워집니다.**
+#
+#     A1 117px → 창 292px → 384 입력에서 154px
+#     A4 196px → 창 490px → 384 입력에서 154px   ← 똑같아짐
+#
+# 고정 창(f320/f448)은 그 크기를 남깁니다. 그럼 A4↔A1 이 덜 헷갈릴까요?
+#
+# ⚠️ **좋아져도 바로 채택할 수 없습니다.** 절대 크기를 쓰면 배율 교란에 약해지고,
+#    배포에서 보호자의 촬영 거리는 통제되지 않습니다. 그래서 판정을 **세 갈래**로
+#    둡니다 — "정보는 있으나 배율 의존" 이 나오면 그건 진단이지 채택이 아닙니다.
+
+#   A4 recall 개선은 **그 실행에서 계산한 CI 반폭**과 비교합니다 (고정값 금지).
+S2SIZE_MAIN = "ci"
+#   A4→A1 혼동이 이만큼은 줄어야 "크기 신호가 실제로 쓰였다" 로 봅니다.
+S2SIZE_A4A1_DROP = 0.03
+
+
+def stage2_size_report(runs: list[dict], *, base_crop: str = "m2.5",
+                       focus: str = "A4", other: str = "A1") -> dict[str, Any]:
+    """2단계 **비례 창 vs 고정 창** 비교를 미리 정해둔 기준으로 판정합니다.
+
+    각 run 은 `train_and_measure` 결과에 아래를 더한 dict 를 기대합니다:
+
+        macro_f1, scale_drop           (train_and_measure 가 이미 넣습니다)
+        focus_recall, focus_recall_ci  관심 클래스 recall 과 CI 반폭
+        f2o_rate                       관심→비교 클래스 혼동률 (A4→A1)
+
+    판정 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------
+    1. **1차**: `focus_recall` 이 CI 반폭보다 크게 오를 것
+    2. `f2o_rate` 가 {S2SIZE_A4A1_DROP} 이상 줄 것
+    3. macro-F1 이 {MACRO_F1_NOISE} 넘게 떨어지지 않을 것
+    4. **배율 하락**이 {SCALE_DROP_REJECT_PP} 넘게 나빠지지 않을 것
+
+    1·2 를 만족하고 4 가 걸리면 **"정보는 있으나 배율 의존"** — 진단으로는
+    성공이지만 배포에는 못 씁니다 (보호자 촬영 거리가 통제되지 않으므로).
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def f(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>9.1%}" if pct else f"{v:>9.{nd}f}"
+
+    print("\n" + "=" * 84)
+    print(f" 2단계 크롭 — 비례 창(크기 지움) vs 고정 창(크기 보존)")
+    print("=" * 84)
+    print(f"  {'크롭':<9}{'macro-F1':>10}{focus + ' recall':>12}"
+          f"{focus + '→' + other:>10}{'배율하락':>10}{'분':>6}")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<9}{f(r.get('macro_f1'))}{f(r.get('focus_recall'), nd=3)}"
+              f"{f(r.get('f2o_rate'), pct=True)}{f(r.get('scale_drop'), pct=True)}"
+              f"{r.get('minutes', 0):>6.0f}")
+
+    verdict: dict[str, Any] = {"baseline": base_crop, "candidates": []}
+    for r in runs:
+        if r is base:
+            continue
+        d_rec = (r.get("focus_recall") or 0) - (base.get("focus_recall") or 0)
+        half = r.get("focus_recall_ci") or base.get("focus_recall_ci") or 0.0
+        d_f2o = (base.get("f2o_rate") or 0) - (r.get("f2o_rate") or 0)   # +면 개선
+        d_f1 = (r.get("macro_f1") or 0) - (base.get("macro_f1") or 0)
+        d_scale = (r.get("scale_drop") or 0) - (base.get("scale_drop") or 0)
+
+        ok_main = d_rec > half
+        ok_f2o = d_f2o >= S2SIZE_A4A1_DROP
+        ok_f1 = d_f1 > -MACRO_F1_NOISE
+        ok_scale = d_scale < SCALE_DROP_REJECT_PP
+
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    {'[O]' if ok_main else '[X]'} 1차 — {focus} recall {d_rec:+.3f} "
+              f"(CI 반폭 ±{half:.3f})")
+        print(f"    {'[O]' if ok_f2o else '[X]'} {focus}→{other} 혼동 {-d_f2o:+.1%} "
+              f"(문턱 −{S2SIZE_A4A1_DROP:.0%})")
+        print(f"    {'[O]' if ok_f1 else '[X]'} macro-F1 {d_f1:+.4f} "
+              f"(허용 −{MACRO_F1_NOISE})")
+        print(f"    {'[O]' if ok_scale else '[X]'} 배율 하락 {d_scale:+.1%} "
+              f"(허용 +{SCALE_DROP_REJECT_PP:.0%})")
+
+        if ok_main and ok_f2o and ok_f1 and ok_scale:
+            v = "채택 후보"
+        elif ok_main and ok_f2o:
+            v = "정보는 있으나 **배율 의존** — 진단 성공, 배포엔 못 씀"
+        else:
+            v = "기각 — 크기 신호가 A4 를 살리지 못합니다"
+        print(f"    → {v}")
+        verdict["candidates"].append({
+            "crop_tag": r["crop_tag"], "verdict": v, "d_focus_recall": d_rec,
+            "ci_half": half, "d_f2o": d_f2o, "d_macro_f1": d_f1,
+            "d_scale_drop": d_scale})
+
+    adopted = [c for c in verdict["candidates"] if c["verdict"] == "채택 후보"]
+    diag = [c for c in verdict["candidates"] if "배율 의존" in c["verdict"]]
+    verdict["verdict"] = ("채택 후보: " + adopted[0]["crop_tag"]) if adopted else (
+        ("배율 의존: " + diag[0]["crop_tag"]) if diag else "채택 없음")
+    print(f"\n  판정: {verdict['verdict']}")
+    print("  ⚠️ VL01 만 · 백본은 빠른 effnetv2_s 입니다. 효과가 크면 확정 백본"
+          "(convnextv2_base)으로 다시 확인해야 합니다.")
+    print("  ⚠️ 고정 창은 배포에서 **촬영 거리에 의존**합니다 — 채택 전에"
+          " 그 위험을 따로 판단하세요.")
+    print("=" * 84)
+    return verdict
+
+
+def stage1_window_report(runs: list[dict], *, base_crop: str = "f320") -> dict[str, Any]:
+    """1단계 **고정 창 크기** 비교를 미리 정해둔 기준으로 판정합니다.
+
+    각 run 은 `train_and_measure` 결과에 아래를 더한 dict 를 기대합니다:
+
+        auroc                 전체 AUROC
+        blur_drop             흐림 교란 하락 (화질 지름길 감시)
+        false_alarm           recall 0.95 에서의 헛알림률
+        overflow_miss         **기준 창을 넘치던 병변**의 놓침률
+        overflow_miss_ci      그 값의 부트스트랩 CI 반폭
+        within_miss           넘치지 않던 병변의 놓침률
+
+    ⚠️ `overflow` 는 **기준 창(f320)** 기준으로 정의합니다. 창을 키우면 정의가
+       같이 움직이면 안 됩니다 — 같은 사진 집합을 두 모델이 어떻게 다루는지를
+       봐야 하니까요.
+
+    판정 (실험 **전에** 못 박음 — 규칙 2)
+    -------------------------------------
+    1. **1차**: `overflow_miss` 가 CI 반폭보다 크게 줄어야 합니다.
+       이게 가설의 핵심입니다. 점수보다 이게 먼저입니다.
+    2. AUROC 가 {AUROC_NOISE} 넘게 떨어지면 탈락.
+    3. 흐림 하락이 {BLUR_NOISE_PP} 넘게 나빠지면 탈락 (화질 지름길 재개방).
+    4. 헛알림이 {WINDOW_FALSE_ALARM_TOL_PP} 넘게 나빠지면 탈락.
+
+    1번만 만족하고 2~4 중 하나가 걸리면 **맞바꿈**으로 적고 채택하지 않습니다.
+    """
+    runs = [r for r in runs if r]
+    if not runs:
+        print("⚠️ 성공한 실행이 없습니다 — 판정할 것이 없습니다.")
+        return {}
+    base = next((r for r in runs if r.get("crop_tag") == base_crop), None)
+    if base is None:
+        print(f"⚠️ 기준 '{base_crop}' 실행이 없어 상대 비교를 못 합니다.")
+        return {"runs": runs}
+
+    def f(v, pct=False, nd=4):
+        if v is None:
+            return "   못 잼"
+        return f"{v:>9.1%}" if pct else f"{v:>9.{nd}f}"
+
+    print("\n" + "=" * 82)
+    print(" 1단계 고정 창 **크기** 비교 — 큰 병변이 창을 넘치는 문제")
+    print("=" * 82)
+    print(f"  {'크롭':<9}{'AUROC':>9}{'넘친것 놓침':>12}{'안넘친것':>10}"
+          f"{'헛알림':>9}{'흐림하락':>10}{'분':>6}")
+    for r in sorted(runs, key=lambda r: r["crop_tag"] != base_crop):
+        print(f"  {r['crop_tag']:<9}{f(r.get('auroc'))}{f(r.get('overflow_miss'), pct=True)}"
+              f"{f(r.get('within_miss'), pct=True)}{f(r.get('false_alarm'), pct=True)}"
+              f"{f(r.get('blur_drop'), pct=True)}{r.get('minutes', 0):>6.0f}")
+    print(f"\n  ⚠️ '넘친것' 은 **{base_crop} 기준**으로 정의합니다 (창을 키워도 같은 사진 집합).")
+
+    if not base.get("converged", True):
+        print(f"  ⚠️ 기준 '{base_crop}' 이 수렴하지 않았습니다 — 재확인 필요"
+              " (STEP 9 와 같은 함정).")
+
+    verdict: dict[str, Any] = {"baseline": base_crop, "candidates": []}
+    for r in runs:
+        if r is base:
+            continue
+        d_of = base.get("overflow_miss", 0) - r.get("overflow_miss", 0)   # +면 개선
+        half = r.get("overflow_miss_ci") or base.get("overflow_miss_ci") or 0.0
+        d_auroc = (r.get("auroc") or 0) - (base.get("auroc") or 0)
+        d_blur = ((r.get("blur_drop") or 0) - (base.get("blur_drop") or 0))
+        d_fa = ((r.get("false_alarm") or 0) - (base.get("false_alarm") or 0))
+
+        ok_main = d_of > half
+        ok_auroc = d_auroc > -AUROC_NOISE
+        ok_blur = d_blur < BLUR_NOISE_PP
+        ok_fa = d_fa < WINDOW_FALSE_ALARM_TOL_PP
+
+        print(f"\n  [{base_crop} → {r['crop_tag']}]")
+        print(f"    {'[O]' if ok_main else '[X]'} 1차 — 넘친 병변 놓침 {d_of:+.1%} "
+              f"(CI 반폭 ±{half:.1%})")
+        print(f"    {'[O]' if ok_auroc else '[X]'} AUROC {d_auroc:+.4f} "
+              f"(허용 −{AUROC_NOISE})")
+        print(f"    {'[O]' if ok_blur else '[X]'} 흐림 하락 {d_blur:+.1%} "
+              f"(허용 +{BLUR_NOISE_PP:.0%})")
+        print(f"    {'[O]' if ok_fa else '[X]'} 헛알림 {d_fa:+.1%} "
+              f"(허용 +{WINDOW_FALSE_ALARM_TOL_PP:.0%})")
+
+        if ok_main and ok_auroc and ok_blur and ok_fa:
+            v = "채택"
+        elif ok_main:
+            v = "맞바꿈 — 넘친 병변은 좋아지나 다른 데서 잃습니다"
+        else:
+            v = "기각 — 창 크기가 원인이 아닙니다"
+        print(f"    → {v}")
+        verdict["candidates"].append({"crop_tag": r["crop_tag"], "verdict": v,
+                                      "d_overflow_miss": d_of, "ci_half": half,
+                                      "d_auroc": d_auroc, "d_blur": d_blur,
+                                      "d_false_alarm": d_fa})
+
+    adopted = [c for c in verdict["candidates"] if c["verdict"] == "채택"]
+    verdict["verdict"] = ("채택: " + adopted[0]["crop_tag"]) if adopted else "채택 없음"
+    print(f"\n  판정: {verdict['verdict']}")
+    print("  ⚠️ VL01 만으로 낸 결과라면 전체 데이터에서 다시 확인해야 합니다"
+          " (서브셋 순위가 풀 학습과 같다는 보장은 없습니다).")
+    print("=" * 82)
+    return verdict
+
+
 def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str, Any]:
     """1단계 입력(크롭 태그) 비교를 **미리 정해둔 기준**으로 판정합니다.
 
@@ -815,6 +1076,310 @@ def stage1_crop_report(runs: list[dict], *, base_crop: str = "full") -> dict[str
     return verdict
 
 
+# ── 1단계 놓침이 병변 탓인가 창 배치 탓인가 (STEP 24) ────────────────────
+#
+# 배경: rho(병변 크기, 1단계 점수) = -0.201 로 **큰 병변을 더 놓칩니다**
+# (STEP 17·18). STEP 20 이 "창이 작아서" 를 기각했고(f448 로 넓히니 오히려
+# 악화), 남은 설명이 둘이었습니다:
+#
+#   H-A 병변    큰 병변이 원래 어렵다 — 창이 병변으로만 꽉 차 경계가 안 보인다
+#   H-B' 창배치  네모 중심이 병변을 벗어난다 — 네모는 폴리곤의 **외접사각형**이라
+#                길쭉·굽은 윤곽에서 중심이 빈 곳에 놓인다 (우리 파이프라인 탓)
+#
+# 두 가설은 같은 값(`occ` = 창 안 병변 점유율)에 **정반대**를 예측합니다.
+# 그래서 결과를 보고 기준을 고를 수 없게 여기 먼저 박아 둡니다 (작업 규칙 2).
+#
+# ⚠️ 이 판정은 **관찰**입니다. H-B' 가 지지돼도 "창을 옮기면 낫다" 는 아직
+#    아닙니다 — 그건 폴리곤 무게중심으로 다시 잘라 재는 **개입 실험**이 말합니다
+#    (`PLACEMENT_RECOVER_MIN` 아래).
+
+PLACEMENT_BINS = 5           # occ 를 몇 층으로 나눠 볼 것인가
+PLACEMENT_RATIO_HB = 2.0     # 최저층 놓침률 ÷ 최고층 ≥ 이 값이면 H-B'
+PLACEMENT_RATIO_HA = 0.5     # 그 비가 이 값 이하면 H-A (놓침이 꽉 찬 쪽에 몰림)
+PLACEMENT_RHO_RESIDUAL = 0.08   # 층 안에서 크기 상관이 이보다 작으면 "크기 효과는 배치로 설명됨"
+PLACEMENT_MIN_MISS = 40      # 놓침이 이보다 적으면 **판정하지 않습니다**
+
+# ⚠️ **이 잠금장치는 제가 실제로 밟은 함정에서 나왔습니다** (2026-09-06).
+#    위 H-A/H-B' 판정을 `occ`(창 안 병변 점유율)로 설계했는데, 막상 재 보니
+#    `rho(occ, 폴리곤 √넓이) = +0.995` 였습니다 — **occ 는 병변 크기의 다른
+#    이름**입니다. 그러면 "occ 가 높을수록 놓친다" 는 "크면 놓친다" 의 재진술이지
+#    두 가설을 가른 게 아닙니다. 그런데 코드는 아무 말 없이 "H-A" 를 찍었습니다.
+#    가르는 변수가 가르려는 원인과 붙어 있으면 **판정 자체가 성립하지 않습니다.**
+PLACEMENT_MAX_COLLINEARITY = 0.80   # |rho(층 변수, 크기)| 가 이 이상이면 판정 거부
+
+# 개입 실험(폴리곤 무게중심으로 창을 옮김) 채택 기준
+PLACEMENT_RECOVER_MIN = 0.30  # 놓쳤던 것 중 이만큼 되살아나야 채택 후보
+PLACEMENT_LOSS_TOL = 0.01     # 이미 맞히던 것을 이보다 많이 잃으면 기각
+
+
+def stage1_placement_report(rows, *, bins: int = PLACEMENT_BINS,
+                            boot: int = 2000, seed: int = 0) -> dict[str, Any]:
+    """`occ`(창 안 병변 점유율) 층별 놓침률로 H-A / H-B' 를 가릅니다.
+
+    `rows` 에 필요한 열: ``occ`` · ``miss``(bool) · ``box_px`` · ``score``.
+
+    돌려주는 값의 ``verdict`` 는 셋 중 하나입니다:
+      "창 배치(H-B')" · "병변 자체(H-A)" · "구분 불가"
+
+    ⚠️ **`occ` 가 크기와 붙어 있으면 판정을 거부합니다** — 그게 실제로 벌어졌고
+       (rho +0.995) 코드가 조용히 "H-A" 를 찍었습니다. `PLACEMENT_MAX_COLLINEARITY`.
+
+    ⚠️ 놓침이 `PLACEMENT_MIN_MISS` 미만이면 무조건 "표본 부족" 입니다.
+       VL01 val 은 놓침이 77건뿐이라 층마다 15건꼴입니다 — 부트스트랩 CI 를
+       같이 내고, **CI 가 겹치면 비가 아무리 커도 판정하지 않습니다.**
+    """
+    import numpy as np
+    import pandas as pd
+
+    d = pd.DataFrame(rows).dropna(subset=["occ", "miss"]).reset_index(drop=True)
+    n_miss = int(d["miss"].sum())
+    out: dict[str, Any] = {"n": len(d), "n_miss": n_miss, "bins": [],
+                           "verdict": "표본 부족", "why": ""}
+    # 층을 가르는 변수가 크기와 붙어 있으면 이 검사는 아무것도 못 가릅니다
+    if "box_px" in d:
+        from scipy.stats import spearmanr
+        col = float(spearmanr(d["occ"], d["box_px"]).statistic)
+        out["collinearity"] = col
+        if abs(col) >= PLACEMENT_MAX_COLLINEARITY:
+            out["verdict"] = "판정 불가(공선성)"
+            out["why"] = (
+                f"층 변수 occ 가 크기와 rho={col:+.3f} 로 붙어 있습니다 "
+                f"(>= {PLACEMENT_MAX_COLLINEARITY}). occ 로 나눈 층은 크기로 나눈 "
+                f"층과 같아서, 어떤 결과가 나와도 '크면 놓친다' 의 재진술입니다. "
+                f"크기와 분리되는 **모양** 변수(slack · center_off · 길쭉함)로 "
+                f"크기를 고정한 채 재세요.")
+            print(f"[placement] {out['why']}")
+            return out
+
+    if n_miss < PLACEMENT_MIN_MISS:
+        out["why"] = (f"놓침 {n_miss}건 < {PLACEMENT_MIN_MISS}건 — 판정하지 않습니다. "
+                      f"층마다 {n_miss / bins:.0f}건꼴이라 어떤 비도 잡음입니다.")
+        print(f"[placement] {out['why']}")
+        return out
+
+    d["층"] = pd.qcut(d["occ"], bins, labels=False, duplicates="drop")
+    rng = np.random.default_rng(seed)
+    for b in sorted(d["층"].dropna().unique()):
+        g = d[d["층"] == b]
+        m = g["miss"].to_numpy().astype(float)
+        bs = np.array([rng.choice(m, len(m), replace=True).mean() for _ in range(boot)])
+        out["bins"].append({
+            "층": int(b), "n": len(g), "occ_중앙값": float(g["occ"].median()),
+            "놓침률": float(m.mean()),
+            "ci": [float(np.percentile(bs, 2.5)), float(np.percentile(bs, 97.5))],
+            "box_px_중앙값": float(g["box_px"].median()) if "box_px" in g else float("nan"),
+        })
+
+    lo, hi = out["bins"][0], out["bins"][-1]     # occ 최저층 / 최고층
+    ratio = lo["놓침률"] / hi["놓침률"] if hi["놓침률"] > 0 else float("inf")
+    overlap = not (lo["ci"][0] > hi["ci"][1] or hi["ci"][0] > lo["ci"][1])
+    out["ratio_lowest_over_highest"] = ratio
+    out["ci_overlap"] = overlap
+
+    # 크기 효과가 배치로 설명되는가 — 층 **안**에서 상관이 남는지
+    resid = []
+    if "score" in d and "box_px" in d:
+        from scipy.stats import spearmanr
+        for b in sorted(d["층"].dropna().unique()):
+            g = d[d["층"] == b].dropna(subset=["box_px", "score"])
+            if len(g) >= 50:
+                resid.append(float(spearmanr(g["box_px"], g["score"]).statistic))
+    out["rho_within_bins"] = resid
+    out["rho_within_max_abs"] = max((abs(r) for r in resid), default=float("nan"))
+    out["size_effect_explained"] = bool(
+        resid and out["rho_within_max_abs"] < PLACEMENT_RHO_RESIDUAL)
+
+    if overlap:
+        out["verdict"] = "구분 불가"
+        out["why"] = (f"최저층 {lo['놓침률']:.1%} {lo['ci']} vs 최고층 "
+                      f"{hi['놓침률']:.1%} {hi['ci']} — CI 가 겹칩니다 (비 {ratio:.2f}).")
+    elif ratio >= PLACEMENT_RATIO_HB:
+        out["verdict"] = "창 배치(H-B')"
+        out["why"] = (f"병변이 적게 담긴 창에서 {ratio:.2f}배 더 놓칩니다 "
+                      f"({lo['놓침률']:.1%} vs {hi['놓침률']:.1%}, CI 안 겹침).")
+    elif ratio <= PLACEMENT_RATIO_HA:
+        out["verdict"] = "병변 자체(H-A)"
+        out["why"] = (f"창이 병변으로 꽉 찰수록 더 놓칩니다 (비 {ratio:.2f}) — "
+                      f"경계가 안 보이는 쪽이 어렵다는 뜻입니다.")
+    else:
+        out["verdict"] = "구분 불가"
+        out["why"] = (f"비 {ratio:.2f} 가 {PLACEMENT_RATIO_HA}~{PLACEMENT_RATIO_HB} "
+                      f"사이입니다 — 어느 쪽도 아닙니다.")
+
+    print(f"\n[placement] n={out['n']:,} · 놓침 {n_miss}건")
+    print(f"{'층':>3} {'n':>6} {'occ 중앙':>9} {'네모px':>7} {'놓침률':>8}   95% CI")
+    for b in out["bins"]:
+        print(f"{b['층']:>3} {b['n']:>6,} {b['occ_중앙값']:>9.3f} "
+              f"{b['box_px_중앙값']:>7.0f} {b['놓침률']:>8.1%}   "
+              f"[{b['ci'][0]:.1%}, {b['ci'][1]:.1%}]")
+    if resid:
+        print(f"층 안 rho(네모 크기, 점수): "
+              f"{', '.join(f'{r:+.3f}' for r in resid)}  "
+              f"→ 크기 효과가 배치로 설명되나: "
+              f"{'예' if out['size_effect_explained'] else '아니오'}")
+    print(f"판정: {out['verdict']} — {out['why']}")
+    return out
+
+
+# ⚠️ **아래는 사전등록이 아니라 탐색적(exploratory) 분석입니다.** 위 `occ` 판정이
+#    공선성으로 무너진 뒤에 만들었으므로, 문턱을 결과를 보고 고른 것으로
+#    의심해야 합니다. 다만 결론이 **"신호 없음"** 쪽이라 문턱을 낮춰 잡을수록
+#    불리해집니다 — 그 방향의 자기기만은 어렵습니다. 그래도 확증으로 쓰지 말고
+#    **H-B'(창 배치)를 기각하는 근거**로만 쓰세요.
+SHAPE_RHO_MIN = 0.10          # 크기 층 안에서 이만큼은 돼야 "신호" (크기 자체는 0.20)
+SHAPE_MIN_CONSISTENT = 3      # 4개 층 중 몇 개가 같은 방향이어야 하나
+
+
+def stage1_shape_report(rows, *, size_col: str = "box_px",
+                        shape_cols=("slack", "center_off", "ecc"),
+                        bins: int = 4) -> dict[str, Any]:
+    """**크기를 고정한 채** 모양이 1단계 놓침을 예측하는가.
+
+    `occ` 판정이 못 하는 일을 합니다 — 모양 변수들은 크기와 거의 안 붙어 있어
+    (rho 0.10~0.26) 크기 층 안에서 따로 움직일 수 있습니다.
+
+    ``slack``       1 - 폴리곤/네모 넓이. 네모로 줄이며 생긴 빈 곳
+    ``center_off``  네모 중심 ↔ 폴리곤 무게중심 거리 / 네모 긴 변
+    ``ecc``         네모 긴 변 / 짧은 변 (길쭉함)
+
+    판정: 어느 모양 변수든 4개 크기 층 중 `SHAPE_MIN_CONSISTENT` 개 이상에서
+    같은 방향이고 |rho| >= `SHAPE_RHO_MIN` 이면 "모양도 관여".
+    아니면 **"크기가 전부"** — 즉 창 배치 가설(H-B') 기각.
+    """
+    import pandas as pd
+    from scipy.stats import spearmanr
+
+    d = pd.DataFrame(rows).dropna(subset=[size_col, "score"]).reset_index(drop=True)
+    d["_q"] = pd.qcut(d[size_col], bins, labels=False, duplicates="drop")
+    out: dict[str, Any] = {"n": len(d), "size_col": size_col, "shape": {}}
+
+    print(f"\n[shape] 크기({size_col}) {bins}층 안에서 모양이 점수를 예측하나  n={len(d):,}")
+    print(f"{'변수':<12}" + "".join(f"{'층'+str(i):>9}" for i in range(bins))
+          + f"{'같은방향':>9}{'판정':>10}")
+    hit = []
+    for c in shape_cols:
+        if c not in d:
+            continue
+        g = d.dropna(subset=[c])
+        rs = [float(spearmanr(x[c], x["score"]).statistic)
+              for _, x in g.groupby("_q", observed=True) if len(x) >= 50]
+        pos, neg = sum(r > 0 for r in rs), sum(r < 0 for r in rs)
+        same = max(pos, neg)
+        strong = sum(abs(r) >= SHAPE_RHO_MIN for r in rs)
+        ok = same >= SHAPE_MIN_CONSISTENT and strong >= SHAPE_MIN_CONSISTENT
+        hit.append(ok)
+        out["shape"][c] = {"rho_by_size_bin": rs, "same_direction": same,
+                           "strong": strong, "signal": ok}
+        print(f"{c:<12}" + "".join(f"{r:>+9.3f}" for r in rs)
+              + f"{same:>9}" + f"{'신호' if ok else '없음':>10}")
+
+    # 대조군 — 크기 자체는 같은 자리에서 얼마나 강한가
+    rs_size = [float(spearmanr(x[size_col], x["score"]).statistic)
+               for _, x in d.groupby("_q", observed=True) if len(x) >= 50]
+    out["rho_size_within_own_bins"] = rs_size
+    print(f"{'(대조)크기':<12}" + "".join(f"{r:>+9.3f}" for r in rs_size)
+          + "   ← 층 안에서도 크기는 남습니다" if rs_size else "")
+
+    out["verdict"] = "모양도 관여" if any(hit) else "크기가 전부 (창 배치 H-B' 기각)"
+    out["why"] = (
+        f"모양 변수 {len(hit)}개 중 신호 {sum(hit)}개. "
+        f"{SHAPE_MIN_CONSISTENT}개 층 이상에서 |rho| >= {SHAPE_RHO_MIN} 이고 방향이 "
+        f"같아야 신호로 셉니다.")
+    print(f"판정: {out['verdict']} — {out['why']}")
+    return out
+
+
+# ── 2단계 크롭 뷰 앙상블 채택 기준 (STEP 25) ─────────────────────────
+#
+# 같은 사진을 다르게 자른 모델들의 **확률을 평균**합니다. 재학습이 없습니다.
+# STEP 22·23 에서 `m2.5`(비례 창)와 `f320`(고정 창)이 각각 단독으로는 상대를
+# 못 이겼는데, **서로 다른 실수를 한다면** 합이 둘 다를 이깁니다.
+#
+# ⚠️ **STEP 23 에서 제 기준에 구멍이 있었습니다.** "짝 혼동(A4→A1)이 줄 것" 은
+#    통과했는데, 줄어든 만큼 정답이 아니라 **나머지 클래스로 흩어졌습니다**
+#    (그 밖 36.8% → 42.1%). 행선지 하나만 보면 악화를 개선으로 읽습니다.
+#    → 그래서 `ENS_NO_SCATTER` 를 넣습니다. 이번엔 안 놓칩니다.
+#
+# ⚠️ 앙상블은 **추론 비용이 팔 수만큼 곱해집니다.** 서빙은 사진 한 장에
+#    CPU 1~3초인데 2팔이면 2~6초입니다. macro-F1 이 올라도 그 값을 치를지는
+#    별도 판단입니다 — 이 함수는 성능만 봅니다.
+
+ENS_MIN_GAIN = MACRO_F1_NOISE      # macro-F1 이 이만큼은 올라야 (0.02)
+ENS_CI_MUST_EXCLUDE_ZERO = True    # 짝지은 부트스트랩 CI 가 0 을 안 넘을 것
+ENS_SCALE_TOL_PP = SCALE_DROP_REJECT_PP   # 배율 하락이 이보다 더 나빠지면 기각
+ENS_NO_CLASS_LOSS = 0.03           # 어느 클래스도 recall 이 이보다 더 떨어지면 안 됨
+ENS_NO_SCATTER = 0.0               # 주목 클래스의 '그 밖으로' 비율이 늘면 기각
+
+
+def stage2_ensemble_report(base: dict, cand: dict, *, focus: str = "A4",
+                           other: str = "A1") -> dict[str, Any]:
+    """앙상블을 채택할지 — 네 관문을 **전부** 통과해야 합니다.
+
+    `base` / `cand` 에 필요한 열:
+      ``macro_f1`` · ``d_macro_f1_ci`` (차이의 95% CI, [lo, hi]) ·
+      ``scale_drop`` · ``recall`` (클래스→recall dict) ·
+      ``focus_to_other`` · ``focus_to_rest``
+
+    관문
+      1. macro-F1 이득 >= `ENS_MIN_GAIN` **그리고** 차이 CI 가 0 을 안 넘음
+      2. 배율 하락 악화 <= `ENS_SCALE_TOL_PP`
+      3. 어떤 클래스도 recall 이 `ENS_NO_CLASS_LOSS` 넘게 떨어지지 않음
+      4. 주목 클래스가 **흩어지지 않음** (`focus_to_rest` 가 늘지 않음) ← STEP 23 의 구멍
+    """
+    g = {}
+    d = cand["macro_f1"] - base["macro_f1"]
+    lo, hi = cand.get("d_macro_f1_ci", [float("nan")] * 2)
+    g["1. macro-F1"] = (d >= ENS_MIN_GAIN and lo > 0,
+                        f"{d:+.4f} (문턱 {ENS_MIN_GAIN}) · CI [{lo:+.4f}, {hi:+.4f}]")
+
+    # ⚠️ **안 잰 것을 '통과' 로 찍지 않습니다.** 이 리포가 반복해 당한 모양입니다
+    #    (export_release 의 temperature.json 이 빠져도 T=1.0 으로 조용히 물러섬,
+    #     unzip -n 이 잘린 파일을 '있으니 건너뜀' 으로 처리, …).
+    #    못 잰 관문이 있으면 판정은 **'미완'** 이지 '채택 후보' 가 아닙니다.
+    if base.get("scale_drop") is None or cand.get("scale_drop") is None:
+        ds = float("nan")
+        g["2. 배율 하락"] = (None, "**못 쟀습니다** — 재기 전에는 채택 불가")
+    else:
+        ds = cand["scale_drop"] - base["scale_drop"]
+        g["2. 배율 하락"] = (ds <= ENS_SCALE_TOL_PP,
+                         f"{base['scale_drop']:.1%} → {cand['scale_drop']:.1%} "
+                         f"({ds:+.1%}, 허용 +{ENS_SCALE_TOL_PP:.0%})")
+
+    worst_c, worst_d = None, 0.0
+    for c, v in base.get("recall", {}).items():
+        dd = cand["recall"].get(c, float("nan")) - v
+        if dd < worst_d:
+            worst_c, worst_d = c, dd
+    g["3. 클래스 손실"] = (worst_d >= -ENS_NO_CLASS_LOSS,
+                      f"최악 {worst_c or '없음'} {worst_d:+.3f} (허용 −{ENS_NO_CLASS_LOSS})")
+
+    dr = cand["focus_to_rest"] - base["focus_to_rest"]
+    g["4. 흩어짐"] = (dr <= ENS_NO_SCATTER,
+                   f"{focus}→그밖 {base['focus_to_rest']:.1%} → "
+                   f"{cand['focus_to_rest']:.1%} ({dr:+.1%})")
+
+    print("\n[ensemble] 채택 관문")
+    for k, (ok, why) in g.items():
+        print(f"  {'못 잼' if ok is None else ('통과' if ok else '실패'):5} {k:14} {why}")
+    failed = any(ok is False for ok, _ in g.values())
+    unknown = any(ok is None for ok, _ in g.values())
+    passed = not failed and not unknown
+    out = {"gates": {k: {"pass": None if ok is None else bool(ok), "detail": w}
+                     for k, (ok, w) in g.items()},
+           "verdict": "기각" if failed else
+                      ("미완(못 잰 관문 있음)" if unknown else "채택 후보"),
+           "d_macro_f1": d, "d_scale_drop": ds}
+    extra = ("" if passed else
+             "  한 관문이라도 실패하면 채택하지 않습니다." if failed else
+             "  못 잰 관문이 있으면 '통과' 가 아닙니다 — 재고 다시 부르세요.")
+    print(f"판정: {out['verdict']}{extra}")
+    if passed:
+        print("  ⚠️ **후보**입니다 — VL01 결과라면 전체 val 확인 전에 채택 금지 "
+              "(STEP 22 → 23 에서 정확히 이걸로 뒤집혔습니다).")
+        print("  ⚠️ 추론 비용이 팔 수만큼 곱해집니다. 서빙 지연을 따로 재세요.")
+    return out
+
+
 def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: int,
                      n_train: int, epochs: int, n_conditions: int | None = None,
                      device: str | None = None) -> dict[str, Any]:
@@ -875,3 +1440,190 @@ def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: i
     print("  → 너무 길면 여기서 멈추고 서브셋을 줄이거나 백본을 바꾸세요.")
     print("=" * 66)
     return {"rows": rows, "total_hours": total_min / 60, "n_conditions": n_conditions}
+
+# ── STEP 27 — "확신 있을 때만 이름을 말할 것인가" 판정 기준 ─────────────
+#
+# ⚠️ **결과를 보기 전에 박습니다** (작업 규칙 2). 이 결정은 숫자만으로 끝나지
+#    않지만, 숫자가 어느 쪽이면 **대화 자체가 필요 없는지**는 정할 수 있습니다.
+#
+# 왜 새 기준이 필요한가 — STEP 11 의 "커버리지 18.2%" 는 **2단계 val(병변만)**
+# 에서 잰 값입니다. 실제 화면에는 **1단계가 넘긴 사진**이 뜨고, 거기엔 헛알림
+# (멀쩡한 개)이 섞여 있습니다. 그 사진에 병변 이름이 붙으면 **무조건 오답**
+# 입니다. 그래서 분모도 오답 정의도 달라집니다.
+#
+#   분모  = 1단계가 "이상" 으로 넘긴 사진 전부 (헛알림 포함)
+#   오답  = 정상인데 이름을 붙였다  OR  병변인데 다른 이름을 붙였다
+#   커버리지 = 그중 실제로 이름을 말한 비율
+
+NAMING_TARGET_ERROR = 0.20
+"""이름을 말한 것 중 허용할 오답률. STEP 11 이 쓴 값을 그대로 씁니다 —
+기준을 지금 새로 고르면 STEP 11 의 결정과 비교가 안 됩니다."""
+
+NAMING_MIN_COVERAGE = 0.50
+"""이 목표 오답률에서 커버리지가 이보다 높아야 **멘토와 논의할 가치**가 있습니다.
+절반은 말할 수 있어야 화면에 칸을 하나 더 두는 값을 합니다."""
+
+NAMING_CLOSE_COVERAGE = 0.30
+"""이보다 낮으면 **축을 닫습니다.** 셋 중 하나도 말 못 하면서 '가끔 이름을
+말하는' 화면은 보호자에게 일관성 없는 물건이 됩니다."""
+
+NAMING_A6_MISS_MAX = 0.30
+"""★ 안전 관문. 실제 A6(결절·종괴 — 종양 감별이 필요한 병변)인데 **다른 이름을
+말한** 비율. 나머지 오답은 '병원 가세요' 라는 행동을 안 바꾸지만, A6 을 순한
+이름으로 부르면 **미루게 만들 수 있습니다.** 이 관문만 방향이 비대칭입니다.
+⚠️ 문턱 0.30 은 근거가 있는 값이 아니라 **처음 놓는 말뚝**입니다 — STEP 16
+holdout 의 A6 recall 이 0.619 였으니 '말한 것 중에서는 그보다 나아야 한다'
+정도의 뜻입니다. 실측 뒤에 근거를 붙여 다시 놓습니다."""
+
+
+def naming_report(rows: dict, *, target=NAMING_TARGET_ERROR,
+                  a6_index: int | None = None) -> dict:
+    """1단계 헛알림까지 포함한 **정직한** 커버리지-오답 곡선.
+
+    `rows` 에 필요한 것 (전부 같은 길이·같은 순서, 1단계가 넘긴 사진만):
+
+        conf   각 사진의 "이름 확신도" (내림차순으로 말할 것을 고릅니다)
+        wrong  그 이름이 틀렸는가 (bool) — 정상 사진은 **항상 True**
+        is_a6  실제 라벨이 A6 인가 (bool)
+        said_a6 우리가 A6 이라고 말했는가 (bool)
+
+    돌려주는 것: 목표 오답률에서의 커버리지 · 문턱 · A6 안전 지표 · 판정.
+    """
+    import numpy as np
+
+    conf = np.asarray(rows["conf"], dtype=float)
+    wrong = np.asarray(rows["wrong"], dtype=bool)
+    is_a6 = np.asarray(rows["is_a6"], dtype=bool)
+    said_a6 = np.asarray(rows["said_a6"], dtype=bool)
+    n = len(conf)
+    if not (len(wrong) == len(is_a6) == len(said_a6) == n):
+        raise ValueError("네 배열의 길이가 다릅니다")
+
+    order = np.argsort(-conf)
+    err = np.cumsum(wrong[order]) / np.arange(1, n + 1)
+    cov = np.arange(1, n + 1) / n
+
+    ok = np.flatnonzero(err <= target)
+    if len(ok) == 0:
+        k, coverage, thr = 0, 0.0, float("inf")
+    else:
+        k = int(ok[-1]) + 1                 # 목표를 지키는 **가장 넓은** 지점
+        coverage, thr = float(cov[k - 1]), float(conf[order][k - 1])
+
+    spoken = order[:k]
+    a6_true = is_a6[spoken]
+    a6_miss = float((~said_a6[spoken][a6_true]).mean()) if a6_true.any() else float("nan")
+
+    curve = {f"cov@err{int(t * 100)}":
+             (float(cov[np.flatnonzero(err <= t)[-1]])
+              if len(np.flatnonzero(err <= t)) else 0.0)
+             for t in (0.10, 0.20, 0.30)}
+
+    if coverage >= NAMING_MIN_COVERAGE:
+        verdict = "논의할 가치 있음"
+    elif coverage < NAMING_CLOSE_COVERAGE:
+        verdict = "축을 닫음"
+    else:
+        verdict = "판단 보류 — 멘토 결정"
+    if a6_true.any() and a6_miss > NAMING_A6_MISS_MAX:
+        verdict = f"안전 관문 실패 (A6 오명명 {a6_miss:.1%})"
+
+    out = {"n_flagged": n, "target_error": target, "coverage": coverage,
+           "threshold": thr, "n_spoken": int(k),
+           "a6_true_spoken": int(a6_true.sum()), "a6_misnamed": a6_miss,
+           "curve": curve, "verdict": verdict}
+
+    print(f"[naming] 1단계가 넘긴 사진 {n:,}장 (헛알림 포함)")
+    print(f"  오답률 {target:.0%} 목표에서 **커버리지 {coverage:.1%}** "
+          f"({k:,}장, 확신도 문턱 {thr:.3f})")
+    for t, v in curve.items():
+        print(f"    {t:12} {v:>7.1%}")
+    if a6_true.any():
+        mark = "통과" if a6_miss <= NAMING_A6_MISS_MAX else "실패"
+        print(f"  안전 관문  말한 것 중 실제 A6 {int(a6_true.sum()):,}장 중 "
+              f"**{a6_miss:.1%}** 를 다른 이름으로 (허용 {NAMING_A6_MISS_MAX:.0%}) — {mark}")
+    else:
+        print("  안전 관문  말한 것 중 실제 A6 이 없습니다 — 못 잼")
+    print(f"판정: {verdict}"
+          f"   (≥{NAMING_MIN_COVERAGE:.0%} 논의 / <{NAMING_CLOSE_COVERAGE:.0%} 닫음)")
+    return out
+
+# ── STEP 28 — "무엇을 말할 것인가" (알갱이 크기) 판정 기준 ──────────────
+#
+# STEP 27 이 "6종 이름" 으로는 커버리지 33.7% 라고 했습니다. 그런데 우리가
+# 물은 것이 **"6종 이름을 말할 것인가"** 였지 **"무엇을 말할 것인가"** 가
+# 아니었습니다. 말할 수 있는 것은 여러 알갱이가 있습니다:
+#
+#   6종 이름      "농포·여드름으로 보입니다"
+#   형태 계열     "융기·발진 계열로 보입니다"      (A1·A4 / A2·A3 / A5·A6)
+#   긴급도        "조기 진료를 권합니다"            (관찰 / 진료 권장 / 조기 진료)
+#   A6 이진       "덩어리가 의심됩니다"
+#   두 이름       "구진 또는 농포로 보입니다"
+#
+# ⚠️ 묶음은 `config.URGENCY_TIER` / `config.MORPH_GROUP` 에서 가져옵니다 —
+#    **임상 문서에 먼저 있던 것**이고 혼동행렬을 보고 만들지 않았습니다.
+
+UNDER_TRIAGE_MAX = 0.05
+"""★ 안전 관문. 말한 것 중 **긴급도를 낮춰 말한** 비율의 상한.
+
+임상 해설이 위험한 혼동으로 A6→A2 · A5→A1 · A6→A1 을 꼽는데 셋의 공통점이
+"급한 걸 안 급하다고 말했다" 입니다. 반대 방향(안 급한 걸 급하다고)은
+병원에 가게 만들 뿐이라 안전합니다 — 1단계 헛알림도 같은 종류입니다.
+
+⚠️ 0.05 는 계산에서 나온 값이 아니라 **처음 박는 말뚝**입니다. 이름을 아예
+안 말하면 이 값은 정의상 0 이므로, 어떤 문턱을 놓든 '0 보다 나쁜 것을
+받아들인다' 는 판단이 들어갑니다. 그 판단은 사람이 해야 합니다."""
+
+GRANULARITY_MIN_COVERAGE = NAMING_MIN_COVERAGE
+"""알갱이를 굵게 해서 얻은 커버리지에도 **같은 문턱**을 씁니다 (50%).
+굵게 말한다고 문턱을 낮추면 무슨 묶음이든 통과합니다."""
+
+
+def granularity_report(name: str, rows: dict, *, target=NAMING_TARGET_ERROR) -> dict:
+    """알갱이 하나에 대한 커버리지 + **긴급도 하향** 관문.
+
+    `rows` 에 필요한 것 (전부 같은 길이·같은 순서, 1단계가 넘긴 사진만):
+
+        conf        확신도 (내림차순으로 말할 것을 고릅니다)
+        wrong       그 알갱이 기준으로 틀렸는가 (정상 사진은 항상 True)
+        tier_true   실제 긴급도 등급 (정상 사진은 -1 — 하향이 성립 안 함)
+        tier_said   우리가 말한 것의 긴급도 등급
+    """
+    import numpy as np
+
+    conf = np.asarray(rows["conf"], dtype=float)
+    wrong = np.asarray(rows["wrong"], dtype=bool)
+    tt = np.asarray(rows["tier_true"], dtype=int)
+    ts = np.asarray(rows["tier_said"], dtype=int)
+    n = len(conf)
+    if not (len(wrong) == len(tt) == len(ts) == n):
+        raise ValueError("네 배열의 길이가 다릅니다")
+
+    order = np.argsort(-conf)
+    err = np.cumsum(wrong[order]) / np.arange(1, n + 1)
+    ok = np.flatnonzero(err <= target)
+    k = int(ok[-1]) + 1 if len(ok) else 0
+    cov = k / n if k else 0.0
+
+    spoken = order[:k]
+    # 긴급도 하향 = 실제 등급이 말한 등급보다 높음. 정상 사진(-1)은 제외합니다
+    # (거기엔 낮출 긴급도가 없습니다 — 그건 헛알림 문제이고 1단계 몫입니다).
+    real = tt[spoken] >= 0
+    under = float((tt[spoken][real] > ts[spoken][real]).mean()) if real.any() else 0.0
+    # ★ 반대쪽도 **셉니다 — 관문으로 쓰진 않고**. 과잉(안 급한 걸 급하다고)은
+    #   병원에 가게 만들 뿐이라 위험하지 않습니다. 그런데 **공짜도 아닙니다**:
+    #   굵게 묶고 묶음의 긴급도를 높은 쪽으로 잡으면 하향은 0 에 수렴하는 대신
+    #   과잉이 치솟고, 그러면 아무도 그 말을 안 믿게 됩니다.
+    #   ⚠️ 이 값을 안 찍던 동안 권고안(4군)의 과잉이 **49.3%** 인 걸 몰랐습니다.
+    over = float((tt[spoken][real] < ts[spoken][real]).mean()) if real.any() else 0.0
+
+    passed = cov >= GRANULARITY_MIN_COVERAGE and under <= UNDER_TRIAGE_MAX
+    verdict = ("논의할 가치 있음" if passed else
+               f"기각 (커버리지 {cov:.1%}" +
+               (f" · 긴급도 하향 {under:.1%}" if under > UNDER_TRIAGE_MAX else "") + ")")
+
+    print(f"  {name:22} 커버리지 {cov:>6.1%}   하향 {under:>6.1%}"
+          f"   과잉 {over:>6.1%}   {'통과' if passed else '기각'}")
+    return {"granularity": name, "coverage": cov, "n_spoken": k,
+            "under_triage": under, "over_triage": over, "verdict": verdict,
+            "threshold": float(conf[order][k - 1]) if k else float("inf")}

@@ -160,16 +160,29 @@ def test_verdict_rules_are_fixed_before_the_run():
     check("best_epoch 2 는 탈락", len(v["trained"]) == 0)
 
 
-# NOTE 노트북 셀이 판정을 베껴 갔는지 보던 검사가 여기 있었습니다. 03h 노트북은
-#      아직 결과가 안 나와서 main 에 올리지 않았고, 검사만 남으면 없는 파일을
-#      읽다 죽습니다. 노트북은 작업 브랜치에 있습니다 — 그쪽에서 돌리세요.
-#      판정 규칙 자체(experiments.lr_report)는 위 검사가 그대로 봅니다.
+def test_notebook_uses_the_shared_judge():
+    """판정을 노트북 셀에 복사해 두면 결과를 보고 고칠 수 있습니다 (작업 규칙 3)."""
+    print("\n[규칙 3] 판정이 src/ 에 있는가")
+    import json
+
+    nb = json.loads((ROOT / "notebooks" / "03h_2단계_학습률.ipynb")
+                    .read_text(encoding="utf-8"))
+    srcs = ["".join(c["source"]) for c in nb["cells"] if c["cell_type"] == "code"]
+    body = "\n".join(srcs)
+
+    check("lr_report 를 부른다", "experiments.lr_report(" in body)
+    check("판정 숫자를 셀에 안 적었다",
+          "best_epoch >=" not in body and "MIN_BEST_EPOCH = " not in body)
+    check("네 판을 돌린다", body.count('"backbone_lr_mult"') >= 4)
+    check("증강·백본은 고정이다", body.count("STAGE2_MODEL =") == 1)
+    check("옛 데이터면 경고한다", "365,428" in body or "300_000" in body)
 
 
 if __name__ == "__main__":
     print("2단계 학습률 스윕 (STEP 17)")
     for fn in (test_each_plan_gets_its_own_experiment_name,
-               test_verdict_rules_are_fixed_before_the_run):
+               test_verdict_rules_are_fixed_before_the_run,
+               test_notebook_uses_the_shared_judge):
         fn()
     print()
     if FAILS:

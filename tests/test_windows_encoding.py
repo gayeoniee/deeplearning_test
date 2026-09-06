@@ -145,6 +145,48 @@ def test_cp949_console_would_not_crash() -> None:
     check("emoji on cp949 stream survives", ok, locals().get("detail", ""))
 
 
+
+def test_dataloader_workers_are_few_on_windows():
+    """윈도우에서 DataLoader 워커를 적게 씁니다 — 안 그러면 RAM 이 터집니다.
+
+    2026-09-05 실측 (RTX 3050 / RAM 15.9GB, 여유 8.4GB):
+    `suggest_workers()` 가 8 을 돌려줘서 train 8 + val 8 = **워커 16개**가
+    각 ~690MB 씩 상주했습니다 (윈도우는 spawn 이라 워커마다 torch·timm·src 를
+    통째로 다시 올립니다). 합계 **약 11GB** 로 여유를 넘겨 **교착**했습니다 —
+    GPU 97% → 1%, 메모리는 3.6GB 를 잡은 채 CPU 시간이 584.2초에서 멈췄습니다.
+    (`persistent_workers` 는 이미 켜져 있어서 재생성 문제는 아니었습니다.)
+
+    ⚠️ 리눅스(Colab/Kaggle)는 `fork` 라 사정이 다릅니다 — 거기 값은 건드리면
+       안 됩니다. 그래서 **플랫폼별로 갈라** 두었고 이 검사가 그걸 지킵니다.
+    """
+    import sys as _sys
+
+    sys.path.insert(0, str(ROOT))
+    from src import env as _env
+
+    n = _env.suggest_workers()
+    if _sys.platform == "win32":
+        check("windows: DataLoader workers <= 2", n <= 2, f"suggest_workers()={n}")
+    else:
+        check("non-windows: workers unchanged (>=2)", n >= 2, f"suggest_workers()={n}")
+
+    # 환경변수로 덮어쓸 수 있어야 합니다 (0 = 메인 프로세스에서 로딩)
+    import importlib
+    import os
+
+    old = os.environ.get("DOG_SKIN_WORKERS")
+    try:
+        os.environ["DOG_SKIN_WORKERS"] = "0"
+        importlib.reload(_env)
+        check("DOG_SKIN_WORKERS=0 honoured", _env.suggest_workers() == 0,
+              str(_env.suggest_workers()))
+    finally:
+        if old is None:
+            os.environ.pop("DOG_SKIN_WORKERS", None)
+        else:
+            os.environ["DOG_SKIN_WORKERS"] = old
+        importlib.reload(_env)
+
 if __name__ == "__main__":
     print("Windows(cp949) encoding regression tests\n")
     for fn in (test_pyproject_is_utf8,
@@ -152,7 +194,8 @@ if __name__ == "__main__":
                test_utf8_child_output_decodes,
                test_invalid_bytes_do_not_crash,
                test_console_fix_is_installed,
-               test_cp949_console_would_not_crash):
+               test_cp949_console_would_not_crash,
+               test_dataloader_workers_are_few_on_windows):
         fn()
     print()
     if FAILS:

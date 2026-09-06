@@ -14,6 +14,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -262,3 +263,73 @@ def load_checkpoint(path: str, spec: ModelSpec | str, n_classes: int,
     if missing or unexpected:
         warnings.warn(f"state_dict 불일치 — missing={len(missing)}, unexpected={len(unexpected)}")
     return model.to(device).eval()
+
+
+# ──────────────────────────────────────────────────────────────
+# 임베딩 (마지막 직전 특징)
+# ──────────────────────────────────────────────────────────────
+@torch.no_grad()
+def embed(model: nn.Module, loader, device: str = "cuda",
+          verbose: bool = True) -> np.ndarray:
+    """분류 헤드 **직전**의 특징 벡터를 뽑습니다. 행 순서는 로더 그대로입니다.
+
+    왜 필요한가
+    -----------
+    STEP 18 에서 "A4 는 결정 규칙이 아니라 **표현**의 문제" 까지 왔습니다
+    (로짓 보정으로 prior 를 걷어내도 macro-F1 이 안 오름). 그 다음 질문은
+    **어떻게** 실패하느냐입니다:
+
+        · A4 가 특징 공간에서 **뭉쳐 있는데** 분류기가 못 쓰는 것  → 헤드·손실 문제
+        · A4 가 애초에 **흩어져 있는 것**                        → 특징·데이터 문제
+
+    앞이면 싸게 고쳐지고 뒤면 크롭·데이터를 손봐야 합니다. 로짓만으로는
+    구분이 안 되고, 임베딩을 봐야 갈립니다.
+
+    ⚠️ timm 모델마다 헤드 모양이 달라서 `forward_features` → `forward_head(
+    pre_logits=True)` 순서로 부릅니다. 그게 안 되는 모델은 헤드를 `Identity`
+    로 갈아 끼우고 한 번 통과시킵니다 (원본은 안 건드립니다 — 복원합니다).
+    """
+    model = model.to(device).eval()
+    feats: list[np.ndarray] = []
+
+    def _pre_logits(x):
+        f = model.forward_features(x)
+        return model.forward_head(f, pre_logits=True)
+
+    use_head = True
+    try:                                    # 한 배치로 먼저 확인
+        probe = next(iter(loader))[0][:1].to(device)
+        _pre_logits(probe)
+    except Exception:
+        use_head = False
+
+    saved = None
+    if not use_head:
+        # ⚠️ 헤드 이름은 모델마다 다릅니다 — param_groups 와 **같은 목록**을 씁니다.
+        for name in ("head", "fc", "classifier", "last_linear"):
+            if hasattr(model, name):
+                saved = (name, getattr(model, name))
+                setattr(model, name, nn.Identity())
+                break
+        if saved is None:
+            raise RuntimeError(
+                "임베딩을 못 뽑습니다 — forward_head(pre_logits=True) 도 안 되고 "
+                f"헤드 속성({('head','fc','classifier','last_linear')})도 없습니다.")
+
+    try:
+        for batch in loader:
+            x = batch[0].to(device, non_blocking=True)
+            with torch.autocast(device_type="cuda" if device.startswith("cuda") else "cpu",
+                                enabled=device.startswith("cuda")):
+                f = _pre_logits(x) if use_head else model(x)
+            if f.ndim > 2:                  # (B,C,H,W) 가 나오면 평균 풀링
+                f = f.mean(dim=tuple(range(2, f.ndim)))
+            feats.append(f.float().cpu().numpy())
+    finally:
+        if saved is not None:
+            setattr(model, saved[0], saved[1])
+
+    out = np.concatenate(feats, 0)
+    if verbose:
+        print(f"[models] 임베딩 {out.shape}  (헤드 {'통과' if use_head else 'Identity 교체'})")
+    return out

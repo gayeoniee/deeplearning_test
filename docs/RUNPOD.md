@@ -13,6 +13,8 @@
 
 | | GPU | 무엇 |
 |---|---|---|
+| `03g` | ~40분 | 털 가중 샘플러 (기준선 + alpha 2개) |
+| `03f` 판 B | ~1h | `convnextv2_base` 1단계 백본 |
 | `06` | ~1.5h | 풀 학습 + **holdout** + 보정 + 릴리스 |
 
 ⚠️ **`06` 은 반드시 마지막**입니다. holdout 을 여는 유일한 노트북이라,
@@ -297,8 +299,8 @@ GPU·데이터·분할·영속저장소·디스크·코드 배선을 몇 초에 
 ```bash
 cd /workspace/deeplearning_test
 python -m jupyter nbconvert --to notebook --execute \
-  --ExecutePreprocessor.timeout=-1 notebooks/06_확정재학습_홀드아웃.ipynb \
-  --output /workspace/out_06.ipynb
+  --ExecutePreprocessor.timeout=-1 notebooks/03g_털가중_샘플러.ipynb \
+  --output /workspace/out_03g.ipynb
 ```
 
 ⚠️ 이렇게 돌리면 **중간에 못 멈추고** 로그도 다 끝나야 보입니다. 처음이면

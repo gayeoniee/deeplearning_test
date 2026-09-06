@@ -119,6 +119,59 @@ check("컬럼이 없으면 빈 dict", errors.by_group(gdf.drop(columns=["region"
 check("값이 전부 비어도 빈 dict",
       errors.by_group(gdf.assign(region=""), col="region") == {})
 
+
+print("\n[6] class_dispersion — 멘토 지적을 수치로")
+check("문턱이 그대로 (0.85 / 0.60 / 0.50 / 1.25)",
+      (errors.DISPERSION_SCATTER, errors.DISPERSION_PAIRWISE,
+       errors.PAIRWISE_TOP_SHARE, errors.PRIOR_LIFT_SUSPECT) == (0.85, 0.60, 0.50, 1.25))
+
+_cls = ["A", "B", "C", "D"]
+_cm4 = [[900, 20, 20, 60],       # A: 흔한 클래스
+        [300, 700, 0, 0],        # B: 오답 전부 A 로 → 짝 혼동
+        [40, 100, 60, 100],      # C: 세 곳으로 흩어짐
+        [10, 10, 10, 970]]
+_by = {d["cls"]: d for d in errors.class_dispersion(
+    {"confusion": _cm4, "classes": _cls}, show=False)}
+check("B 는 짝 혼동 (H 낮고 한 곳에 몰림)", _by["B"]["shape"] == "짝 혼동",
+      f"H={_by['B']['h_norm']:.3f} top={_by['B']['top_share']:.2f}")
+check("B 의 최다 행선지는 A", _by["B"]["top_pred"] == "A")
+check("C 는 흩어짐", _by["C"]["shape"] == "흩어짐", f"H={_by['C']['h_norm']:.3f}")
+check("recall 이 대각선/행합", abs(_by["B"]["recall"] - 700 / 1000) < 1e-9)
+
+# lift 는 **우연 기대값으로 나눠져야** 합니다. 날 것의 비를 쓰면 제일 드문
+# 클래스가 모델과 무관하게 무한대가 나옵니다 (A6 에서 실제로 겪었습니다).
+# 지지대를 일부러 다르게: A 1000 > B 800 > C 500 > D 300.
+# C 를 봅니다 — 더 흔한 쪽(A·B)이 2개, 덜 흔한 쪽(D)이 1개라 우연 기대값이 2/3.
+_cm_rare = [[970, 10, 10, 10],           # A 1000
+            [10, 770, 10, 10],           # B  800
+            [20, 20, 440, 20],           # C  500 — 오답이 A·B·D 로 완전 균등
+            [10, 10, 10, 270]]           # D  300
+_rr = {d["cls"]: d for d in errors.class_dispersion(
+    {"confusion": _cm_rare, "classes": _cls}, show=False)}
+check("오답이 균등하면 lift 가 1 근처", abs(_rr["C"]["lift"] - 1.0) < 0.05,
+      f"lift={_rr['C']['lift']:.3f} exp={_rr['C']['exp_larger']:.3f}")
+check("균등하면 prior 의심 아님", _rr["C"]["prior_suspect"] is False)
+check("lift 가 무한대가 되지 않는다",
+      all(d["lift"] != float("inf") for d in _rr.values()))
+# ⚠️ 제일 흔한 A 와 제일 드문 D 는 lift 를 **잴 수 없습니다** (nan).
+check("제일 흔한 클래스는 lift 가 nan", _rr["A"]["lift"] != _rr["A"]["lift"])
+check("제일 드문 클래스도 lift 가 nan", _rr["D"]["lift"] != _rr["D"]["lift"])
+check("잴 수 없으면 prior 의심도 아님",
+      _rr["A"]["prior_suspect"] is False and _rr["D"]["prior_suspect"] is False)
+
+_cm_bias = [[970, 10, 10, 10],
+            [10, 770, 10, 10],
+            [60, 0, 440, 0],             # C 의 오답이 전부 제일 흔한 A 로
+            [10, 10, 10, 270]]
+_rb = {d["cls"]: d for d in errors.class_dispersion(
+    {"confusion": _cm_bias, "classes": _cls}, show=False)}
+check("흔한 쪽으로만 흐르면 lift 가 문턱 위", _rb["C"]["lift"] > 1.25,
+      f"lift={_rb['C']['lift']:.3f}")
+check("그때 prior 의심", _rb["C"]["prior_suspect"] is True)
+check("오답이 없는 클래스는 '오답 없음'",
+      errors.class_dispersion({"confusion": [[5, 0], [0, 5]], "classes": ["A", "B"]},
+                              show=False)[0]["shape"] == "오답 없음")
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

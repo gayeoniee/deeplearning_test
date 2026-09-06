@@ -23,6 +23,7 @@ holdout 에서 그 이름이 56.6% 틀렸습니다. 앱이 고를 수 없게 계
 
 from __future__ import annotations
 
+import json
 import hashlib
 import time
 from pathlib import Path
@@ -158,6 +159,31 @@ CROP_NOTE = {
     "center": ("가이드 프레임 없이 화면 중앙을 잘랐습니다. 1단계는 중심만 쓰므로 "
                "큰 차이가 없지만, 2단계는 학습 크롭과 어긋납니다."),
 }
+
+def base_meta(*, mock: bool, tag1: str, tag2: str, temperature: float, box) -> dict:
+    """응답 `meta` 의 **공통 부분 — 여기 한 곳에서만 만듭니다.**
+
+    ⚠️ 예전엔 `ScreeningAgent` 와 `MockAgent` 가 각자 dict 를 썼습니다. 그래서
+       진짜에만 있는 키가 **넷** 생겼고(`stage1_temperature` ·
+       `stage2_low_confidence` · `stage2_top_prob` · `stage2_abstain_threshold`),
+       앱이 mock 으로 만들어졌다가 진짜에서 처음 보는 키를 만날 뻔했습니다.
+       `--mock` 의 존재 이유가 *"가중치 없이 **같은 모양의** 응답"* 인데
+       그 약속이 깨져 있었습니다.
+       → 같은 계약을 **두 곳에 적지 않습니다.** 갈라지면 아무도 모릅니다.
+    """
+    return {"mock": bool(mock), "stage1_crop": tag1, "stage2_crop": tag2,
+            "stage1_temperature": float(temperature),
+            "box_source": "user" if box is not None else "center",
+            "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+
+
+def stage2_meta(pred, raw, abstain_threshold: float) -> dict:
+    """2단계까지 갔을 때 붙는 `meta` — 이것도 **한 곳에서만**."""
+    return {"stage2_low_confidence": bool(getattr(pred, "abstain", False)),
+            "stage2_top_prob": round(float(raw[0][1]), 4) if raw else None,
+            "stage2_abstain_threshold": float(abstain_threshold)}
+
+
 def _dist(probs: list[tuple[str, float]]) -> list[dict]:
     """분포를 앱이 그대로 그릴 수 있는 모양으로. **정렬은 하되 자르지 않습니다.**"""
     return [{"code": c,
@@ -360,10 +386,8 @@ class ScreeningAgent:
             return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
 
         cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0)
-        meta = {"mock": False, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
-                "stage1_temperature": getattr(self.s1, "T", 1.0),
-                "box_source": "user" if box is not None else "center",
-                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+        meta = base_meta(mock=False, tag1=self.tag1, tag2=self.tag2,
+                         temperature=getattr(self.s1, "T", 1.0), box=box)
 
         # ★ 밴드 밖 사진은 **모델에 넣기 전에** 돌려보냅니다.
         #   그 구간에서 성능이 떨어지는 걸 이미 재 뒀는데(STEP 10), 넣고 나서
@@ -439,11 +463,10 @@ class ScreeningAgent:
         #
         # `retake` 는 이제 **모델을 돌리기 전** 판단만 남습니다:
         # 이미지를 못 열었을 때, 가이드 프레임이 밴드 밖일 때.
-        meta["stage2_low_confidence"] = bool(pred.abstain)
-        # ⚠️ 이름이 아니라 **숫자**입니다. 분포 1등의 확률이라 distribution[0].prob
-        #    와 같은 값이고, 새 정보를 흘리지 않습니다. 이름 필드는 만들지 마세요.
-        meta["stage2_top_prob"] = round(float(raw[0][1]), 4) if raw else None
-        meta["stage2_abstain_threshold"] = float(self.s2.cfg.abstain_threshold)
+        # ⚠️ `stage2_top_prob` 은 이름이 아니라 **숫자**입니다. 분포 1등의
+        #    확률이라 distribution[0].prob 와 같은 값이고, 새 정보를 흘리지
+        #    않습니다. 이름 필드는 만들지 마세요.
+        meta.update(stage2_meta(pred, raw, self.s2.cfg.abstain_threshold))
 
         meta["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
@@ -482,7 +505,24 @@ class MockAgent:
     ⚠️ 확률은 **모델이 낸 것이 아닙니다.** 응답의 `meta.mock` 이 true 입니다.
     """
 
-    def __init__(self, threshold: float = 0.1823):
+    #: mock 전용 임계값. **릴리스 값이 아닙니다** — 릴리스는
+    #: `stage1_threshold.json` 에 있고 `ScreeningAgent` 는 그게 없으면
+    #: **아예 안 뜹니다**(기본값을 쓰면 recall 이 조용히 무너지므로).
+    #: 여기 값은 화면만 볼 때 쓰는 자리표시자이고, 있으면 진짜 값을 읽습니다.
+    MOCK_THRESHOLD = 0.1823
+
+    def __init__(self, threshold: float | None = None):
+        if threshold is None:
+            threshold = self.MOCK_THRESHOLD
+            try:                       # 릴리스가 옆에 있으면 그걸 씁니다
+                from src import env
+
+                f = env.work_root() / "stage1_threshold.json"
+                if f.is_file():
+                    threshold = float(json.loads(f.read_text(encoding="utf-8"))
+                                      ["threshold"])
+            except Exception:          # 데이터가 없는 환경(앱 개발용)이면 그냥 넘어갑니다
+                pass
         self.thr = float(threshold)
         self.tag1, self.tag2 = STAGE1_TAG, STAGE2_TAG
 
@@ -496,9 +536,9 @@ class MockAgent:
         except Exception as exc:
             return contract("retake", meta={"mock": True, "error": str(exc)})
 
-        meta = {"mock": True, "stage1_crop": self.tag1, "stage2_crop": self.tag2,
-                "box_source": "user" if box is not None else "center",
-                "crop_note": CROP_NOTE["user_box" if box is not None else "center"]}
+        # 진짜와 **같은 함수**로 만듭니다 — 계약을 두 곳에 적지 않습니다.
+        meta = base_meta(mock=True, tag1=self.tag1, tag2=self.tag2,
+                         temperature=1.0, box=box)   # mock 은 보정을 안 합니다
         if box is not None:
             g = check_guide(box)
             meta["guide"] = g
@@ -522,5 +562,8 @@ class MockAgent:
                           confidence_band=band(raw[0][1] * abnormal),
                           stage1_abnormal=abnormal)
         pred.stage2_probs = raw
+        from src.config import CFG as _CFG
+
+        meta.update(stage2_meta(pred, raw, _CFG().abstain_threshold))
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
                         stage2=raw, text=compose_screening_message(pred), meta=meta)

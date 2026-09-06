@@ -73,21 +73,40 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray, probs: np.ndarray | None,
 
 
 def bootstrap_ci(y_true: np.ndarray, y_pred: np.ndarray, metric: str = "macro_f1",
-                 n: int = 1000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float, float]:
+                 n: int = 1000, alpha: float = 0.05, seed: int = 0,
+                 cls: int | None = None) -> tuple[float, float, float]:
     """부트스트랩 신뢰구간.
 
     "macro-F1 0.74" 보다 "0.74 (95% CI 0.71–0.77)" 이 정직합니다.
     검증셋이 작으면 구간이 넓게 나오는데, 그게 사실입니다.
+
+    `metric="recall"` + `cls=<클래스 번호>` 로 **클래스 하나의 recall** 구간도 냅니다.
+    A4·A6 처럼 표본이 적은 클래스는 이게 없으면 개선인지 주사위인지 알 수 없습니다
+    (A6 는 val 표본 ~256장에서 2σ 가 ±0.085 로, 목표 개선폭과 비슷했습니다).
     """
     from sklearn.metrics import balanced_accuracy_score, f1_score
 
-    fn = {"macro_f1": lambda a, b: f1_score(a, b, average="macro", zero_division=0),
-          "balanced_accuracy": balanced_accuracy_score}[metric]
+    if metric == "recall":
+        if cls is None:
+            raise ValueError("metric='recall' 에는 cls=<클래스 번호> 가 필요합니다")
+
+        def fn(a, b):
+            m = a == cls
+            return float((b[m] == cls).mean()) if m.any() else float("nan")
+    else:
+        fn = {"macro_f1": lambda a, b: f1_score(a, b, average="macro", zero_division=0),
+              "balanced_accuracy": balanced_accuracy_score}[metric]
+
     rng = np.random.default_rng(seed)
     vals = []
     for _ in range(n):
         idx = rng.integers(0, len(y_true), len(y_true))
-        if len(np.unique(y_true[idx])) < 2:
+        # ⚠️ 클래스별 recall 은 그 클래스가 뽑혀야 잽니다. 전체 클래스 수로
+        #    거르면(<2) 그 클래스가 0장인 표본이 통과해 nan 이 섞입니다.
+        if metric == "recall":
+            if not (y_true[idx] == cls).any():
+                continue
+        elif len(np.unique(y_true[idx])) < 2:
             continue
         vals.append(fn(y_true[idx], y_pred[idx]))
     vals = np.array(vals)

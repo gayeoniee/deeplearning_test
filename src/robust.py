@@ -314,6 +314,27 @@ def blur_stress(model, df, cfg: CFG | None = None, classes: list[str] | None = N
 # ──────────────────────────────────────────────────────────────
 # 촬영 가이드 (capture guideline) 도출
 # ──────────────────────────────────────────────────────────────
+
+# ★ **밴드의 출처는 여기 하나입니다.** `usable_range()` 가 STEP 16 에서 뽑은
+#   배율 구간이고, 이 값을 쓰는 곳이 넷입니다 — 넷이 따로 적어두면 갈라지고,
+#   갈라져도 아무도 모릅니다 (실제로 `tools/box_error.py` 가 STEP 10 값에
+#   몇 주째 멈춰 있었습니다).
+#
+#     src/agent.py        화면 점유율로 (배율 ÷ 2.5, 2단계 크롭이 m2.5 이므로)
+#     demo/index.html     같은 값의 화면 판
+#     tools/box_error.py  네모 크기 오차로 뒤집어서 (1/배율)
+#     docs/SERVING.md     사람이 읽는 판
+#
+# ⚠️ STEP 10 은 (0.85, 1.4) / (0.7, 1.7) 이었습니다. **크게 찍는 쪽이
+#    빡빡해졌습니다** — 2.0x 에서 macro-F1 이 0.449 까지 떨어집니다.
+# ⚠️ 데이터가 늘거나 크롭이 바뀌면 `usable_range()` 를 **다시 돌려** 여기를
+#    고치세요. 2단계를 고정 창(f320)으로 바꾸면 촬영 거리 의존이 커지므로
+#    반드시 다시 뽑아야 합니다 (STEP 22·23).
+ZOOM_RECOMMEND = (0.7, 1.2)     # 최고점 대비 하락 5% 이내 (STEP 16, n=2,000)
+ZOOM_ALLOW = (0.6, 1.4)         # 하락 10% 이내
+ZOOM_CENTER_MAX = 0.10          # 병변이 화면 중앙에서 이만큼 이내
+
+
 def usable_range(
     model, df, cfg: CFG | None = None, classes: list[str] | None = None,
     zooms=(0.5, 0.6, 0.7, 0.85, 1.0, 1.2, 1.4, 1.7, 2.0),

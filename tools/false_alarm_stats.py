@@ -66,59 +66,10 @@ from src.texture import STATS, image_stats                      # noqa: E402,F40
 #   megapix  = 원본 화소수. 기기·촬영 설정의 대용
 EXTRA = ["area", "megapix"]
 
-def cohens_d(x, y) -> float:
-    import numpy as np
-
-    x, y = np.asarray(x, float), np.asarray(y, float)
-    x, y = x[np.isfinite(x)], y[np.isfinite(y)]
-    if len(x) < 2 or len(y) < 2:
-        return float("nan")
-    s = np.sqrt(((len(x) - 1) * x.var(ddof=1) + (len(y) - 1) * y.var(ddof=1))
-                / (len(x) + len(y) - 2))
-    return float((x.mean() - y.mean()) / s) if s else float("nan")
-
-
-def auroc(pos, neg) -> float:
-    """값 하나만으로 pos 를 neg 와 가를 수 있나 (Mann-Whitney U)."""
-    import numpy as np
-
-    pos, neg = np.asarray(pos, float), np.asarray(neg, float)
-    pos, neg = pos[np.isfinite(pos)], neg[np.isfinite(neg)]
-    if not len(pos) or not len(neg):
-        return float("nan")
-    allv = np.concatenate([pos, neg])
-    r = allv.argsort().argsort().astype(float) + 1
-    # 동점 처리 — 각질처럼 값이 뭉치는 경우가 있어서 필요합니다
-    order = np.sort(allv)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and order[j + 1] == order[i]:
-            j += 1
-        if j > i:
-            r[(allv >= order[i]) & (allv <= order[j])] = (i + j) / 2 + 1
-        i = j + 1
-    return float((r[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2)
-                 / (len(pos) * len(neg)))
-
-
-# 판정 문턱 — **결과를 보기 전에** 못 박습니다 (CLAUDE.md 규칙 2).
-# d 하나로는 안 됩니다: 퍼짐이 작으면 실제 차이가 없어도 d 가 커집니다.
-D_STRONG, A_STRONG = 0.5, 0.15         # 둘 **다** 넘어야 "차이 있음"
-D_WEAK, A_WEAK = 0.2, 0.06
-
-
-def verdict(d: float, a: float) -> str:
-    import math
-
-    if math.isnan(d) or math.isnan(a):
-        return "못 잼"
-    da = abs(a - 0.5)
-    if abs(d) >= D_STRONG and da >= A_STRONG:
-        return "**차이 있음**"
-    if abs(d) >= D_WEAK and da >= A_WEAK:
-        return "조금"
-    return "차이 없음"
+# ⚠️ `d` · `AUROC` · 판정 문턱의 **정의는 `src/effectsize.py` 한 곳에만** 둡니다.
+#    `tools/class_overlap.py` 가 같은 값을 쓰는데, 따로 적으면 갈라집니다.
+from src.effectsize import (D_STRONG, A_STRONG, D_WEAK, A_WEAK,   # noqa: E402,F401
+                            auroc, cohens_d, verdict)
 
 
 def compare(df, mask_bad, mask_good, title: str, n_bad_label: str,

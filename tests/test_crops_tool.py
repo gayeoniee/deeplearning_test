@@ -126,9 +126,23 @@ with tempfile.TemporaryDirectory() as td:
 
     print("\n[6] 확인 입력이 틀리면 아무것도 안 지운다")
     before = alive()
-    for typed, why in [("yes", "yes"), ("", "빈 입력"), ("VL01", "일부만"),
-                       ("scan_report.txt,VL01", "순서 다름"),
-                       ("VL01,scan_report.txt,VL01.zip", "zip 을 끼워넣음")]:
+    # ⚠️ 확인 문구를 **하드코딩하면 안 됩니다.** `prune_raw` 가 요구하는 순서는
+    #    폴더 나열 순서라 OS 마다 다릅니다. 예전엔 "scan_report.txt,VL01" 을
+    #    '순서 다름' 이라고 적어뒀는데, 윈도우에서는 그게 **정답 순서**여서
+    #    안 지워야 할 검사가 진짜로 지워버렸고(그 뒤 검사까지 연쇄로 실패),
+    #    몇 주 동안 "원래 깨진 검사" 로 남았습니다.
+    #    → 도구가 요구하는 문구를 **그대로 받아와서** 그걸 어긋내 만듭니다.
+    _units, _ = crops.raw_units(raw)
+    _tops: list[str] = []
+    for _u in _units:
+        _t = _u["path"].relative_to(raw).parts[0]
+        if _t not in _tops:
+            _tops.append(_t)
+    RIGHT = ",".join(_tops)
+    assert len(_tops) >= 2, f"이 검사는 최상위 이름이 둘 이상이어야 합니다: {_tops}"
+    for typed, why in [("yes", "yes"), ("", "빈 입력"), (_tops[0], "일부만"),
+                       (",".join(reversed(_tops)), "순서 다름"),
+                       (RIGHT + ",VL01.zip", "zip 을 끼워넣음")]:
         sys.stdin = io.StringIO(typed + "\n")
         try:
             crops.prune_raw(crops.survey())
@@ -137,7 +151,7 @@ with tempfile.TemporaryDirectory() as td:
         check(f"'{why}' 입력 → 그대로", alive() == before, str(alive() ^ before))
 
     print("\n[7] 정확히 입력해야 지운다")
-    sys.stdin = io.StringIO("VL01,scan_report.txt\n")
+    sys.stdin = io.StringIO(RIGHT + "\n")      # 도구가 요구하는 문구 그대로
     try:
         crops.prune_raw(crops.survey())
     finally:
