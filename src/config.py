@@ -105,6 +105,31 @@ MORPH_GROUP_KEEP_A6: dict[str, str] = {
 #: 즉 **"임상적으로 비슷해서 묶었다" 는 절반만 맞습니다.**
 DOC_ENDORSED_MERGES: tuple[tuple[str, str], ...] = (("A1", "A4"), ("A5", "A6"))
 
+#: ★ 수의피부과 **표준 축** — primary(병이 직접 만든 것) vs secondary(그 뒤에
+#: 생긴 것). 우리가 만든 묶음이 아니라 교과서 분류입니다:
+#:   primary    macule · papule · plaque · wheal · vesicle · **pustule** · **nodule**
+#:   secondary  **collarette** · scar · excoriation · **erosion** · **ulcer** ·
+#:              fissure · **lichenification** · callus
+#:   둘 다 됨    **scale · crust · 색소 변화** (원인에 따라)
+#: 출처: MSD Veterinary Manual · Clinicians Brief (2026-09-06 확인)
+#:
+#: ⚠️ **A2·A3 는 깨끗이 안 갈립니다** — A2 의 잔고리는 secondary 인데 비듬·가피는
+#:    '둘 다', A3 의 태선화는 secondary 인데 색소침착은 '둘 다' 입니다.
+#:    ★ 그런데 **둘이 똑같이 애매합니다.** 출처가 *"secondary 는 여러 primary 에서
+#:    나올 수 있어 진단 가치가 낮다"* 고 적는데, A2+A3 를 한 통에 넣는다는 건
+#:    **덜 진단적인 둘을 묶는 것**이라 사후 정당화가 아닌 근거가 됩니다.
+#: ⚠️ A1·A4(≤1cm)와 A6(>1cm)를 가르는 **1cm 는 교과서 경계**입니다
+#:    (papule ≤1cm / nodule >1cm) — A6 를 따로 둔 것이 표준과 맞습니다.
+#: 🚫 **그런데 이 축으로 2군을 만들면 기각입니다** (STEP 32): 커버리지는 제일
+#:    높은데(74.6%) primary 에 A6 이 들어 있어 **과잉 분류가 88.4%** 입니다 —
+#:    구진 하나에도 '조기 진료' 가 붙어 그 말이 뜻을 잃습니다.
+LESION_ORIGIN: dict[str, str] = {
+    "A1": "primary", "A4": "primary", "A6": "primary",
+    "A5": "secondary",
+    "A2": "mixed",   # 잔고리 secondary / 비듬·가피 '둘 다'
+    "A3": "mixed",   # 태선화 secondary / 색소침착 '둘 다'
+}
+
 #: 🔴 위험한 혼동 — 임상 해설에 적힌 그대로. **긴급도를 낮춰 말하는 것**입니다.
 #:    (A6→A2 가 최악, A5→A1, A6→A1). 일반화하면 "실제 등급 > 말한 등급".
 DANGEROUS_IS_UNDER_TRIAGE = True

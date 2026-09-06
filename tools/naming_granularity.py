@@ -230,6 +230,14 @@ def main() -> int:
                       "A3": "태선화·색소침착", "A5": "미란·궤양", "A6": "결절·종괴"},
         "★ A6 만 따로 (4군)": MORPH_GROUP_KEEP_A6,
         "형태 계열 3군": MORPH_GROUP,
+        # ★ 수의피부과 **교과서 축** (config.LESION_ORIGIN). 우리가 만든 게
+        #   아니라 표준이라 반드시 재봐야 합니다 — 그런데 **과잉에서 걸립니다.**
+        "교과서: primary/secondary (2군)": {
+            "A1": "primary", "A4": "primary", "A6": "primary",
+            "A2": "secondary", "A3": "secondary", "A5": "secondary"},
+        "교과서 + 1cm 경계 (3군)": {
+            "A1": "작은 융기(≤1cm)", "A4": "작은 융기(≤1cm)", "A6": "덩어리(>1cm)",
+            "A2": "표면·이차 변화", "A3": "표면·이차 변화", "A5": "표면·이차 변화"},
     }
     sch = {}
     for nm, mp in SCHEMES.items():
@@ -246,8 +254,36 @@ def main() -> int:
     res["묶음_변형"] = sch
     print("  → 문서가 인정한 병합만으로는 문턱을 못 넘습니다. 이득의 대부분이")
     print("    **A2+A3** 에서 오는데 그건 문서가 인정한 묶음이 아닙니다.")
-    print("  → 'A6 만 따로' 는 3군보다 0.7%p 밖에 안 잃습니다 — A6 은 종양 감별이")
+    print("  → 'A6 만 따로' 는 3군보다 조금밖에 안 잃습니다 — A6 은 종양 감별이")
     print("    필요한 유일한 클래스라, 이름을 지키는 값이 그보다 큽니다.")
+    print("  🚫 **교과서 축(primary/secondary)은 커버리지가 제일 높은데 기각**입니다 —")
+    print("     primary 에 A6(조기 진료)이 들어 있어 구진 하나에도 '조기 진료' 가")
+    print("     붙습니다. **과잉 열을 안 봤으면 이걸 골랐을 겁니다** (STEP 30 의 관문).")
+
+    # ── ⑩ 앙상블이 알갱이마다 얼마나 값을 하나 (추론 3배) ───────────
+    print("\n" + "=" * 78)
+    print("⑩ 릴리스 단독으로도 되나 — 추론 3배를 치를지의 근거")
+    print("=" * 78)
+    print(f"  {'묶음':30}{'릴리스 단독':>12}{'3팔 앙상블':>12}{'앙상블 값어치':>14}")
+    rel = P2[0]
+    cmp2 = {}
+    for nm, mp in SCHEMES.items():
+        row = []
+        for p in (rel, ens):
+            keys = list(dict.fromkeys(mp[c] for c in CLASSES))
+            g, _ = _grouped(p, mp)
+            gi = g.argmax(1)
+            sd = np.array(keys, dtype=object)[gi]
+            tr = np.array([mp.get(t, "정상") for t in truth], dtype=object)
+            w = is_norm | (sd != tr)
+            o = np.argsort(-(p1 * g.max(1)))
+            e = np.cumsum(w[o]) / np.arange(1, n + 1)
+            k = np.flatnonzero(e <= experiments.NAMING_TARGET_ERROR)
+            row.append(float((k[-1] + 1) / n) if len(k) else 0.0)
+        cmp2[nm] = {"release": row[0], "ensemble": row[1], "gain": row[1] - row[0]}
+        print(f"  {nm:30}{row[0]:>12.1%}{row[1]:>12.1%}{row[1]-row[0]:>+14.1%}")
+    res["앙상블_값어치"] = cmp2
+    print("  → 굵게 말할수록 앙상블의 몫이 줄어듭니다. 6종 이름일 때만 컸습니다.")
 
     out = ROOT / a.out
     out.write_text(json.dumps(res, indent=2, ensure_ascii=False, default=float),
