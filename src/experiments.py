@@ -1610,14 +1610,20 @@ def granularity_report(name: str, rows: dict, *, target=NAMING_TARGET_ERROR) -> 
     # (거기엔 낮출 긴급도가 없습니다 — 그건 헛알림 문제이고 1단계 몫입니다).
     real = tt[spoken] >= 0
     under = float((tt[spoken][real] > ts[spoken][real]).mean()) if real.any() else 0.0
+    # ★ 반대쪽도 **셉니다 — 관문으로 쓰진 않고**. 과잉(안 급한 걸 급하다고)은
+    #   병원에 가게 만들 뿐이라 위험하지 않습니다. 그런데 **공짜도 아닙니다**:
+    #   굵게 묶고 묶음의 긴급도를 높은 쪽으로 잡으면 하향은 0 에 수렴하는 대신
+    #   과잉이 치솟고, 그러면 아무도 그 말을 안 믿게 됩니다.
+    #   ⚠️ 이 값을 안 찍던 동안 권고안(4군)의 과잉이 **49.3%** 인 걸 몰랐습니다.
+    over = float((tt[spoken][real] < ts[spoken][real]).mean()) if real.any() else 0.0
 
     passed = cov >= GRANULARITY_MIN_COVERAGE and under <= UNDER_TRIAGE_MAX
     verdict = ("논의할 가치 있음" if passed else
                f"기각 (커버리지 {cov:.1%}" +
                (f" · 긴급도 하향 {under:.1%}" if under > UNDER_TRIAGE_MAX else "") + ")")
 
-    print(f"  {name:22} 커버리지 {cov:>6.1%}   긴급도 하향 {under:>6.1%}"
-          f"   {'통과' if passed else '기각'}")
+    print(f"  {name:22} 커버리지 {cov:>6.1%}   하향 {under:>6.1%}"
+          f"   과잉 {over:>6.1%}   {'통과' if passed else '기각'}")
     return {"granularity": name, "coverage": cov, "n_spoken": k,
-            "under_triage": under, "verdict": verdict,
+            "under_triage": under, "over_triage": over, "verdict": verdict,
             "threshold": float(conf[order][k - 1]) if k else float("inf")}

@@ -57,12 +57,17 @@ check("커버리지는 100% 로 나온다", lazy["coverage"] == 1.0)
 check("그래도 기각된다 (긴급도 하향)", lazy["verdict"].startswith("기각"))
 check("하향 비율이 문턱을 넘는다", lazy["under_triage"] > E.UNDER_TRIAGE_MAX)
 
-print("\n[3] 반대 방향(과하게 급하다고 말함)은 통과한다")
+print("\n[3] 반대 방향(과하게 급하다고 말함)은 통과한다 — 다만 **값이 찍혀야** 한다")
 eager = E.granularity_report("전부 조기진료라고 말함", {
     "conf": np.linspace(0, 1, n), "wrong": np.zeros(n, bool),
     "tier_true": tier_true, "tier_said": np.full(n, 2)})
 check("하향이 0", eager["under_triage"] == 0.0)
-check("통과", eager["verdict"] == "논의할 가치 있음")
+check("통과 (과잉은 위험하지 않다)", eager["verdict"] == "논의할 가치 있음")
+# ★ 과잉을 안 찍으면 "하향 0%" 만 보고 안심하게 됩니다. 실제로 권고안(4군)의
+#   과잉이 49.3% 인 걸 이 값을 안 찍던 동안 몰랐습니다.
+check("과잉도 함께 보고된다", "over_triage" in eager)
+check("전부 급하다고 하면 과잉이 크다", eager["over_triage"] > 0.5)
+check("하향과 과잉은 다른 값", eager["over_triage"] != eager["under_triage"])
 
 print("\n[4] 정상 사진(-1)은 하향 계산에서 빠진다")
 r = E.granularity_report("정상만", {
