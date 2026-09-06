@@ -293,6 +293,19 @@ def test_band_has_one_source():
     for v in agent.GUIDE_ALLOW + agent.GUIDE_RECOMMEND:
         check(f"demo 에 {v} 가 있다", str(v) in html)
 
+    # ★ **다섯 번째 자리: 앱 팀이 읽는 문서.** 위 넷을 맞춰 놓고 `SERVING.md`
+    #   를 이 목록에서 빠뜨렸더니, 거기만 STEP 10 값(권장 34~56% / 허용
+    #   28~68%)이 며칠 더 남아 있었습니다. **앱 팀은 코드가 아니라 이 문서를
+    #   보고 만듭니다** — 코드가 맞아도 문서가 틀리면 앱이 틀립니다.
+    doc = (ROOT / "docs" / "SERVING.md").read_text(encoding="utf-8")
+    band = doc.split("권장 : 가로")[-1].split("```")[0] if "권장 : 가로" in doc else ""
+    check("SERVING.md 에 밴드 블록이 있다", bool(band), "형식이 바뀌었습니다")
+    for name, lo, hi in (("권장", *agent.GUIDE_RECOMMEND), ("허용", *agent.GUIDE_ALLOW)):
+        want = f"{name} : 가로 {lo * 100:.0f}% ~ {hi * 100:.0f}%"
+        check(f"SERVING.md 의 {name} 밴드가 코드와 같다", want in doc, f"'{want}' 없음")
+    check("SERVING.md 에 STEP 10 옛 밴드(34% ~ 56%)가 안 남아 있다",
+          "34% ~ 56%" not in doc)
+
 
 if __name__ == "__main__":
     print("촬영 가이드 도출 검증\n")
