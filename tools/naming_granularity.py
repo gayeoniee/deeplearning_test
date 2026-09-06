@@ -39,7 +39,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src import experiments  # noqa: E402
-from src.config import CLASSES, MORPH_GROUP, URGENCY_TIER, URGENCY_TIER_NAME  # noqa: E402
+from src.config import (CLASSES, MORPH_GROUP, MORPH_GROUP_KEEP_A6,  # noqa: E402
+                        URGENCY_TIER, URGENCY_TIER_NAME)
 from src.stages import NORMAL_LABEL  # noqa: E402
 
 
@@ -211,6 +212,42 @@ def main() -> int:
               f"{row['ens'] - row['release']:>+10.1%}{row['fa_share']:>16.1%}")
     print("  ← '말한 것 중 헛알림' 은 앙상블 기준. 거절이 헛알림을 얼마나 걸러냈나.")
     res["알갱이별_앙상블_비교"] = cmp_rows
+
+    # ── ⑨ ★ 임상 때문인가, 통계적 편의 때문인가 ────────────────────
+    # 임상 해설이 "🟢 안전한 혼동" 으로 **명시한 것은 두 쌍뿐**입니다
+    # (A1↔A4 · A5↔A6). 3군의 셋째 묶음 A2+A3 은 문서가 인정한 게 아니라
+    # **남은 것**입니다. 그러면 이득 중 얼마가 어디서 오나? 갈라 봅니다.
+    # ⚠️ 이걸 안 갈라 보면 "임상적으로 비슷해서 묶었다" 고 말하게 됩니다.
+    print("\n" + "=" * 78)
+    print("⑨ 묶음이 임상 때문인가 — 문서가 인정한 병합만 하면?")
+    print("=" * 78)
+    SCHEMES = {
+        "6종 (병합 없음)": {c: c for c in CLASSES},
+        "문서가 인정한 병합만": {"A1": "융기·발진", "A4": "융기·발진",
+                         "A5": "손상·덩어리", "A6": "손상·덩어리",
+                         "A2": "비듬·각질", "A3": "태선화·색소침착"},
+        "A1·A4 만 병합": {"A1": "융기·발진", "A4": "융기·발진", "A2": "비듬·각질",
+                      "A3": "태선화·색소침착", "A5": "미란·궤양", "A6": "결절·종괴"},
+        "★ A6 만 따로 (4군)": MORPH_GROUP_KEEP_A6,
+        "형태 계열 3군": MORPH_GROUP,
+    }
+    sch = {}
+    for nm, mp in SCHEMES.items():
+        keys = list(dict.fromkeys(mp[c] for c in CLASSES))
+        g, _ = _grouped(ens, mp)
+        gi = g.argmax(1)
+        said_g = np.array(keys, dtype=object)[gi]
+        true_g = np.array([mp.get(t, "정상") for t in truth], dtype=object)
+        tier_said = np.array([max(URGENCY_TIER[c] for c in CLASSES if mp[c] == k)
+                              for k in keys])[gi]
+        sch[nm] = experiments.granularity_report(f"{nm} [{len(keys)}군]", {
+            "conf": p1 * g.max(1), "wrong": is_norm | (said_g != true_g),
+            "tier_true": tier_true, "tier_said": tier_said})
+    res["묶음_변형"] = sch
+    print("  → 문서가 인정한 병합만으로는 문턱을 못 넘습니다. 이득의 대부분이")
+    print("    **A2+A3** 에서 오는데 그건 문서가 인정한 묶음이 아닙니다.")
+    print("  → 'A6 만 따로' 는 3군보다 0.7%p 밖에 안 잃습니다 — A6 은 종양 감별이")
+    print("    필요한 유일한 클래스라, 이름을 지키는 값이 그보다 큽니다.")
 
     out = ROOT / a.out
     out.write_text(json.dumps(res, indent=2, ensure_ascii=False, default=float),
