@@ -42,16 +42,25 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 
 
 # 검사할 모듈 — 노트북이 `from src import ...` 로 쓰는 것들
+import src.calibrate as calibrate  # noqa: E402
 import src.crop as crop            # noqa: E402
+import src.data as data            # noqa: E402
 import src.evaluate as evaluate    # noqa: E402
 import src.experiments as experiments  # noqa: E402
 import src.labels as labels        # noqa: E402
+import src.models as models        # noqa: E402
+import src.robust as robust        # noqa: E402
 import src.split as split          # noqa: E402
 import src.stages as stages        # noqa: E402
 import src.train as train          # noqa: E402
 
-MODULES = {"crop": crop, "evaluate": evaluate, "experiments": experiments,
-           "labels": labels, "split": split, "stages": stages, "train": train}
+# ⚠️ 2026-09-06: 노트북 10 이 `robust.ZoomView` · `robust._mean_std` ·
+#    `models.build` 를 쓰는데 이 목록에 그 모듈들이 없어 **검사에서 통째로
+#    빠져 있었습니다.** 검사가 "283개 통과" 를 찍어도 안 본 호출은 안 본 겁니다.
+#    → 노트북이 실제로 부르는 모듈은 전부 여기 넣습니다.
+MODULES = {"calibrate": calibrate, "crop": crop, "data": data, "evaluate": evaluate,
+           "experiments": experiments, "labels": labels, "models": models,
+           "robust": robust, "split": split, "stages": stages, "train": train}
 
 
 def calls_in(source: str):
