@@ -1440,3 +1440,110 @@ def estimate_runtime(model_names: list[str] | list[tuple[str, int]], img_size: i
     print("  → 너무 길면 여기서 멈추고 서브셋을 줄이거나 백본을 바꾸세요.")
     print("=" * 66)
     return {"rows": rows, "total_hours": total_min / 60, "n_conditions": n_conditions}
+
+# ── STEP 27 — "확신 있을 때만 이름을 말할 것인가" 판정 기준 ─────────────
+#
+# ⚠️ **결과를 보기 전에 박습니다** (작업 규칙 2). 이 결정은 숫자만으로 끝나지
+#    않지만, 숫자가 어느 쪽이면 **대화 자체가 필요 없는지**는 정할 수 있습니다.
+#
+# 왜 새 기준이 필요한가 — STEP 11 의 "커버리지 18.2%" 는 **2단계 val(병변만)**
+# 에서 잰 값입니다. 실제 화면에는 **1단계가 넘긴 사진**이 뜨고, 거기엔 헛알림
+# (멀쩡한 개)이 섞여 있습니다. 그 사진에 병변 이름이 붙으면 **무조건 오답**
+# 입니다. 그래서 분모도 오답 정의도 달라집니다.
+#
+#   분모  = 1단계가 "이상" 으로 넘긴 사진 전부 (헛알림 포함)
+#   오답  = 정상인데 이름을 붙였다  OR  병변인데 다른 이름을 붙였다
+#   커버리지 = 그중 실제로 이름을 말한 비율
+
+NAMING_TARGET_ERROR = 0.20
+"""이름을 말한 것 중 허용할 오답률. STEP 11 이 쓴 값을 그대로 씁니다 —
+기준을 지금 새로 고르면 STEP 11 의 결정과 비교가 안 됩니다."""
+
+NAMING_MIN_COVERAGE = 0.50
+"""이 목표 오답률에서 커버리지가 이보다 높아야 **멘토와 논의할 가치**가 있습니다.
+절반은 말할 수 있어야 화면에 칸을 하나 더 두는 값을 합니다."""
+
+NAMING_CLOSE_COVERAGE = 0.30
+"""이보다 낮으면 **축을 닫습니다.** 셋 중 하나도 말 못 하면서 '가끔 이름을
+말하는' 화면은 보호자에게 일관성 없는 물건이 됩니다."""
+
+NAMING_A6_MISS_MAX = 0.30
+"""★ 안전 관문. 실제 A6(결절·종괴 — 종양 감별이 필요한 병변)인데 **다른 이름을
+말한** 비율. 나머지 오답은 '병원 가세요' 라는 행동을 안 바꾸지만, A6 을 순한
+이름으로 부르면 **미루게 만들 수 있습니다.** 이 관문만 방향이 비대칭입니다.
+⚠️ 문턱 0.30 은 근거가 있는 값이 아니라 **처음 놓는 말뚝**입니다 — STEP 16
+holdout 의 A6 recall 이 0.619 였으니 '말한 것 중에서는 그보다 나아야 한다'
+정도의 뜻입니다. 실측 뒤에 근거를 붙여 다시 놓습니다."""
+
+
+def naming_report(rows: dict, *, target=NAMING_TARGET_ERROR,
+                  a6_index: int | None = None) -> dict:
+    """1단계 헛알림까지 포함한 **정직한** 커버리지-오답 곡선.
+
+    `rows` 에 필요한 것 (전부 같은 길이·같은 순서, 1단계가 넘긴 사진만):
+
+        conf   각 사진의 "이름 확신도" (내림차순으로 말할 것을 고릅니다)
+        wrong  그 이름이 틀렸는가 (bool) — 정상 사진은 **항상 True**
+        is_a6  실제 라벨이 A6 인가 (bool)
+        said_a6 우리가 A6 이라고 말했는가 (bool)
+
+    돌려주는 것: 목표 오답률에서의 커버리지 · 문턱 · A6 안전 지표 · 판정.
+    """
+    import numpy as np
+
+    conf = np.asarray(rows["conf"], dtype=float)
+    wrong = np.asarray(rows["wrong"], dtype=bool)
+    is_a6 = np.asarray(rows["is_a6"], dtype=bool)
+    said_a6 = np.asarray(rows["said_a6"], dtype=bool)
+    n = len(conf)
+    if not (len(wrong) == len(is_a6) == len(said_a6) == n):
+        raise ValueError("네 배열의 길이가 다릅니다")
+
+    order = np.argsort(-conf)
+    err = np.cumsum(wrong[order]) / np.arange(1, n + 1)
+    cov = np.arange(1, n + 1) / n
+
+    ok = np.flatnonzero(err <= target)
+    if len(ok) == 0:
+        k, coverage, thr = 0, 0.0, float("inf")
+    else:
+        k = int(ok[-1]) + 1                 # 목표를 지키는 **가장 넓은** 지점
+        coverage, thr = float(cov[k - 1]), float(conf[order][k - 1])
+
+    spoken = order[:k]
+    a6_true = is_a6[spoken]
+    a6_miss = float((~said_a6[spoken][a6_true]).mean()) if a6_true.any() else float("nan")
+
+    curve = {f"cov@err{int(t * 100)}":
+             (float(cov[np.flatnonzero(err <= t)[-1]])
+              if len(np.flatnonzero(err <= t)) else 0.0)
+             for t in (0.10, 0.20, 0.30)}
+
+    if coverage >= NAMING_MIN_COVERAGE:
+        verdict = "논의할 가치 있음"
+    elif coverage < NAMING_CLOSE_COVERAGE:
+        verdict = "축을 닫음"
+    else:
+        verdict = "판단 보류 — 멘토 결정"
+    if a6_true.any() and a6_miss > NAMING_A6_MISS_MAX:
+        verdict = f"안전 관문 실패 (A6 오명명 {a6_miss:.1%})"
+
+    out = {"n_flagged": n, "target_error": target, "coverage": coverage,
+           "threshold": thr, "n_spoken": int(k),
+           "a6_true_spoken": int(a6_true.sum()), "a6_misnamed": a6_miss,
+           "curve": curve, "verdict": verdict}
+
+    print(f"[naming] 1단계가 넘긴 사진 {n:,}장 (헛알림 포함)")
+    print(f"  오답률 {target:.0%} 목표에서 **커버리지 {coverage:.1%}** "
+          f"({k:,}장, 확신도 문턱 {thr:.3f})")
+    for t, v in curve.items():
+        print(f"    {t:12} {v:>7.1%}")
+    if a6_true.any():
+        mark = "통과" if a6_miss <= NAMING_A6_MISS_MAX else "실패"
+        print(f"  안전 관문  말한 것 중 실제 A6 {int(a6_true.sum()):,}장 중 "
+              f"**{a6_miss:.1%}** 를 다른 이름으로 (허용 {NAMING_A6_MISS_MAX:.0%}) — {mark}")
+    else:
+        print("  안전 관문  말한 것 중 실제 A6 이 없습니다 — 못 잼")
+    print(f"판정: {verdict}"
+          f"   (≥{NAMING_MIN_COVERAGE:.0%} 논의 / <{NAMING_CLOSE_COVERAGE:.0%} 닫음)")
+    return out
