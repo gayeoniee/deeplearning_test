@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import statistics as st
@@ -254,6 +255,129 @@ def summarize(rows: list[dict]) -> str:
 
 
 # ──────────────────────────────────────────────────────────────
+def _pick_from_zip(df, n: int, seed: int) -> list[dict]:
+    """원본 zip 에서 사진을 꺼내 씁니다. 없으면 빈 리스트.
+
+    ★ 이게 이 측정의 **유일하게 맞는 자극**입니다 — 화면 전체 사진에 병변이
+    어딘가 들어 있고, 사람은 그걸 **찾아서** 네모를 칩니다. 크롭을 쓰면
+    병변이 이미 한가운데 있어서 잴 것이 없어집니다.
+
+    `--finalize` 가 지우는 건 **푼 사진**이고 zip 은 남아 있을 수 있습니다.
+    22GB 를 다 풀지 않고 `zip_member` 로 필요한 것만 꺼냅니다.
+    """
+    import zipfile
+
+    from PIL import Image
+
+    from src import crop
+
+    if "zip_path" not in df.columns or "zip_member" not in df.columns:
+        return []
+    d = df[df.get("label_orig", df.get("label")) != "A7"]      # 병변만
+    d = d[d["zip_path"].notna() & d["zip_member"].notna() & d["bbox"].notna()]
+    if d.empty:
+        return []
+
+    # ★ **앱 상황으로 자극을 맞춥니다 (2026-09-07 2차).**
+    #
+    #   1차는 원본 전체(1920×1080)를 그대로 보여줬는데, 그건 라벨러가 **전신
+    #   사진에서 작은 병변을 찾아낸** 상황입니다 — 병변이 화면의 9.4%(중앙값)라
+    #   육안으로 잘 안 보이고, 그래서 사람은 "이 근처겠지" 로 넓게 잡습니다
+    #   (크기 중앙값 2.82배). 그건 **네모 그리기 오차가 아니라 못 찾은 것**입니다.
+    #
+    #   보호자는 개 발 전체를 찍고 "어디가 이상하죠?" 하지 않습니다. **이상한
+    #   데를 이미 알고 거기를 가까이** 찍습니다. 그 상황을 흉내 냅니다:
+    #     · 창 = bbox 긴 변 × U(3.5, 6.0)  → 병변이 화면의 17~29%
+    #     · 최소 480px (작은 병변까지 선명하게)
+    #     · 병변 위치를 **창 안에서 무작위로** 둡니다 — 가운데 고정이면
+    #       "가운데 얼마나 잘 맞추나" 를 재게 됩니다 (1차의 크롭이 그랬습니다)
+    import random as _random
+
+    rng = _random.Random(seed)
+    cache = ROOT / "reports" / "_box_error_raw"
+    cache.mkdir(parents=True, exist_ok=True)
+    picked: list[dict] = []
+    centers: list[tuple[float, float]] = []
+    handles: dict[str, zipfile.ZipFile] = {}
+    try:
+        for _, r in d.sample(min(len(d), n * 6), random_state=seed).iterrows():
+            zp = str(r["zip_path"])
+            if not Path(zp).is_file():
+                continue
+            if zp not in handles:
+                try:
+                    handles[zp] = zipfile.ZipFile(zp)
+                except Exception:
+                    continue
+            member = str(r["zip_member"])
+            try:
+                with handles[zp].open(member) as src:
+                    blob = src.read()
+            except KeyError:
+                continue
+            # bbox 는 **원본 픽셀** [x1,y1,x2,y2] → 0~1 정규화 [x,y,w,h]
+            # ⚠️ parquet 왕복 뒤 문자열로 돌아옵니다 (`crop.py:191` 과 같은 처리).
+            raw = r["bbox"]
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except ValueError:
+                    continue
+            b = crop._box4(raw)
+            W, H = float(r["img_w"]), float(r["img_h"])
+            if b is None or not (W > 0 and H > 0):
+                continue
+            # ── 창 잡기: 병변 긴 변 × U(3.5,6.0), 최소 480px, 사진 밖으로 안 나감
+            long_side = max(b[2] - b[0], b[3] - b[1])
+            if long_side <= 0:
+                continue
+            side = max(long_side * rng.uniform(3.5, 6.0), 480.0)
+            side = min(side, W, H)
+            if side < long_side * 1.6:          # 병변이 창을 꽉 채우면 잴 게 없습니다
+                continue
+            # 병변이 **창 안에 완전히** 들어가되 위치는 무작위
+            lo_x, hi_x = max(0.0, b[2] - side), min(b[0], W - side)
+            lo_y, hi_y = max(0.0, b[3] - side), min(b[1], H - side)
+            if lo_x > hi_x or lo_y > hi_y:
+                continue
+            wx, wy = rng.uniform(lo_x, hi_x), rng.uniform(lo_y, hi_y)
+
+            im = Image.open(io.BytesIO(blob)).convert("RGB")
+            win = im.crop((int(wx), int(wy), int(wx + side), int(wy + side)))
+            out = cache / f"{len(picked):03d}.jpg"
+            win.save(out, quality=92)
+
+            # ⚠️ **[x1,y1,x2,y2]** 입니다 — `crop.geometry_in_crop` 과 같은 형식이고
+            #    화면 JS 와 `to_perturbation()` 둘 다 그렇게 읽습니다.
+            #    [x,y,w,h] 로 넣으면 정답 네모가 엉뚱하게 그려지고 오차도 틀립니다.
+            truth = [(b[0] - wx) / side, (b[1] - wy) / side,
+                     (b[2] - wx) / side, (b[3] - wy) / side]
+            if not all(0.0 <= v <= 1.0 for v in truth):
+                continue
+            if truth[2] <= truth[0] or truth[3] <= truth[1]:
+                continue
+            picked.append({"idx": len(picked), "path": str(out), "truth": truth})
+            centers.append(((truth[0] + truth[2]) / 2, (truth[1] + truth[3]) / 2))
+            if len(picked) >= n:
+                break
+    finally:
+        for h in handles.values():
+            h.close()
+    if picked:
+        import statistics as _st
+        w = [p["truth"][2] - p["truth"][0] for p in picked]
+        cx = [c[0] for c in centers]
+        cy = [c[1] for c in centers]
+        print(f"원본 zip 에서 {len(picked)}장 꺼내 **앱처럼 가까이** 잘랐습니다 → {cache}")
+        print(f"  병변 폭 화면 대비 중앙값 {_st.median(w):.0%} "
+              f"(1차 원본 그대로는 9%였습니다)")
+        # ★ 정답이 가운데 몰려 있으면 중심 오차를 못 잽니다 — 확인하고 찍습니다.
+        off = [max(abs(x - .5), abs(y - .5)) for x, y in zip(cx, cy)]
+        print(f"  정답 중심의 화면 중앙 이탈: 중앙값 {_st.median(off):.2f} "
+              f"(0 이면 전부 한가운데 = 못 잼)")
+    return picked
+
+
 def pick(n: int, seed: int) -> list[dict]:
     """정답 bbox 가 있는 사진을 n 장 고릅니다. 가장 **넓은** 크롭을 씁니다.
 
@@ -288,6 +412,11 @@ def pick(n: int, seed: int) -> list[dict]:
     #
     #   ⚠️ 조용히 물러서는 게 제일 나빴습니다 — 30분을 쓰고 나서야 알았습니다.
     if tag != "full":
+        # ★ 크롭은 못 씁니다. 다만 **원본 zip 이 남아 있으면** 거기서 꺼냅니다 —
+        #   `--finalize` 가 지우는 건 푼 사진이고 zip 은 남아 있을 수 있습니다.
+        picked = _pick_from_zip(df, n, seed)
+        if picked:
+            return picked
         raise SystemExit(
             f"[X] 이 측정에는 **원본 전체 사진**이 필요한데 지금 있는 건 '{tag}' 입니다.\n"
             "\n"
@@ -296,8 +425,9 @@ def pick(n: int, seed: int) -> list[dict]:
             "    '가운데를 얼마나 잘 맞추나' 를 재게 됩니다. 답이 이미 자극 안에\n"
             "    들어 있어서 어떤 결과가 나와도 두 가설을 가른 게 아닙니다.\n"
             "\n"
-            "    필요한 것: `data/raw/<청크>` 의 원본 사진 (크롭 후 지워집니다).\n"
-            "    한국 PC 에서 청크 하나를 다시 받아 `--finalize` 전에 도세요.\n"
+            "    필요한 것: 원본 사진. `data/raw/<청크>/**.zip` 이 남아 있으면\n"
+            "    자동으로 거기서 꺼냅니다 — 그것도 없으면 한국 PC 에서 청크\n"
+            "    하나를 다시 받으세요.\n"
             "\n"
             "    ⚠️ 크롭으로 우회하지 마세요. 숫자는 나오지만 뜻이 없습니다.")
 

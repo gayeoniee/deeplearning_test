@@ -1611,6 +1611,40 @@ UNDER_TRIAGE_PER_CLASS_MIN_N = 30
 #: `tests/test_granularity_gates.py` 가 이 값이 사라지지 않게 지킵니다.
 UNDER_TRIAGE_PER_CLASS_GATE = None
 
+USER_BBOX_DROP_GAP_MIN = 0.03
+"""★ **사용자 네모로 바꿨을 때 두 크롭의 하락 차이** 문턱 (STEP 36).
+
+무엇을 묻나 — 지금까지 `m2.5`(크기를 씀) vs `f320`(중심만 씀) 비교는 전부
+**라벨 bbox**(정답에 딱 맞는 네모)로 했습니다 (STEP 22·23). 그런데 실측하니
+사람은 **병변 크기와 무관하게** 화면의 절반쯤으로 그립니다 (상관 −0.05,
+크기 중앙값 정답의 2.80배). 그러면 크기를 쓰는 크롭만 그 오차를 받습니다.
+
+    판정:  (m2.5 의 하락) − (f320 의 하락) ≥ 0.03  이면
+           **"크기 의존이 실사용에서 실제로 해롭다"** 로 봅니다.
+
+⚠️ 두 모델을 **같은 백본**(`effnetv2_s`)으로 씁니다. `convnextv2_base` 를 쓰면
+백본과 크롭이 섞여 못 가릅니다 (STEP 12 에서 배운 것).
+
+⚠️ 잡음보다 커야 합니다 — 같은 설정 재실행이 macro-F1 **±0.016** 입니다.
+0.03 은 그 두 배쯤입니다.
+
+⚠️ 이건 **채택 판정이 아닙니다.** 통과해도 "2단계를 f320 으로 바꾸자" 가 바로
+나오지 않습니다 — STEP 23 이 라벨 bbox 기준으로 기각한 근거가 그대로 살아
+있고, 실제 사용자 네모 분포는 n=40·한 사람에서 나온 것입니다."""
+
+USER_BBOX_SIM_N = 3000
+"""1차로 돌릴 장수. 방향이 안 보이면 전체를 안 돕니다 (실측: 3,000장 약 3분)."""
+
+
+def user_bbox_report(name: str, label_f1: float, user_f1: float) -> dict:
+    """라벨 bbox → 사용자 bbox 로 바꿨을 때의 하락. **판정은 부르는 쪽에서.**"""
+    drop = float(label_f1) - float(user_f1)
+    print(f"  {name:22} 라벨 {label_f1:.4f} → 사용자 {user_f1:.4f}"
+          f"   하락 {drop:+.4f}")
+    return {"crop": name, "label_f1": float(label_f1),
+            "user_f1": float(user_f1), "drop": drop}
+
+
 ARM_SAME_COVERAGE_TOL = 0.02
 """★ **같은 커버리지로 맞춰 재봤을 때** 두 설정의 차이를 '같다' 로 볼 폭.
 
