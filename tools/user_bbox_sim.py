@@ -77,6 +77,9 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=None, help="장수 (기본: 사전등록 값)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--batch", type=int, default=24)
+    ap.add_argument("--center-off", type=float, default=None,
+                    help="중심 오차를 덮어씁니다. **탭(콕 찍기)** 을 흉내낼 때 씁니다 — "
+                         "네모를 안 물어보면 크기 오차가 사라지고 중심만 남습니다.")
     a = ap.parse_args()
 
     import numpy as np
@@ -90,6 +93,9 @@ def main() -> None:
 
     n = a.n or USER_BBOX_SIM_N
     (box_lo, box_hi), center_off = user_box_stats()
+    if a.center_off is not None:
+        center_off = a.center_off
+        print(f"[탭 흉내] 중심 오차를 {center_off:.3f} 로 고정합니다")
 
     mf = env.work_root() / "manifests" / "manifest_final.parquet"
     df = pd.read_parquet(mf)

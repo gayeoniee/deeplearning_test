@@ -115,19 +115,37 @@ def total_under(said, sp, true_g):
     return float((m & np.isin(true_g, HIGH) & np.isin(said, LOW)).sum() / m.sum())
 
 
+def total_over(said, sp, true_g):
+    """★ **반대 방향** — 안 급한 걸 급하다고 말한 비율.
+
+    ⚠️ 이 열이 없어서 규칙(문턱 0.25)을 **하향만 보고 채택했습니다.** 규칙은
+    답을 급한 쪽으로 미는 것이라 과잉이 늘어날 수밖에 없는데도요. 나중에 손으로
+    재보니 1.5% → 1.6% 로 괜찮았지만 **순서가 틀렸습니다.**
+
+    STEP 30 에 적어둔 그대로입니다 — *"관문으로 안 쓰더라도 반대쪽을 같이
+    찍으세요."* 그걸 인용해놓고 또 어겼습니다.
+    """
+    m = sp & (true_g != "정상")
+    if not m.any():
+        return 0.0
+    return float((m & np.isin(true_g, LOW) & np.isin(said, HIGH)).sum() / m.sum())
+
+
 def line(tag, p1, P, true_g, **kw):
     said, sp, k = speak(p1, P, true_g, **kw)
     n5, a5 = a5_under(said, sp, true_g)
     return dict(tag=tag, cov=float(sp.mean()), n5=n5, a5=a5,
-                tot=total_under(said, sp, true_g), k=k)
+                tot=total_under(said, sp, true_g),
+                over=total_over(said, sp, true_g), k=k)
 
 
 def show(rows, title):
     print(f"\n{title}")
-    print(f"  {'':30}{'커버리지':>10}{'A5 말함':>9}{'A5 하향':>10}{'전체 하향':>11}")
+    print(f"  {'':30}{'커버리지':>10}{'A5 말함':>9}{'A5 하향':>10}"
+          f"{'전체 하향':>11}{'과잉':>9}")
     for r in rows:
         print(f"  {r['tag']:30}{r['cov']:>10.1%}{r['n5']:>9,}"
-              f"{r['a5']:>10.1%}{r['tot']:>11.1%}")
+              f"{r['a5']:>10.1%}{r['tot']:>11.1%}{r.get('over', 0):>9.1%}")
 
 
 # ---------------------------------------------------------------- 판 D
@@ -160,7 +178,8 @@ def cost_line(tag, p1, P, true_g, c_under):
     sp[order[:k]] = True
     n5, a5 = a5_under(said, sp, true_g)
     return dict(tag=tag, cov=float(sp.mean()), n5=n5, a5=a5,
-                tot=total_under(said, sp, true_g), k=k)
+                tot=total_under(said, sp, true_g),
+                over=total_over(said, sp, true_g), k=k)
 
 
 # ---------------------------------------------------------------- 본체
