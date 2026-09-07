@@ -1918,3 +1918,31 @@ over_triage 와 같은 처방을 씁니다 — **관문으로 안 쓰되 찍습�
 
 원본: [`docs/results/STEP35_A5_하향과_관문의_구멍.md`](docs/results/STEP35_A5_하향과_관문의_구멍.md)
 재현: `uv run python tools/a5_downgrade.py`
+
+### 하향 방지 규칙을 서빙에 넣었습니다 (2026-09-07 오후)
+
+사용자가 **"방지 규칙 넣고 올리자"** 로 정했습니다. 넣은 자리는 한 곳입니다:
+
+    config.URGENT_GROUPS       ("미란·궤양", "결절·종괴")
+    config.DOWNGRADE_BLOCK_MIN 0.25
+    agent.lesion_group()       급한 쪽 합 ≥ 문턱이면 덜 급한 묶음을 후보에서 뺌
+
+그러면 급한 쪽 이름을 말하거나, 확신이 모자라면 **아무 말도 안 합니다.**
+커버리지가 1.3%p 줄어드는 것이 바로 그 "아무 말 안 함" 입니다.
+
+⚠️ **`stage2.distribution` 은 안 건드립니다.** 규칙은 "네 묶음 중 무엇을 말할까"
+만 바꿉니다 → 6종 분포는 그대로이고 **앱은 고칠 게 없습니다** (앱의
+ScreeningReport.kt 는 `distribution` 만 파싱합니다).
+
+### ★ 넣다가 복사된 로직을 찾았습니다
+
+`message.lesion_group_line()` 이 묶음 합·문턱·argmax 를 **따로 계산**하고
+있었습니다. 규칙을 `agent` 에만 넣었으면 **콘솔과 앱이 다른 계열을 말합니다** —
+그리고 갈라져도 아무도 모릅니다. 촬영 가이드 밴드에서 이미 당한 모양입니다
+("값을 복사한 곳끼리 비교하지 말고 출처와 비교하세요").
+
+이제 `message` 는 **문장만** 만들고 선택은 `agent` 가 합니다.
+`tests/test_granularity_gates.py::[8]` 이 *"message 가 MORPH_GROUP_KEEP_A6 를
+직접 쓰지 않는다"* 로 감시합니다.
+
+검사: test_granularity_gates 33 → **40** · 관련 8개 파일 전부 통과

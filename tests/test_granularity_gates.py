@@ -5,6 +5,7 @@
 문턱만 두면 무슨 묶음이든 통과합니다 — `UNDER_TRIAGE_MAX` 가 그걸 막습니다.
 """
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -138,6 +139,50 @@ check("★ 문턱을 안 건 것이 **의도**라고 코드에 남아 있다",
       E.UNDER_TRIAGE_PER_CLASS_GATE is None)
 check("찍기만 하는 최소 표본이 상수로 있다",
       isinstance(E.UNDER_TRIAGE_PER_CLASS_MIN_N, int))
+
+print("\n[8] ★ 하향 방지 규칙이 서빙에 살아 있는가 (STEP 35)")
+# 급한 쪽 합이 문턱 이상이면 **덜 급한 묶음을 답 후보에서 뺍니다.**
+# holdout: 커버리지 67.9 → 66.5%(−1.3%p), A5 하향 43.8 → 36.8%(−7.0%p).
+import os as _os  # noqa: E402
+
+_os.environ["DOG_SKIN_SHOW_GROUP"] = "1"
+import importlib  # noqa: E402
+
+import src.message as _MSG  # noqa: E402
+from src.config import (DOWNGRADE_BLOCK_MIN, MORPH_GROUP_KEEP_A6,  # noqa: E402
+                        URGENT_GROUPS)
+
+importlib.reload(_MSG)
+from src.agent import lesion_group as _lg  # noqa: E402
+
+check("문턱이 상수로 있다 (val 에서 고름)", DOWNGRADE_BLOCK_MIN == 0.25,
+      str(DOWNGRADE_BLOCK_MIN))
+check("급한 쪽 묶음 이름이 MORPH_GROUP_KEEP_A6 과 글자 그대로 맞다",
+      set(URGENT_GROUPS) <= set(MORPH_GROUP_KEEP_A6.values()),
+      f"{URGENT_GROUPS} vs {sorted(set(MORPH_GROUP_KEEP_A6.values()))}")
+
+# 융기·발진 0.60 으로 1등인데 급한 쪽이 0.30 → **덜 급한 쪽을 말하면 안 됩니다**
+_blocked = _lg([("A1", .6), ("A5", .25), ("A6", .05), ("A2", .1)], 0.95)
+check("★ 급한 쪽이 문턱을 넘으면 덜 급한 묶음을 말하지 않는다",
+      _blocked is None or _blocked["name"] in URGENT_GROUPS,
+      str(_blocked))
+# 급한 쪽 0.20 (미달) → 예전대로 1등을 말합니다
+_ok = _lg([("A1", .7), ("A5", .15), ("A6", .05), ("A2", .1)], 0.95)
+check("문턱 미달이면 예전대로 1등을 말한다",
+      _ok is not None and _ok["name"] == "융기·발진", str(_ok))
+# 급한 쪽이 애초에 낮으면 규칙이 개입하지 않습니다
+_free = _lg([("A2", .6), ("A3", .2), ("A1", .1), ("A5", .05), ("A6", .05)], 0.9)
+check("급한 쪽이 낮으면 규칙이 개입 안 한다",
+      _free is not None and _free["name"] == "표면 변화", str(_free))
+
+# ★ 규칙이 **한 곳**에만 있어야 합니다 — 두 화면이 다른 계열을 말하면 안 됩니다
+_line_src = inspect.getsource(_MSG.lesion_group_line)
+check("★ message 가 묶음 선택을 다시 계산하지 않는다 (출처 하나)",
+      "lesion_group" in _line_src and "MORPH_GROUP_KEEP_A6" not in _line_src,
+      "message.py 가 자기 argmax 를 갖고 있으면 규칙이 갈립니다")
+check("두 경로가 같은 답을 낸다",
+      (_blocked is None) == (_MSG.lesion_group_line(
+          [("A1", .6), ("A5", .25), ("A6", .05), ("A2", .1)], 0.95) == ""))
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")

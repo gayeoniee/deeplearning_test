@@ -211,7 +211,8 @@ def lesion_group(probs: list[tuple[str, float]] | None,
     계열 4군은 **67.9%** 이고, 긴급도 하향 3.7% · A6 오명명 12.5% 로
     두 안전 관문 안입니다.
     """
-    from src.config import MORPH_GROUP_KEEP_A6
+    from src.config import (DOWNGRADE_BLOCK_MIN, MORPH_GROUP_KEEP_A6,
+                            URGENT_GROUPS)
     from src.message import GROUP_CONF_MIN, SHOW_GROUP
 
     if not SHOW_GROUP or not probs:
@@ -222,7 +223,17 @@ def lesion_group(probs: list[tuple[str, float]] | None,
         if g is None:
             return None                     # 모르는 코드가 섞이면 말하지 않습니다
         tot[g] = tot.get(g, 0.0) + float(p)
-    name, p = max(tot.items(), key=lambda kv: kv[1])
+
+    # ★ 하향 방지 (STEP 35) — 급한 쪽 합이 문턱을 넘으면 **덜 급한 묶음을
+    #   후보에서 뺍니다.** 그러면 급한 쪽을 말하거나, 확신이 모자라 아무 말도
+    #   안 합니다. 전체 하향(3.7%)이 관문을 통과하는 동안 말한 A5 의 43.8% 가
+    #   하향이던 구멍을 막습니다 → 36.8%, 커버리지는 1.3%p 만 내줍니다.
+    #   ⚠️ `distribution`(6종 분포)은 **안 건드립니다** — 여기서 고르는 것은
+    #      "네 묶음 중 무엇을 말할까" 뿐입니다.
+    urgent = sum(v for k, v in tot.items() if k in URGENT_GROUPS)
+    pool = ({k: v for k, v in tot.items() if k in URGENT_GROUPS}
+            if urgent >= DOWNGRADE_BLOCK_MIN else tot)
+    name, p = max(pool.items(), key=lambda kv: kv[1])
     conf = p * (abnormal_p if abnormal_p is not None else 1.0)
     if conf < GROUP_CONF_MIN:
         return None

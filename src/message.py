@@ -162,22 +162,18 @@ def lesion_group_line(dist: list[tuple[str, float]],
     ⚠️ `SHOW_GROUP` 이 꺼져 있으면 무조건 빈 문자열입니다 — 제품 결정 전에는
        화면이 안 바뀌어야 합니다.
     """
-    if not SHOW_GROUP or not dist:
-        return ""
-    from src.config import MORPH_GROUP_KEEP_A6
+    # ★ 고르는 **규칙은 한 곳**입니다 — `agent.lesion_group()`.
+    #   예전엔 이 함수가 묶음 합·문턱·argmax 를 **따로 계산**했습니다. 그러다
+    #   하향 방지 규칙(STEP 35)이 생기니 한쪽만 고치면 두 화면이 **다른 계열을
+    #   말하게** 됩니다 — 갈라져도 아무도 모릅니다 (촬영 가이드 밴드에서 이미
+    #   당했습니다). 여기는 **문장만** 만듭니다.
+    from src.agent import lesion_group
 
-    tot: dict[str, float] = {}
-    for code, p in dist:
-        g = MORPH_GROUP_KEEP_A6.get(code)
-        if g is None:
-            return ""                      # 모르는 코드가 섞이면 말하지 않습니다
-        tot[g] = tot.get(g, 0.0) + float(p)
-    name, p = max(tot.items(), key=lambda kv: kv[1])
-    conf = p * (abnormal_p if abnormal_p is not None else 1.0)
-    if conf < GROUP_CONF_MIN:
-        return ""                          # 확신이 낮으면 **아무 말도 안 합니다**
+    g = lesion_group(list(dist), abnormal_p)
+    if g is None:
+        return ""                          # 꺼져 있거나 확신이 낮으면 아무 말 안 함
     # ⚠️ "…계열로 보입니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
-    return f"모양만 보면 **{name}** 계열에 가깝습니다. (진단이 아닙니다)"
+    return f"모양만 보면 **{g['name']}** 계열에 가깝습니다. (진단이 아닙니다)"
 
 
 def compose_screening_message(pred: Prediction, abnormal_p: float | None = None) -> str:
