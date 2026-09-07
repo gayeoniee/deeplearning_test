@@ -62,8 +62,22 @@ def build_app(agent, mock: bool):
 
     @app.get("/healthz")
     def healthz():
-        return {"ok": True, "mock": mock, "contract_version": CONTRACT_VERSION,
-                "threshold": getattr(agent, "thr", None)}
+        """살아있나 + **어떤 가중치를 몇 팔로** 물고 있나.
+
+        ★ 팔 개수를 여기서 말하는 이유 — 배포에서 앙상블이 조용히 1팔로 줄어든
+        적이 있습니다 (2026-09-07). `/v1/screen` 응답의 `meta.stage2_arms` 로도
+        알 수 있지만 그건 **2단계가 실제로 도는 사진**이 있어야 합니다. 실제로
+        확인하는 데 찌르기 6번과 합성 병변 사진이 들었습니다.
+
+        → 사진 없이 `curl` 한 번으로 끝나야 합니다.
+        """
+        out = {"ok": True, "mock": mock, "contract_version": CONTRACT_VERSION,
+               "threshold": getattr(agent, "thr", None)}
+        try:
+            out.update(agent.describe())
+        except Exception as e:                       # 헬스체크가 죽으면 안 됩니다
+            out["describe_error"] = f"{type(e).__name__}: {e}"
+        return out
 
     @app.post("/v1/screen")
     async def screen(photo: UploadFile = File(...), box: str = Form(default="")):

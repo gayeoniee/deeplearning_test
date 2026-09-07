@@ -283,6 +283,7 @@ check("표본이 없으면 그렇게 말함", "쓸 수 있는 표본이 없습�
 # ── 9. release 폴더 자동 탐색 + 1단계만 구성 ────────────────
 print("\n[9] 가중치 붙이기")
 import json as _json
+import types as _types
 import shutil as _sh                                             # noqa: E402
 import tempfile                                                  # noqa: E402
 
@@ -301,7 +302,11 @@ with tempfile.TemporaryDirectory() as td:
         ckpt2_extra=None:
         seen.update(c1=Path(c1).parent.name, c2=(Path(c2).parent.name if c2 else None),
                     thr=thr, only=stage1_only,
-                    extra=[Path(x).parent.name for x in (ckpt2_extra or [])]))
+                    extra=[Path(x).parent.name for x in (ckpt2_extra or [])])
+        # ⚠️ 진짜 load 는 **agent 를 돌려줍니다.** None 을 돌려주면
+        #    from_release 가 거기에 release_dir·arm_names 를 못 답니다
+        #    (/healthz 가 그 값을 씁니다). 가짜도 붙일 자리를 줘야 합니다.
+        or _types.SimpleNamespace())
     try:
         agent.ScreeningAgent.from_release(rel)
         check("release 에서 1단계를 이름으로 찾음", seen["c1"].startswith("stage1_"), str(seen))

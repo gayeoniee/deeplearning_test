@@ -385,9 +385,27 @@ def infer_run_settings() -> dict:
     return out
 
 
+def stage2_arms_on_disk(exclude: list[str] | None = None) -> list[str]:
+    """체크포인트 폴더에 있는 `stage2_…` 실험 중 `best.pt` 가 있는 것 전부.
+
+    ★ **`agent.from_release()` 의 거울입니다.** 그쪽은 릴리스 안의 `stage2_*`
+    폴더를 **전부** 훑어 앙상블을 구성합니다. 그러니 `export_release` 도 전부
+    담아야 짝이 맞습니다 — 안 그러면 **릴리스를 다시 만드는 순간 팔이 조용히
+    사라지고** 커버리지만 67.9% → 58.4% 로 떨어집니다 (에러 없이).
+    """
+    skip = set(exclude or [])
+    root = env.ensure_dirs()["checkpoints"]
+    if not root.is_dir():
+        return []
+    return [d.name for d in sorted(root.iterdir())
+            if d.is_dir() and d.name.startswith("stage2_")
+            and d.name not in skip and (d / "best.pt").exists()]
+
+
 def export_release(exps: list[str], meta: dict | None = None,
                    files: dict[str, dict] | None = None,
-                   verbose: bool = True) -> Path:
+                   verbose: bool = True,
+                   include_stage2_arms: bool = True) -> Path:
     """다음 노트북에 넘길 것만 **한 폴더에 모읍니다.**
 
     왜 필요한가 — Kaggle 노트북 출력을 데이터셋으로 만들면 안쪽 폴더가
@@ -413,6 +431,18 @@ def export_release(exps: list[str], meta: dict | None = None,
     if dst.exists():
         shutil.rmtree(dst, ignore_errors=True)
     (dst / "checkpoints").mkdir(parents=True, exist_ok=True)
+
+    # ★ 앙상블 팔을 **자동으로** 같이 담습니다 (`stage2_arms_on_disk` 참고).
+    #   노트북 셀은 `git pull` 로 안 바뀌므로(작업 규칙 3) 호출부가 아니라
+    #   여기서 챙깁니다 — 06 은 `exps=[1단계, 2단계]` 만 넘깁니다.
+    exps = list(exps)
+    if include_stage2_arms:
+        extra = stage2_arms_on_disk(exclude=exps)
+        if extra:
+            exps += extra
+            if verbose:
+                print(f"[release] 2단계 앙상블 팔 {len(extra)}개를 같이 담습니다: "
+                      + ", ".join(extra))
 
     total = 0
     for exp in exps:

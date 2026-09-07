@@ -211,6 +211,41 @@ try:
 finally:
     _M.SHOW_GROUP = _was
 
+print("\n[7] ★ /healthz 가 **몇 팔인지** 말하는가 (2026-09-07 배포 사고)")
+# 배포에서 앙상블이 조용히 1팔로 줄었는데 응답은 200 이었습니다. 알아챌 단서가
+# 로그에 성공 줄이 **안 찍힌 것**뿐이라 아무도 못 봤습니다. 실제로 확인하는 데
+# 찌르기 6번 + 합성 병변 사진이 들었습니다 — 사진 없이 curl 한 번이어야 합니다.
+import importlib  # noqa: E402
+import inspect  # noqa: E402
+
+import src.agent as _A  # noqa: E402
+
+_hz = TestClient(serve.build_app(MockAgent(0.1823), mock=True)).get("/healthz").json()
+for _k in ("stage2_arms", "stage2_crops", "stage2_experiments",
+           "release_dir", "stage1_crop", "stage2_crop"):
+    check(f"/healthz 에 {_k} 가 있다", _k in _hz, str(sorted(_hz)))
+check("stage2_arms 가 정수다", isinstance(_hz.get("stage2_arms"), int))
+check("stage2_crops 길이 == stage2_arms",
+      len(_hz.get("stage2_crops", [])) == _hz.get("stage2_arms"),
+      f"{_hz.get('stage2_crops')} vs {_hz.get('stage2_arms')}")
+check("헬스체크가 모델을 안 올린다 (describe 가 예외를 안 냄)",
+      "describe_error" not in _hz, _hz.get("describe_error", ""))
+
+# ⚠️ mock 과 real 이 **같은 키**를 내야 합니다 (여섯 번 어긋났습니다).
+_src = inspect.getsource(_A.ScreeningAgent.describe)
+for _k in ("stage2_arms", "stage2_crops", "stage2_experiments", "release_dir"):
+    check(f"ScreeningAgent.describe 도 {_k} 를 낸다", f'"{_k}"' in _src)
+
+print("\n[8] export_release 가 앙상블 팔을 빠뜨리지 않는가")
+# from_release() 는 릴리스의 stage2_* 를 **전부** 훑습니다. export 가 덜 담으면
+# 릴리스를 다시 만드는 순간 팔이 조용히 사라집니다 (커버리지 67.9% → 58.4%).
+_T = importlib.import_module("src.train")
+check("stage2_arms_on_disk 가 있다", hasattr(_T, "stage2_arms_on_disk"))
+_es = inspect.getsource(_T.export_release)
+check("export_release 가 그것을 부른다", "stage2_arms_on_disk" in _es)
+check("끄는 스위치가 있다 (include_stage2_arms)",
+      "include_stage2_arms" in inspect.signature(_T.export_release).parameters)
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 raise SystemExit(1 if fail else 0)
