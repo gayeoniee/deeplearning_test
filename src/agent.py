@@ -194,6 +194,48 @@ def _dist(probs: list[tuple[str, float]]) -> list[dict]:
             for c, p in sorted(probs, key=lambda kv: -kv[1])]
 
 
+def lesion_group(probs: list[tuple[str, float]] | None,
+                 abnormal_p: float | None = None) -> dict | None:
+    """★ **계열** 한 덩어리 — 이름이 아니라 묶음입니다.
+
+    `None` 이면 화면에 아무것도 띄우지 않습니다. 두 경우입니다:
+      · `message.SHOW_GROUP` 이 꺼져 있음 (제품 결정 전 기본값)
+      · 확신이 문턱 아래 — **확신 없으면 말하지 않습니다**
+
+    ⚠️ **이건 "1등 병변" 이 아닙니다.** 6종 중 하나를 고르는 게 아니라
+       네 묶음 중 하나이고, 그 묶음의 확률은 **안에 든 것을 더한 값**입니다.
+       6종 이름(`구진·플라크` 등)은 여기 절대 안 들어갑니다 —
+       `tests/test_agent.py` 가 감시합니다.
+
+    근거: STEP 28~33. holdout 에서 6종 이름은 커버리지 41.1% 인데
+    계열 4군은 **67.9%** 이고, 긴급도 하향 3.7% · A6 오명명 12.5% 로
+    두 안전 관문 안입니다.
+    """
+    from src.config import MORPH_GROUP_KEEP_A6
+    from src.message import GROUP_CONF_MIN, SHOW_GROUP
+
+    if not SHOW_GROUP or not probs:
+        return None
+    tot: dict[str, float] = {}
+    for code, p in probs:
+        g = MORPH_GROUP_KEEP_A6.get(code)
+        if g is None:
+            return None                     # 모르는 코드가 섞이면 말하지 않습니다
+        tot[g] = tot.get(g, 0.0) + float(p)
+    name, p = max(tot.items(), key=lambda kv: kv[1])
+    conf = p * (abnormal_p if abnormal_p is not None else 1.0)
+    if conf < GROUP_CONF_MIN:
+        return None
+    return {"name": name,
+            "prob": round(float(p), 4),
+            "percent": round(float(p) * 100, 1),
+            "confidence": round(float(conf), 4),
+            # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다. 각자 지어 쓰면
+            #    표현이 갈리고, 갈리면 한쪽이 단정적으로 읽힙니다.
+            "text": f"모양만 보면 {name} 계열에 가깝습니다.",
+            "caveat": "진단이 아닙니다. 같은 계열 안에서도 원인 질환은 여럿입니다."}
+
+
 def contract(verdict: str, *, abnormal_p: float | None = None,
              threshold: float | None = None, calibrated: bool = False,
              stage2: list[tuple[str, float]] | None = None,
@@ -243,7 +285,10 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
             "calibrated": bool(calibrated),
         },
         # 병변 6종 분포. verdict != "abnormal" 이면 비어 있습니다.
-        "stage2": {"shown": bool(stage2), "distribution": _dist(stage2 or [])},
+        # ⚠️ `group` 은 **꺼져 있으면 `null`** 입니다 (기본값). 앱·콘솔은
+        #    `null` 이면 아무것도 안 그리면 됩니다 — 필드가 늘어도 안 깨집니다.
+        "stage2": {"shown": bool(stage2), "distribution": _dist(stage2 or []),
+                   "group": lesion_group(stage2, abnormal_p)},
         "text": text,
         "disclaimer": DISCLAIMER,
         "meta": {**(meta or {})},
@@ -257,10 +302,22 @@ class ScreeningAgent:
     """1단계 + 2단계 체크포인트를 물고 사진 한 장을 판정합니다."""
 
     def __init__(self, stage1, stage2, threshold: float,
-                 stage1_tag: str = STAGE1_TAG, stage2_tag: str = STAGE2_TAG):
+                 stage1_tag: str = STAGE1_TAG, stage2_tag: str = STAGE2_TAG,
+                 extra_arms: "list[tuple[Any, str]] | None" = None):
+        """`extra_arms` 는 2단계를 **앙상블**로 돌릴 때의 추가 팔입니다.
+
+        `[(engine, crop_tag), ...]` — 팔마다 **자기 크롭**으로 자릅니다.
+        이득의 정체가 '비례 창 vs 고정 창' 이라 크롭이 달라야 합니다 (STEP 25).
+
+        실측(STEP 33 holdout): 계열 4군 커버리지 58.4% → **67.9%**.
+        값은 전체 파이프라인 **1.36배**(774 → 1052ms, CPU 1장) · 메모리 +0.16GB.
+        """
         # stage2 가 None 이면 **1단계만** 돕니다 (정상/이상까지).
         self.s1, self.s2, self.thr = stage1, stage2, float(threshold)
         self.tag1, self.tag2 = stage1_tag, stage2_tag
+        # 첫 팔이 릴리스입니다. `s2`·`tag2` 는 그대로 두어 기존 호출부가 안 깨집니다.
+        self.arms2: list[tuple[Any, str]] = (
+            [] if stage2 is None else [(stage2, stage2_tag), *(extra_arms or [])])
         from src.stages import ABNORMAL_LABEL
 
         self._ab = ABNORMAL_LABEL
@@ -292,13 +349,22 @@ class ScreeningAgent:
             # 그래서 아래로 훑어서 stage1_…/best.pt 를 찾아 그 부모를 씁니다.
             hit = next((q for q in sorted(root.glob("**/stage1_*/best.pt"))), None)
             ck = hit.parent.parent if hit else root
+        # ★ 2단계가 **여럿이면 앙상블**로 뭅니다 (STEP 25~33).
+        #   릴리스에 `stage2_…` 폴더를 하나만 두면 예전과 똑같이 돕니다 —
+        #   두 개 더 넣으면 자동으로 3팔이 됩니다. 켜고 끄는 스위치가 따로
+        #   없는 게 의도입니다: **릴리스에 넣은 것이 곧 구성**입니다.
+        #   ⚠️ 첫 팔(= 이름 순 첫 번째)이 기준이 되므로, 릴리스 모델이
+        #      `stage2_convnextv2_…` 처럼 앞서도록 이름을 두세요.
         found: dict[str, Path] = {}
+        stage2_all: list[Path] = []
         for d in sorted(ck.iterdir() if ck.is_dir() else []):
             if not (d / "best.pt").exists():
                 continue
-            for st in ("stage1", "stage2"):
-                if d.name.startswith(st + "_"):
-                    found[st] = d / "best.pt"
+            if d.name.startswith("stage1_"):
+                found["stage1"] = d / "best.pt"
+            elif d.name.startswith("stage2_"):
+                stage2_all.append(d / "best.pt")
+                found.setdefault("stage2", d / "best.pt")
         if "stage1" not in found:
             # 못 찾았을 때 **뭐가 있는지 보여줍니다.** "못 찾았습니다" 만 던지면
             # 폴더를 잘못 준 건지 다운로드가 덜 된 건지 알 수가 없습니다.
@@ -321,13 +387,18 @@ class ScreeningAgent:
             if c.exists():
                 thr = json.loads(c.read_text(encoding="utf-8"))["threshold"]
                 break
+        if len(stage2_all) > 1:
+            print(f"[agent] 2단계 앙상블 {len(stage2_all)}팔: "
+                  + ", ".join(p.parent.name for p in stage2_all))
         return cls.load(found["stage1"], found.get("stage2"), thr, device,
-                        stage1_only=stage1_only)
+                        stage1_only=stage1_only,
+                        ckpt2_extra=stage2_all[1:])
 
     @classmethod
     def load(cls, ckpt1: str | Path, ckpt2: str | Path | None = None,
              threshold: float | None = None, device: str | None = None,
-             stage1_only: bool = False) -> "ScreeningAgent":
+             stage1_only: bool = False,
+             ckpt2_extra: "list[str | Path] | None" = None) -> "ScreeningAgent":
         """체크포인트 두 개로 에이전트를 세웁니다.
 
         threshold 를 안 주면 1단계 체크포인트 옆의 `stage1_threshold.json` 을 찾습니다
@@ -358,10 +429,16 @@ class ScreeningAgent:
             # 멘토 피드백대로 이름은 어차피 안 말하므로 이것만으로도 제품이 됩니다.
             return cls(Engine.load(ckpt1, device=device), None, threshold,
                        crop_tag_from_exp(Path(ckpt1).parent.name) or STAGE1_TAG)
+        # ★ 추가 팔도 **폴더 이름에서** 크롭 태그를 읽습니다 — ckpt2 와 같은 규칙.
+        #   팔마다 크롭이 달라야 앙상블이 값을 합니다 (STEP 25: 비례 창 vs 고정 창).
+        extra = [(Engine.load(c, device=device),
+                  crop_tag_from_exp(Path(c).parent.name) or STAGE2_TAG)
+                 for c in (ckpt2_extra or [])]
         return cls(Engine.load(ckpt1, device=device),
                    Engine.load(ckpt2, device=device), threshold,
                    crop_tag_from_exp(Path(ckpt1).parent.name) or STAGE1_TAG,
-                   crop_tag_from_exp(Path(ckpt2).parent.name) or STAGE2_TAG)
+                   crop_tag_from_exp(Path(ckpt2).parent.name) or STAGE2_TAG,
+                   extra_arms=extra)
 
     # -------------------------------------------------------
     def screen(self, image: "str | Path | Any", box=None) -> dict:
@@ -427,10 +504,23 @@ class ScreeningAgent:
                                 calibrated=cal1,
                                 text=compose_screening_message(pred, abnormal), meta=meta)
 
-            p2 = Path(td) / "s2.jpg"
-            crop_for(im, bbox, self.tag2).save(p2, quality=95)
-            pred = self.s2.predict(str(p2))
+            # ★ 팔마다 **자기 크롭**으로 자르고 확률을 평균합니다.
+            #   팔이 하나면 예전과 똑같이 돕니다 (평균할 게 없으니).
+            sums: dict[str, float] = {}
+            for k, (eng, tag) in enumerate(self.arms2):
+                pk = Path(td) / f"s2_{k}.jpg"
+                crop_for(im, bbox, tag).save(pk, quality=95)
+                pr = eng.predict(str(pk))
+                if k == 0:
+                    pred = pr                        # 기권·문구는 첫 팔 기준
+                for c, p in pr.topk:
+                    sums[c] = sums.get(c, 0.0) + float(p)
+            n_arms = max(len(self.arms2), 1)
+            pred.topk = sorted(((c, s / n_arms) for c, s in sums.items()),
+                               key=lambda kv: -kv[1])
 
+        meta["stage2_arms"] = len(self.arms2)
+        meta["stage2_crops"] = [t for _, t in self.arms2]
         raw = list(pred.topk)                       # 깎기 전 원본 (합 = 1)
         pred.stage2_probs = raw
         pred.stage1_abnormal = abnormal
@@ -564,6 +654,10 @@ class MockAgent:
         pred.stage2_probs = raw
         from src.config import CFG as _CFG
 
+        # 진짜와 **같은 키**를 냅니다 (test_serve_contract [6] 이 감시).
+        # mock 은 팔이 하나뿐이라 릴리스 구성과 같은 값을 냅니다.
+        meta["stage2_arms"] = 1
+        meta["stage2_crops"] = [self.tag2]
         meta.update(stage2_meta(pred, raw, _CFG().abstain_threshold))
         return contract("abnormal", abnormal_p=abnormal, threshold=self.thr,
                         stage2=raw, text=compose_screening_message(pred), meta=meta)

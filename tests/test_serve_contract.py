@@ -178,6 +178,39 @@ else:
     hit = sorted(k for k in rk if k.rsplit(".", 1)[-1].rstrip("[]") in BANNED)
     check("진짜 응답에도 금지 필드가 없다", not hit, str(hit))
 
+print("\n[7] ★ 계열(`stage2.group`) — 기본은 null, 켜도 이름이 안 샌다")
+import src.message as _M                                        # noqa: E402
+from src.agent import lesion_group                              # noqa: E402
+from src.config import CLASS_KO, CLASSES                        # noqa: E402
+
+_PEAK = [("A1", .45), ("A4", .30), ("A2", .10), ("A3", .06), ("A5", .05), ("A6", .04)]
+_FLAT = [("A1", .2), ("A2", .2), ("A3", .2), ("A4", .2), ("A5", .1), ("A6", .1)]
+
+_r = [j for _, j in [call(mock_app, s, GOOD) for s in range(6)]]
+check("계약에 stage2.group 이 있다 (꺼져 있어도 키는 있어야 함)",
+      all("group" in x["stage2"] for x in _r))
+check("기본값에서는 group 이 null",
+      all(x["stage2"]["group"] is None for x in _r) if not _M.SHOW_GROUP else True)
+
+_was = _M.SHOW_GROUP
+_M.SHOW_GROUP = True
+try:
+    g = lesion_group(_PEAK, 0.90)
+    check("켜고 확신이 높으면 group 이 온다", g is not None)
+    check("확신이 낮으면 **null** — 말하지 않는다", lesion_group(_FLAT, 0.60) is None)
+    check("1단계가 애매하면 **null**", lesion_group(_PEAK, 0.55) is None)
+    if g:
+        blob = json.dumps(g, ensure_ascii=False)
+        leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in blob]
+        check("★ 6종 이름이 group 에 안 들어간다", not leaked, str(leaked))
+        check("계열 이름만 쓴다",
+              g["name"] in ("융기·발진", "표면 변화", "미란·궤양", "결절·종괴"))
+        check("진단이 아니라고 같이 보낸다", "진단이 아닙니다" in g["caveat"])
+        check("문장을 서버가 준다 (앱·콘솔이 지어 쓰지 않게)", bool(g["text"]))
+        check("★ group 에도 금지 필드가 없다", not any(k in g for k in BANNED))
+finally:
+    _M.SHOW_GROUP = _was
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 raise SystemExit(1 if fail else 0)

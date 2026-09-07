@@ -282,7 +282,8 @@ check("표본이 없으면 그렇게 말함", "쓸 수 있는 표본이 없습�
 
 # ── 9. release 폴더 자동 탐색 + 1단계만 구성 ────────────────
 print("\n[9] 가중치 붙이기")
-import json as _json                                             # noqa: E402
+import json as _json
+import shutil as _sh                                             # noqa: E402
 import tempfile                                                  # noqa: E402
 
 with tempfile.TemporaryDirectory() as td:
@@ -296,14 +297,34 @@ with tempfile.TemporaryDirectory() as td:
     seen: dict = {}
     real = agent.ScreeningAgent.load
     agent.ScreeningAgent.load = classmethod(
-        lambda cls, c1, c2=None, thr=None, dev=None, stage1_only=False:
+        lambda cls, c1, c2=None, thr=None, dev=None, stage1_only=False,
+        ckpt2_extra=None:
         seen.update(c1=Path(c1).parent.name, c2=(Path(c2).parent.name if c2 else None),
-                    thr=thr, only=stage1_only))
+                    thr=thr, only=stage1_only,
+                    extra=[Path(x).parent.name for x in (ckpt2_extra or [])]))
     try:
         agent.ScreeningAgent.from_release(rel)
         check("release 에서 1단계를 이름으로 찾음", seen["c1"].startswith("stage1_"), str(seen))
         check("release 에서 2단계를 이름으로 찾음", seen["c2"].startswith("stage2_"), str(seen))
         check("stage1_threshold.json 을 같이 읽음", seen["thr"] == 0.1823, str(seen["thr"]))
+        check("2단계가 하나뿐이면 앙상블 팔이 없다", seen["extra"] == [], str(seen["extra"]))
+
+        # ★ 2단계 폴더가 여럿이면 **자동으로 앙상블** (STEP 25~33).
+        #   켜고 끄는 스위치가 따로 없는 게 의도입니다 — 릴리스에 넣은 것이 곧 구성.
+        for extra_name in ("stage2_effnetv2_s_m2.5_384_moderate",
+                           "stage2_effnetv2_s_f320_384_moderate"):
+            d = rel / "checkpoints" / extra_name
+            d.mkdir(parents=True); (d / "best.pt").touch()
+        seen.clear()
+        agent.ScreeningAgent.from_release(rel)
+        check("2단계가 여럿이면 앙상블 팔로 넘긴다", len(seen["extra"]) == 2, str(seen))
+        check("첫 팔(기준)은 이름 순 첫 번째", seen["c2"].startswith("stage2_convnextv2"),
+              str(seen["c2"]))
+        check("추가 팔이 첫 팔과 겹치지 않는다", seen["c2"] not in seen["extra"],
+              str(seen))
+        for _d in ("stage2_effnetv2_s_m2.5_384_moderate",
+                   "stage2_effnetv2_s_f320_384_moderate"):
+            _sh.rmtree(rel / "checkpoints" / _d)
 
         seen.clear()
         agent.ScreeningAgent.from_release(rel, stage1_only=True)
