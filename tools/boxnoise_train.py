@@ -168,14 +168,21 @@ def main() -> None:
         wx = lo_x + (hi_x - lo_x) * u[1]
         wy = lo_y + (hi_y - lo_y) * u[2]
         im = full.crop((int(wx), int(wy), int(wx + side0), int(wy + side0)))
+        # ⚠️ **원본을 닫습니다.** 1920×1080 을 장마다 열고 안 닫으면 쌓여서
+        #    시스템 메모리가 터집니다 — 실제로 학습이 두 번 죽었습니다.
+        full.close()
         if im.size[0] != 1080:
-            im = im.resize((1080, 1080))
+            im2 = im.resize((1080, 1080))
+            im.close()
+            im = im2
         W = im.size[0]
         s = W / side0
         b = [(b0[0] - wx) * s, (b0[1] - wy) * s, (b0[2] - wx) * s, (b0[3] - wy) * s]
         if noisy == "none":
             # ★ 네모를 **안 씁니다** — 사진 전체. 앱이 가이드를 뺄 수 있나?
-            return tf(im), CLASSES.index(row["label"])
+            out = tf(im), CLASSES.index(row["label"])
+            im.close()
+            return out
         if noisy:
             # ★ 병변 크기와 **무관하게** — 실측 그대로입니다
             side = (box_lo + (box_hi - box_lo) * random.random()) * W
@@ -185,8 +192,13 @@ def main() -> None:
         win = crop.crop_window({"bbox": list(b), "img_w": W, "img_h": W},
                                tag="m2.5", cfg=cfg)
         if win is None:
+            im.close()
             return None
-        return tf(im.crop(tuple(int(v) for v in win))), CLASSES.index(row["label"])
+        piece = im.crop(tuple(int(v) for v in win))
+        im.close()
+        out = tf(piece), CLASSES.index(row["label"])
+        piece.close()
+        return out
 
     def batches(rows, noisy, bs: int, shuffle: bool):
         """`noisy` 가 bool 이면 전부/전무, 실수면 **장마다 그 확률로** 잡음."""
@@ -267,7 +279,7 @@ def main() -> None:
                 scaler.scale(loss).backward()
                 scaler.step(opt)
                 scaler.update()
-                tot += float(loss)
+                tot += float(loss.detach())
                 k += 1
                 if k % 150 == 0:
                     print(f"   {tag} ep{ep+1} {k}배치 loss {tot/k:.4f} "
