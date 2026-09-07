@@ -102,6 +102,43 @@ try:
 except ValueError:
     check("길이 불일치를 잡는다", True)
 
+print("\n[7] ★ 클래스별 하향이 사라지지 않는가 (STEP 35)")
+# 전체 평균은 분모가 커서 **한 클래스가 나빠도 묻힙니다.**
+# 실측(holdout, 계열 4군 3팔): 전체 3.7% 로 관문을 통과하는데
+# 미란·궤양 하나만 보면 **43.8%** 였습니다. 관문이 이걸 못 봤습니다.
+# → over_triage 와 같은 처방입니다: **관문으로 안 쓰되 값을 찍습니다.**
+_rng = np.random.default_rng(0)
+_n = 1000
+_wrong = _rng.random(_n) < 0.15
+_conf = np.where(_wrong, _rng.random(_n) * 0.5, 0.5 + _rng.random(_n) * 0.5)
+_tt, _ts = np.ones(_n, int), np.ones(_n, int)
+_cls = np.where(np.arange(_n) % 5 == 0, "미란·궤양", "표면 변화")
+_tt[(_cls == "미란·궤양") & (np.arange(_n) % 2 == 0)] = 2   # A5 절반만 하향
+_r = E.granularity_report("클래스별 시험", {
+    "conf": _conf, "wrong": _wrong, "tier_true": _tt, "tier_said": _ts,
+    "true_class": _cls})
+
+check("보고에 under_by_class 가 있다", "under_by_class" in _r)
+check("보고에 under_worst 가 있다", "under_worst" in _r)
+check("★ 한 클래스가 나쁜 것을 잡아낸다 (최악이 전체의 3배 넘음)",
+      _r["under_worst"] > _r["under_triage"] * 3,
+      f"전체 {_r['under_triage']:.1%} / 최악 {_r['under_worst']:.1%}")
+check("최악 클래스 이름을 짚는다", _r["under_worst_class"] == "미란·궤양",
+      str(_r["under_worst_class"]))
+check("전체 평균만 보면 통과해 보인다 (이게 구멍이었습니다)",
+      _r["under_triage"] <= E.UNDER_TRIAGE_MAX * 3,
+      f"{_r['under_triage']:.1%}")
+
+_r2 = E.granularity_report("클래스 없이", {
+    "conf": _conf, "wrong": _wrong, "tier_true": _tt, "tier_said": _ts})
+check("true_class 가 없으면 조용히 빈 dict (기존 호출자 보호)",
+      _r2["under_by_class"] == {} and _r2["under_worst"] is None)
+
+check("★ 문턱을 안 건 것이 **의도**라고 코드에 남아 있다",
+      E.UNDER_TRIAGE_PER_CLASS_GATE is None)
+check("찍기만 하는 최소 표본이 상수로 있다",
+      isinstance(E.UNDER_TRIAGE_PER_CLASS_MIN_N, int))
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 raise SystemExit(1 if fail else 0)

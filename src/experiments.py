@@ -1592,6 +1592,45 @@ A6 부분 하향은 3.7% 입니다 (STEP 33).
 안 말하면 이 값은 정의상 0 이니까요. 닻은 "얼마나 나쁜 것까지" 에 답할 뿐
 "나쁜 걸 받아들일까" 에는 답하지 않습니다 — 그건 사람 몫입니다."""
 
+UNDER_TRIAGE_PER_CLASS_MIN_N = 30
+"""클래스별 하향을 **찍기만** 하는 최소 표본. 관문이 아닙니다 — 아래 참고."""
+
+#: ⚠️ **일부러 문턱을 안 겁니다 (STEP 35).**
+#:
+#: `UNDER_TRIAGE_MAX` 는 전체 평균이라 **한 클래스가 나빠도 안 보입니다.**
+#: 실측(holdout, 계열 4군 3팔): 전체 하향 **3.7%** 로 관문을 통과하는데
+#: **미란·궤양(A5) 하나만 보면 43.8%** 입니다. 관문이 이걸 못 봤습니다.
+#:
+#: 그런데 여기에 숫자를 박을 **닻이 없습니다.** 전체 관문의 5% 는
+#: `STAGE1_MISS_RATE`(1단계가 이미 받아들이는 하향)에서 나왔는데, 클래스별로는
+#: 분모가 다릅니다 — 1단계의 "A5 를 6% 놓친다" 는 **A5 전체** 기준이고
+#: 43.8% 는 **말한 A5** 기준입니다. 둘을 비교하면 안 됩니다.
+#:
+#: 결과를 보고 문턱을 고르면 무슨 숫자가 나와도 성공담이 되므로(작업 규칙 2),
+#: **`over_triage` 와 같은 처방**을 씁니다 — 관문으로 쓰지 않고 **찍습니다.**
+#: `tests/test_granularity_gates.py` 가 이 값이 사라지지 않게 지킵니다.
+UNDER_TRIAGE_PER_CLASS_GATE = None
+
+ARM_SAME_COVERAGE_TOL = 0.02
+"""★ **같은 커버리지로 맞춰 재봤을 때** 두 설정의 차이를 '같다' 로 볼 폭.
+
+STEP 34 가 A6 경보를 푼 방법이고 STEP 35 가 A5 에 다시 쓴 방법입니다.
+**비율은 분모가 바뀌면 같이 바뀝니다** — 말을 더 하기로 하면 한계 표본이
+섞여 들어와 비율이 나빠 보입니다. 그걸 모델 탓으로 읽으면 안 됩니다.
+
+실측(STEP 35, holdout): 앙상블 A5 하향이 릴리스 단독 37.4% 대비 43.8% 라
+나빠 보였는데, **같은 장수(20,121)만 말하게 자르니 38.0%** 였습니다.
+차이 +0.6%p 로 이 폭 안 → 모델이 아니라 **선택 효과**입니다."""
+
+A5_RULE_UNDER_GAIN_MIN = 0.05
+A5_RULE_COVERAGE_LOSS_MAX = 0.03
+"""하향 방지 규칙의 채택 기준 (STEP 35, **돌리기 전에** 박음).
+
+    A5 하향이 5%p 이상 줄고  AND  전체 커버리지 손실이 3%p 이하
+
+⚠️ 문턱은 **val 에서 고르고 holdout 은 확인만** 합니다. holdout 에서 고르면
+그건 판정이 아니라 맞춤입니다."""
+
 GRANULARITY_MIN_COVERAGE = NAMING_MIN_COVERAGE
 """알갱이를 굵게 해서 얻은 커버리지에도 **같은 문턱**을 씁니다 (50%).
 굵게 말한다고 문턱을 낮추면 무슨 묶음이든 통과합니다."""
@@ -1606,6 +1645,11 @@ def granularity_report(name: str, rows: dict, *, target=NAMING_TARGET_ERROR) -> 
         wrong       그 알갱이 기준으로 틀렸는가 (정상 사진은 항상 True)
         tier_true   실제 긴급도 등급 (정상 사진은 -1 — 하향이 성립 안 함)
         tier_said   우리가 말한 것의 긴급도 등급
+
+    선택:
+
+        true_class  실제 클래스/묶음 이름 — 주면 **클래스별 하향**을 같이 찍습니다
+                    (STEP 35: 전체 3.7% 가 통과하는데 A5 하나가 43.8% 였습니다)
     """
     import numpy as np
 
@@ -1635,13 +1679,36 @@ def granularity_report(name: str, rows: dict, *, target=NAMING_TARGET_ERROR) -> 
     #   ⚠️ 이 값을 안 찍던 동안 권고안(4군)의 과잉이 **49.3%** 인 걸 몰랐습니다.
     over = float((tt[spoken][real] < ts[spoken][real]).mean()) if real.any() else 0.0
 
+    # ★ 클래스별 하향 (STEP 35). **관문이 아니라 찍기만** 합니다 —
+    #   `UNDER_TRIAGE_PER_CLASS_GATE` 주석에 왜 문턱을 안 거는지 적어뒀습니다.
+    #   ⚠️ 전체 평균은 분모가 커서 한 클래스가 나빠도 묻힙니다.
+    by_cls: dict[str, float] = {}
+    worst: tuple[str, float] | None = None
+    if rows.get("true_class") is not None:
+        tc = np.asarray(rows["true_class"])
+        if len(tc) != n:
+            raise ValueError("true_class 길이가 다릅니다")
+        for c in sorted(set(tc[spoken][real].tolist())):
+            m = spoken[real][tc[spoken][real] == c]
+            sel = (tc[spoken] == c) & real
+            if int(sel.sum()) < UNDER_TRIAGE_PER_CLASS_MIN_N:
+                continue
+            v = float((tt[spoken][sel] > ts[spoken][sel]).mean())
+            by_cls[str(c)] = v
+            if worst is None or v > worst[1]:
+                worst = (str(c), v)
+
     passed = cov >= GRANULARITY_MIN_COVERAGE and under <= UNDER_TRIAGE_MAX
     verdict = ("논의할 가치 있음" if passed else
                f"기각 (커버리지 {cov:.1%}" +
                (f" · 긴급도 하향 {under:.1%}" if under > UNDER_TRIAGE_MAX else "") + ")")
 
+    tail = f"   최악 {worst[0]} {worst[1]:.1%}" if worst else ""
     print(f"  {name:22} 커버리지 {cov:>6.1%}   하향 {under:>6.1%}"
-          f"   과잉 {over:>6.1%}   {'통과' if passed else '기각'}")
+          f"   과잉 {over:>6.1%}{tail}   {'통과' if passed else '기각'}")
     return {"granularity": name, "coverage": cov, "n_spoken": k,
             "under_triage": under, "over_triage": over, "verdict": verdict,
+            "under_by_class": by_cls,
+            "under_worst_class": worst[0] if worst else None,
+            "under_worst": worst[1] if worst else None,
             "threshold": float(conf[order][k - 1]) if k else float("inf")}
