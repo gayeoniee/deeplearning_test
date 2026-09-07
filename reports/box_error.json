@@ -1,6 +1,6 @@
 [
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\000.jpg",
+  "path": "reports/_box_error_raw/000.jpg",
   "truth": [
    0.3451655380970027,
    0.4360200267129279,
@@ -18,7 +18,7 @@
   "shift_frac": 0.507964905857162
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\001.jpg",
+  "path": "reports/_box_error_raw/001.jpg",
   "truth": [
    0.47370277467756405,
    0.23553449353151718,
@@ -36,7 +36,7 @@
   "shift_frac": 3.8462694581848678
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\001.jpg",
+  "path": "reports/_box_error_raw/001.jpg",
   "truth": [
    0.47370277467756405,
    0.23553449353151718,
@@ -46,7 +46,7 @@
   "user": null
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\002.jpg",
+  "path": "reports/_box_error_raw/002.jpg",
   "truth": [
    0.3948558769626308,
    0.3672811006977698,
@@ -64,7 +64,7 @@
   "shift_frac": 0.0440685694278996
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\003.jpg",
+  "path": "reports/_box_error_raw/003.jpg",
   "truth": [
    0.6647779610797468,
    0.4212962962962963,
@@ -82,7 +82,7 @@
   "shift_frac": 0.11339209959861678
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\004.jpg",
+  "path": "reports/_box_error_raw/004.jpg",
   "truth": [
    0.15268094639299315,
    0.2707960070885721,
@@ -100,7 +100,7 @@
   "shift_frac": 0.3566406307159489
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\005.jpg",
+  "path": "reports/_box_error_raw/005.jpg",
   "truth": [
    0.009282503787303583,
    0.23148148148148148,
@@ -118,7 +118,7 @@
   "shift_frac": 0.44303347433169427
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\006.jpg",
+  "path": "reports/_box_error_raw/006.jpg",
   "truth": [
    0.3580072313612059,
    0.7424583286577319,
@@ -136,7 +136,7 @@
   "shift_frac": 0.6554106721000319
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\007.jpg",
+  "path": "reports/_box_error_raw/007.jpg",
   "truth": [
    0.27685766411844115,
    0.3388888888888889,
@@ -154,7 +154,7 @@
   "shift_frac": 0.0817578437455763
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\008.jpg",
+  "path": "reports/_box_error_raw/008.jpg",
   "truth": [
    0.6980441415832814,
    0.8969552781361574,
@@ -172,7 +172,7 @@
   "shift_frac": 1.2763350122895947
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\009.jpg",
+  "path": "reports/_box_error_raw/009.jpg",
   "truth": [
    0.4394069616433348,
    0.5009103399056387,
@@ -190,7 +190,7 @@
   "shift_frac": 0.30521812362777284
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\010.jpg",
+  "path": "reports/_box_error_raw/010.jpg",
   "truth": [
    0.2847348624180848,
    0.4394831972745285,
@@ -208,7 +208,7 @@
   "shift_frac": 0.2746121349348604
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\011.jpg",
+  "path": "reports/_box_error_raw/011.jpg",
   "truth": [
    0.260839860041685,
    0.1259259259259259,
@@ -226,7 +226,7 @@
   "shift_frac": 0.12946260740807397
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\012.jpg",
+  "path": "reports/_box_error_raw/012.jpg",
   "truth": [
    0.0025012413718177077,
    0.19722222222222222,
@@ -244,7 +244,7 @@
   "shift_frac": 0.45395214826517694
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\013.jpg",
+  "path": "reports/_box_error_raw/013.jpg",
   "truth": [
    0.5547826259606217,
    0.6827036337636158,
@@ -262,7 +262,7 @@
   "shift_frac": 0.23835998258131416
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\014.jpg",
+  "path": "reports/_box_error_raw/014.jpg",
   "truth": [
    0.801932231629564,
    0.20401119915424887,
@@ -280,7 +280,7 @@
   "shift_frac": 0.5271113444946803
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\015.jpg",
+  "path": "reports/_box_error_raw/015.jpg",
   "truth": [
    0.13709911112047518,
    0.43563428295907136,
@@ -298,7 +298,7 @@
   "shift_frac": 0.19485715573286955
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\016.jpg",
+  "path": "reports/_box_error_raw/016.jpg",
   "truth": [
    0.12151597207985153,
    0.8392972413791588,
@@ -316,7 +316,7 @@
   "shift_frac": 1.119406979481407
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\017.jpg",
+  "path": "reports/_box_error_raw/017.jpg",
   "truth": [
    0.07127571150189824,
    0.7257353819299337,
@@ -334,7 +334,7 @@
   "shift_frac": 0.6762262378440901
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\018.jpg",
+  "path": "reports/_box_error_raw/018.jpg",
   "truth": [
    0.5149542925498151,
    0.5435185185185185,
@@ -352,7 +352,7 @@
   "shift_frac": 0.2810968714859697
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\019.jpg",
+  "path": "reports/_box_error_raw/019.jpg",
   "truth": [
    0.1558627290793939,
    0.38333333333333336,
@@ -370,7 +370,7 @@
   "shift_frac": 0.0457113374980007
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\020.jpg",
+  "path": "reports/_box_error_raw/020.jpg",
   "truth": [
    0.6145774032191672,
    0.34238760337707486,
@@ -388,7 +388,7 @@
   "shift_frac": 1.4931630449005648
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\021.jpg",
+  "path": "reports/_box_error_raw/021.jpg",
   "truth": [
    0.03675034669085205,
    0.1648148148148148,
@@ -406,7 +406,7 @@
   "shift_frac": 0.05787491751791199
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\022.jpg",
+  "path": "reports/_box_error_raw/022.jpg",
   "truth": [
    0.689586252296918,
    0.12437613492985694,
@@ -424,7 +424,7 @@
   "shift_frac": 0.2593587757307607
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\023.jpg",
+  "path": "reports/_box_error_raw/023.jpg",
   "truth": [
    0.3856167510909046,
    0.2705315703901249,
@@ -442,7 +442,7 @@
   "shift_frac": 0.2403752589050521
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\024.jpg",
+  "path": "reports/_box_error_raw/024.jpg",
   "truth": [
    0.12245487397190277,
    0.7222983552993882,
@@ -460,7 +460,7 @@
   "shift_frac": 0.5376460974591648
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\025.jpg",
+  "path": "reports/_box_error_raw/025.jpg",
   "truth": [
    0.7436057770699145,
    0.2365247896243781,
@@ -478,7 +478,7 @@
   "shift_frac": 0.834633457979694
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\026.jpg",
+  "path": "reports/_box_error_raw/026.jpg",
   "truth": [
    0.5687636884282394,
    0.021861181860572367,
@@ -496,7 +496,7 @@
   "shift_frac": 0.4220160866217667
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\027.jpg",
+  "path": "reports/_box_error_raw/027.jpg",
   "truth": [
    0.5817520096323615,
    0.5194444444444445,
@@ -514,7 +514,7 @@
   "shift_frac": 0.07529081874018877
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\028.jpg",
+  "path": "reports/_box_error_raw/028.jpg",
   "truth": [
    0.5451528266351512,
    0.13500474738115084,
@@ -532,7 +532,7 @@
   "shift_frac": 1.3353784873474395
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\029.jpg",
+  "path": "reports/_box_error_raw/029.jpg",
   "truth": [
    0.6589086788163248,
    0.653642902134447,
@@ -550,7 +550,7 @@
   "shift_frac": 0.4459325444429877
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\030.jpg",
+  "path": "reports/_box_error_raw/030.jpg",
   "truth": [
    0.5486683385105737,
    0.5634165711811309,
@@ -568,7 +568,7 @@
   "shift_frac": 0.26285875466421244
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\031.jpg",
+  "path": "reports/_box_error_raw/031.jpg",
   "truth": [
    0.3355192924702883,
    0.5367351558475072,
@@ -586,7 +586,7 @@
   "shift_frac": 0.667340275926105
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\032.jpg",
+  "path": "reports/_box_error_raw/032.jpg",
   "truth": [
    0.30164664429646987,
    0.48181548788096723,
@@ -604,7 +604,7 @@
   "shift_frac": 0.4636641372600616
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\033.jpg",
+  "path": "reports/_box_error_raw/033.jpg",
   "truth": [
    0.026327709359388298,
    0.4069562155707653,
@@ -622,7 +622,7 @@
   "shift_frac": 0.39012587714845204
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\034.jpg",
+  "path": "reports/_box_error_raw/034.jpg",
   "truth": [
    0.08774701468557608,
    0.6972222222222222,
@@ -640,7 +640,7 @@
   "shift_frac": 0.45987316785170296
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\035.jpg",
+  "path": "reports/_box_error_raw/035.jpg",
   "truth": [
    0.07173474409505497,
    0.14993381242383114,
@@ -658,7 +658,7 @@
   "shift_frac": 0.2728332087977207
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\036.jpg",
+  "path": "reports/_box_error_raw/036.jpg",
   "truth": [
    0.36410368585127323,
    0.5833333333333334,
@@ -676,7 +676,7 @@
   "shift_frac": 0.10399279167069887
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\037.jpg",
+  "path": "reports/_box_error_raw/037.jpg",
   "truth": [
    0.03791752897363428,
    0.08835768430019056,
@@ -694,7 +694,7 @@
   "shift_frac": 0.1985442628505718
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\038.jpg",
+  "path": "reports/_box_error_raw/038.jpg",
   "truth": [
    0.509840821396391,
    0.8494853020394764,
@@ -712,7 +712,7 @@
   "shift_frac": 0.7232249820289909
  },
  {
-  "path": "C:\\Users\\403\\deeplearning_test\\reports\\_box_error_raw\\039.jpg",
+  "path": "reports/_box_error_raw/039.jpg",
   "truth": [
    0.03187620896499557,
    0.4775821562594358,

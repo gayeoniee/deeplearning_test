@@ -76,3 +76,8 @@ Thumbs.db
 # 문서 이미지는 예외적으로 허용 (병변 사진 아님, 도식만)
 !docs/assets/*.png
 !docs/assets/*.svg
+
+# 측정 도구의 중간 산출물 (STEP 36~39)
+#   ⚠️ `_box_error_raw/` 에는 AI Hub 원본에서 꺼낸 사진이 들어갑니다 —
+#      *.jpg 규칙이 이미 막지만, 폴더째 무시해 실수를 한 겹 더 막습니다.
+reports/_*
