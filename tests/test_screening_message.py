@@ -133,6 +133,59 @@ check("to_dict 에 stage2_probs 원본이 남음",
       d["stage2_probs"][0]["prob"] == 0.31, str(d["stage2_probs"][0]))
 check("to_dict 에 stage1_abnormal 이 남음", d["stage1_abnormal"] == 0.62)
 
+
+
+# ──────────────────────────────────────────────────────────────
+# ★ 계열 한 줄 (STEP 34) — 기본 꺼짐, 켜도 규칙을 깨지 않는가
+# ──────────────────────────────────────────────────────────────
+print("\n[계열] SHOW_GROUP — 기본은 꺼져 있어야 합니다")
+import os as _os                                                  # noqa: E402
+
+import src.message as _M                                          # noqa: E402
+from src.message import Prediction, compose_screening_message      # noqa: E402
+
+_DIST = [("A1", .45), ("A4", .30), ("A2", .10), ("A3", .06), ("A5", .05), ("A6", .04)]
+_FLAT = [("A1", .2), ("A2", .2), ("A3", .2), ("A4", .2), ("A5", .1), ("A6", .1)]
+
+check("환경변수가 없으면 꺼져 있다",
+      _M.SHOW_GROUP is False or _os.environ.get("DOG_SKIN_SHOW_GROUP") == "1")
+check("꺼져 있으면 빈 문자열", _M.lesion_group_line(_DIST, 0.9) == ""
+      if not _M.SHOW_GROUP else True)
+
+_was = _M.SHOW_GROUP
+_M.SHOW_GROUP = True
+try:
+    line = _M.lesion_group_line(_DIST, 0.9)
+    check("켜면 계열 한 줄이 나온다", bool(line), repr(line))
+    check("확신이 낮으면 **아무 말도 안 한다**",
+          _M.lesion_group_line(_FLAT, 0.5) == "",
+          repr(_M.lesion_group_line(_FLAT, 0.5)))
+
+    # ★ 켜도 6종 이름은 절대 안 나가야 합니다
+    from src.config import CLASS_KO, CLASSES                       # noqa: E402
+    leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in line]
+    check("★ 6종 이름이 안 새어 나간다", not leaked, str(leaked))
+    check("계열 이름만 쓴다",
+          any(g in line for g in ("융기·발진", "표면 변화", "미란·궤양", "결절·종괴")))
+    check("진단이 아니라고 밝힌다", "진단이 아닙니다" in line)
+
+    # 전체 문구에 얹었을 때도 규칙이 유지되는가
+    p = Prediction(topk=[(c, v * .9) for c, v in _DIST],
+                   confidence_band="보통", stage1_abnormal=.9)
+    p.stage2_probs = _DIST
+    msg = compose_screening_message(p)
+    check("전체 문구에 계열 줄이 들어간다", "계열에 가깝습니다" in msg)
+    check("★ 전체 문구에도 긴급도 문구가 안 붙는다",
+          not any(h in msg for h in ("종양 감별 필요", "감염 동반 가능",
+                                     "만성 경과 가능", "피부 장벽 손상")),
+          "계열과 긴급도를 같이 띄우면 절반이 한 단계 부풀려집니다 (STEP 30·33)")
+    check("여섯 개 분포는 그대로 다 나온다",
+          all(CLASS_KO[c] in msg for c in CLASSES))
+    check("진료 권고가 그대로 있다", "수의사 진료를 받아보시기를 권합니다" in msg)
+finally:
+    _M.SHOW_GROUP = _was
+
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

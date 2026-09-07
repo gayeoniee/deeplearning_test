@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 from src.config import CLASS_EN, CLASS_KO, NORMAL_LABEL, URGENCY_HINT
@@ -130,6 +131,55 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     return "\n".join(L)
 
 
+#: ★ **계열 한 줄을 화면에 띄울 것인가** — 기본 **꺼짐**.
+#:
+#: STEP 28~33 이 실측했습니다. 6종 이름은 holdout 커버리지 41.1% 로 못 쓰는데,
+#: **계열 4군은 67.9%** 입니다 (긴급도 하향 3.7% · A6 오명명 12.5%, 둘 다 관문 안).
+#: 즉 *"이름은 못 말해도 계열은 말할 수 있다"* 가 실측으로 확인됐습니다.
+#:
+#: **그런데 켤지는 모델 판정이 아니라 제품 결정입니다.** 그래서 코드는 준비하되
+#: 기본은 꺼둡니다. 켜려면 이 값을 True 로 두거나 환경변수 `DOG_SKIN_SHOW_GROUP=1`.
+#:
+#: ⚠️ **켤 때 같이 지켜야 할 것 둘**
+#:   ① **긴급도를 같이 띄우지 마세요.** 계열 묶음은 긴급도를 높은 쪽으로 잡아서
+#:      말한 것의 **절반이 한 단계 부풀려집니다** (과잉 52.4%, STEP 30·33).
+#:   ② 여전히 **1등 병변 이름은 안 나갑니다.** 계열은 이름이 아니라 묶음입니다.
+SHOW_GROUP = os.environ.get("DOG_SKIN_SHOW_GROUP", "") == "1"
+
+#: 계열 한 줄을 말할 확신도 문턱. holdout 에서 오답률 20% 를 지키는 지점입니다
+#: (`experiments.NAMING_TARGET_ERROR`, STEP 33 의 계열 4군 문턱 0.469).
+#: ⚠️ 이 값은 **1단계 확률을 곱한** 뒤의 값과 비교합니다 — `p1 × p(계열)`.
+GROUP_CONF_MIN = 0.469
+
+
+def lesion_group_line(dist: list[tuple[str, float]],
+                      abnormal_p: float | None = None) -> str:
+    """★ 계열 한 줄. **확신 있을 때만** 말하고, 아니면 빈 문자열입니다.
+
+    `dist` 는 깎기 전 2단계 분포(합=1)입니다. 계열 확률은 묶음 안 확률을
+    **더해서** 구합니다 (argmax 를 묶는 게 아니라).
+
+    ⚠️ `SHOW_GROUP` 이 꺼져 있으면 무조건 빈 문자열입니다 — 제품 결정 전에는
+       화면이 안 바뀌어야 합니다.
+    """
+    if not SHOW_GROUP or not dist:
+        return ""
+    from src.config import MORPH_GROUP_KEEP_A6
+
+    tot: dict[str, float] = {}
+    for code, p in dist:
+        g = MORPH_GROUP_KEEP_A6.get(code)
+        if g is None:
+            return ""                      # 모르는 코드가 섞이면 말하지 않습니다
+        tot[g] = tot.get(g, 0.0) + float(p)
+    name, p = max(tot.items(), key=lambda kv: kv[1])
+    conf = p * (abnormal_p if abnormal_p is not None else 1.0)
+    if conf < GROUP_CONF_MIN:
+        return ""                          # 확신이 낮으면 **아무 말도 안 합니다**
+    # ⚠️ "…계열로 보입니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
+    return f"모양만 보면 **{name}** 계열에 가깝습니다. (진단이 아닙니다)"
+
+
 def compose_screening_message(pred: Prediction, abnormal_p: float | None = None) -> str:
     """★ 확정된 출력 형식 (2026-08-26, 멘토 피드백).
 
@@ -212,6 +262,15 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         name = _pad(CLASS_KO.get(cc, cc), width)
         bar = "█" * max(0, round(pp * 20))
         L.append(f"    {name}  {pp:>4.0%}  {bar}")
+
+    # ── ★ 계열 한 줄 (기본 꺼짐) ──────────────────────────────────
+    #   STEP 28~33 이 실측했습니다: **6종 이름은 못 말해도 계열은 말할 수
+    #   있습니다** — holdout 커버리지 41.1% vs **67.9%**.
+    #   다만 켤지는 **제품 결정**이라 기본값은 꺼둡니다.
+    grp = lesion_group_line(dist, abnormal_p)
+    if grp:
+        L.append("")
+        L.append(grp)
 
     L.append("")
     L.append("→ **수의사 진료를 받아보시기를 권합니다.**")

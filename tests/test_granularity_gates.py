@@ -18,14 +18,14 @@ from src.config import CLASSES, MORPH_GROUP, URGENCY_TIER
 ok = fail = 0
 
 
-def check(name, cond):
+def check(name, cond, detail=""):
     global ok, fail
     if cond:
         ok += 1
         print(f"  PASS  {name}")
     else:
         fail += 1
-        print(f"  FAIL  {name}")
+        print(f"  FAIL  {name}" + (f"\n        {detail}" if detail else ""))
 
 
 print("[1] 묶음이 임상 문서와 맞는가 (데이터로 만든 게 아님)")
@@ -75,7 +75,18 @@ r = E.granularity_report("정상만", {
     "tier_true": np.full(n, -1), "tier_said": np.zeros(n, int)})
 check("하향 0 (낮출 긴급도가 없다)", r["under_triage"] == 0.0)
 
-print("\n[5] 커버리지 문턱은 이름 판정과 같은 값")
+print("\n[5] ★ 하향 문턱에 **닻이 있는가** (STEP 34)")
+# 처음엔 근거 없이 박은 말뚝이었습니다. 이제 기준은 "1단계가 이미 받아들이는
+# 하향보다 작아야 한다" 입니다 — 그 관계가 깨지면 여기서 실패합니다.
+check("1단계 놓침 비율이 상수로 있다", hasattr(E, "STAGE1_MISS_RATE"))
+check("2단계 하향 문턱 < 1단계 놓침 (더 작아야 한다)",
+      E.UNDER_TRIAGE_MAX < E.STAGE1_MISS_RATE,
+      f"{E.UNDER_TRIAGE_MAX} vs {E.STAGE1_MISS_RATE}")
+check("1단계 놓침이 실측값과 맞다 (holdout recall 0.9430)",
+      abs(E.STAGE1_MISS_RATE - (1 - 0.9430)) < 0.002,
+      f"{E.STAGE1_MISS_RATE} vs {1 - 0.9430:.4f}")
+
+print("\n[6] 커버리지 문턱은 이름 판정과 같은 값")
 check("50% 로 같다", E.GRANULARITY_MIN_COVERAGE == E.NAMING_MIN_COVERAGE)
 check("커버리지가 낮으면 기각",
       E.granularity_report("못 맞힘", {
