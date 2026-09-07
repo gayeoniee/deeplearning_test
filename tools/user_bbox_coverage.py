@@ -220,12 +220,22 @@ def main() -> None:
     true_g = np.asarray(["정상" if t == "A7" else MORPH_GROUP_KEEP_A6[t] for t in y])
     print(f"\n■ 표본 {len(y):,}장 · {(time.perf_counter()-t0)/60:.1f}분")
 
-    def coverage(cond):
+    def coverage(cond, pick=None):
+        """`pick` 으로 팔을 골라 잽니다 — 크롭 종류별 비교용.
+
+        ★ 왜 필요한가 — `m2.5` 는 네모 **크기**로 창이 정해져 사용자 네모에서
+        **포화**됩니다(STEP 38). `f320` 은 크기를 안 쓰므로 면역입니다.
+        STEP 36 은 이 둘을 **macro-F1** 로 비교해 기각했는데(+0.021),
+        커버리지는 −55% 로 훨씬 크게 무너지므로 **답이 다를 수 있습니다.**
+
+        ⚠️ 이건 **측정이지 판정이 아닙니다.** 채택하려면 문턱을 먼저 박고
+        holdout 으로 확인해야 합니다.
+        """
         p1 = torch.cat(res[cond]["p1"]).numpy()[:len(y)]
         n_arm = len(net2)
+        idx = list(range(n_arm)) if pick is None else pick
         P2 = np.mean([torch.cat(res[cond]["p2"][k::n_arm]).numpy()[:len(y)]
-                      for k in range(n_arm)], axis=0) if n_arm > 1 \
-            else torch.cat(res[cond]["p2"]).numpy()[:len(y)]
+                      for k in idx], axis=0)
         P = np.zeros((len(y), 4))
         for j, c in enumerate(CLASSES):
             P[:, G4.index(MORPH_GROUP_KEEP_A6[c])] += P2[:, j]
@@ -235,20 +245,59 @@ def main() -> None:
         err = np.cumsum((true_g != said)[order]) / np.arange(1, len(conf) + 1)
         ok = np.flatnonzero(err <= NAMING_TARGET_ERROR)
         k = int(ok[-1]) + 1 if len(ok) else 0
-        return k / len(y), k
+        # ★ **덜 정확해진 것**과 **틀렸는데 확신하는 것**을 갈라야 합니다.
+        #   전부 말했을 때의 정확도(acc)는 전자, 확신도의 변별력(AUROC)은 후자.
+        acc = float((said == true_g).mean())
+        corr = (said == true_g).astype(float)
+        o = np.argsort(conf)
+        r = np.empty(len(conf))
+        r[o] = np.arange(len(conf))
+        n1, n0 = corr.sum(), len(corr) - corr.sum()
+        auroc = float(((r * corr).sum() - n1 * (n1 - 1) / 2) / (n1 * n0)) \
+            if n1 and n0 else float("nan")
+        return k / len(y), k, acc, auroc
 
-    cl, kl = coverage("label")
-    cu, ku = coverage("user")
+    cl, kl, al, ul = coverage("label")
+    cu, ku, au, uu = coverage("user")
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함)")
     print(f"    라벨 네모    {cl:.1%}  ({kl:,}장)")
     print(f"    사용자 네모  {cu:.1%}  ({ku:,}장)")
     print(f"    차이         {cu - cl:+.1%}p   상대 {((cu - cl) / cl if cl else 0):+.1%}")
+    print("\n■ ★ 왜 그만큼 무너지나 — 두 몫으로 가릅니다")
+    print(f"    {'':14}{'전부 말했을 때 정확도':>22}{'확신도 변별력(AUROC)':>22}")
+    print(f"    {'라벨 네모':14}{al:>22.1%}{ul:>22.4f}")
+    print(f"    {'사용자 네모':14}{au:>22.1%}{uu:>22.4f}")
+    print(f"    {'차이':14}{au - al:>+22.1%}{uu - ul:>+22.4f}")
+    print("    → 정확도가 주로 빠지면 **덜 맞히는 것**,")
+    print("      AUROC 가 주로 빠지면 **틀렸는데 확신하는 것**입니다.")
+
+    # ── ★ 크롭 종류별 — 포화가 없는 f320 이 사용자 네모에서 버티나 ──────
+    tags = [t for _, t in net2]
+    grp = {"배포 3팔": None,
+           "m2.5 팔만": [i for i, t in enumerate(tags) if t.startswith("m")],
+           "f320 팔만": [i for i, t in enumerate(tags) if t.startswith("f")]}
+    print("\n■ ★ 크롭 종류별 커버리지 — `m2.5` 는 포화, `f320` 은 면역")
+    print(f"    {'':12}{'라벨 네모':>12}{'사용자 네모':>14}{'하락':>10}")
+    cov_by = {}
+    for nm, pick in grp.items():
+        if pick is not None and not pick:
+            continue
+        a_, *_ = coverage("label", pick)
+        b_, *_ = coverage("user", pick)
+        cov_by[nm] = {"label": a_, "user": b_}
+        print(f"    {nm:12}{a_:>12.1%}{b_:>14.1%}{(b_ - a_) / a_ if a_ else 0:>10.1%}")
+    print("\n    ⚠️ **측정이지 판정이 아닙니다.** 채택하려면 문턱을 먼저 박고")
+    print("       holdout 으로 확인해야 합니다. 여기 팔 수가 다른 것도 섞여 있습니다")
+    print("       (3팔 vs 2팔 vs 1팔) — 앙상블 효과와 크롭 효과가 안 갈립니다.")
     print("\n⚠️ VL01 기준 — 커버리지에서는 **비관적**인 청크였습니다 (STEP 29·31).")
     print("   이 값은 '전체에서의 하락폭' 이 아니라 **하락의 눈금**입니다.")
 
     OUT.write_text(json.dumps(
         {"n": int(len(y)), "label": cl, "user": cu, "delta": cu - cl,
-         "relative": (cu - cl) / cl if cl else 0, "arms": len(net2)},
+         "relative": (cu - cl) / cl if cl else 0, "arms": len(net2),
+         "acc": {"label": al, "user": au},
+         "conf_auroc": {"label": ul, "user": uu},
+         "by_crop": cov_by},
         ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"원본: {OUT}")
 

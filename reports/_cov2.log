@@ -1,0 +1,7 @@
+[측정] 사람 네모 긴 변 49.7%~70.0% · 중심 이탈 중앙값 0.161  (n=40)
+■ 병변 2,500장 + 정상 586장 (VL01)
+■ 1단계 stage1_effnetv2_s_f320_384_moderate_photometric
+■ 2단계 3팔: stage2_convnextv2_base_m2.5_384_n121k_moderate, stage2_effnetv2_s_f320_384_moderate, stage2_effnetv2_s_m2.5_384_moderate
+   400/3,086  1.5분
+   800/3,086  3.1분
+   1,200/3,086  4.6분
