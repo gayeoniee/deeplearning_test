@@ -125,12 +125,19 @@ MORPH_GROUP_KEEP_A6: dict[str, str] = {
     "A5": "미란·궤양", "A6": "결절·종괴",
 }
 
-#: ★ **문헌 근거 (2026-09-08 확인)** — 세 축이 각각 표준에 있습니다:
-#:   ① primary / secondary — MSD·Merck Vet Manual, Clinicians Brief
-#:   ② **1cm 경계** (구진 ≤1cm / 결절 >1cm, 결절은 진피·피하로 더 깊이) —
-#:      Merck Vet Manual · Cornell · Veterian Key → **A6 을 따로 둔 근거**
-#:   ③ **표피 소실 여부** — *"Unlike erosions and ulcers which involve loss of
-#:      epidermis, collarettes …"* (Edinburgh CLIVE) → **A5 를 가르는 선**
+#: ★ **문헌 근거 (2026-09-08, 원문을 직접 열어 확인)** — 세 축이 각각 표준입니다:
+#:   ① primary / secondary — Merck Vet Manual 이 목록으로 나눕니다
+#:      (secondary: epidermal collarettes · erosions/ulcers · lichenification …)
+#:   ② **1cm 경계** → **A6 을 따로 둔 근거**
+#:      *"solid elevated lesion **<1cm** diameter"* (papule) /
+#:      *"circumscribed solid elevation **>1cm** in diameter that usually
+#:       **extends into deeper layers of skin**"* (nodule) — Cornell AHDC.
+#:      Veterian Key 도 *"approximately 1 cm in diameter or smaller"*.
+#:      ⚠️ **Merck 페이지 자체에는 cm 수치가 없습니다** — 여기 근거로 대지 마세요.
+#:   ③ **표피 소실 여부** → **A5 를 가르는 선**
+#:      Merck: 미란·궤양은 *"**loss of the epidermis**"*.
+#:      장벽이 깨지면 `S. pseudintermedius` 2차 감염 위험 —
+#:      Hillier et al. (2014) *Vet Dermatol* 25(3):163-e43 (ISCAID 지침)
 #:   그리고 A2+A3 는 **Hensel, Santoro, Favrot, Hill, Griffin (2015),
 #:   BMC Vet Res**(ICADA 개 아토피 가이드라인)의 한 문장에 같이 있습니다:
 #:      "Typical secondary skin lesions are excoriations, alopecia,
