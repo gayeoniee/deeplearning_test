@@ -136,6 +136,11 @@ MORPH_GROUP_KEEP_A6: dict[str, str] = {
 #:      ⚠️ **Merck 페이지 자체에는 cm 수치가 없습니다** — 여기 근거로 대지 마세요.
 #:   ③ **표피 소실 여부** → **A5 를 가르는 선**
 #:      Merck: 미란·궤양은 *"**loss of the epidermis**"*.
+#:      ⚠️ **"기저막(basement membrane) 파괴 여부" 로 말하면 틀립니다.**
+#:         미란(erosion)은 표피 일부만 잃고 **기저막은 온전**하며 흉터 없이
+#:         낫습니다. 기저막까지 가는 것은 궤양(ulcer)뿐입니다. 그 축으로
+#:         가르면 **미란이 A2·A3 쪽에 붙어** 묶음이 무너집니다.
+#:         우리 축은 *표피가 쌓이는가(A2·A3) / 소실되는가(A5)* 입니다.
 #:      장벽이 깨지면 `S. pseudintermedius` 2차 감염 위험 —
 #:      Hillier et al. (2014) *Vet Dermatol* 25(3):163-e43 (ISCAID 지침)
 #:   그리고 A2+A3 는 **Hensel, Santoro, Favrot, Hill, Griffin (2015),
