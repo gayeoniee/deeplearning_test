@@ -145,6 +145,13 @@ body{
   font-size:12.5px; font-weight:700; color:var(--ink); line-height:1.5;
 }
 .cant span{display:block; font-weight:400; color:var(--muted); font-size:11.5px; margin-top:3px}
+.grp{
+  /* ★ 계열 한 줄. `stage2.group` 이 null 이 아닐 때만 나옵니다.
+     ⚠️ 긴급도 문구를 붙이지 마세요 — 말한 것의 절반이 한 단계 부풀려집니다 (STEP 30·33). */
+  border-left:3px solid var(--brand, #E58A8A); padding:8px 0 8px 10px; margin:10px 0 2px;
+  font-size:12.5px; color:var(--ink); line-height:1.5;
+}
+.grp span{display:block; color:var(--muted); font-size:11px; margin-top:3px}
 .dist{margin-top:12px; display:flex; flex-direction:column; gap:9px}
 .row{display:grid; grid-template-columns:1fr auto; gap:3px 8px}
 .row .n{font-size:12.5px; font-weight:400}      /* ★ 굵게 쓰지 않습니다 */
@@ -681,6 +688,14 @@ function card(j) {
     // ★ "판단할 수 없습니다" 가 숫자보다 **위**에 옵니다
     h += `<div class="cant">어떤 병변인지는 이 사진만으로 판단할 수 없어요.
             <span>아래는 모델이 비슷하다고 본 정도이고, 진단이 아니에요.</span></div>`;
+    // ★ 계열 한 줄 — `group` 은 기본적으로 **null** 입니다 (서버가 꺼두면).
+    //   난다면 그것은 *이름*이 아니라 *묶음* 입니다 — 6종 이름은 여전히 안 나갑니다.
+    //   ⚠️ `text`·`caveat` 를 **그대로** 띄웁니다. 지어 쓰면 한쪽이 단정적으로 읽힙니다.
+    //   ⚠️ 긴급도('조기 진료' 등)를 여기에 붙이지 마세요.
+    if (j.stage2.group && j.stage2.group.text) {
+      h += `<div class="grp">${esc(j.stage2.group.text)}
+              <span>${esc(j.stage2.group.caveat || '')}</span></div>`;
+    }
     // ★ 여섯 개를 **전부**, 전부 같은 굵기로. 1등을 뽑지 않습니다.
     h += '<div class="dist">' + j.stage2.distribution.map(d => `
           <div class="row"><span class="n">${esc(d.name_ko)}</span><span class="v">${d.percent}%</span>
