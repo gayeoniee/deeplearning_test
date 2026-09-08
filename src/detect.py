@@ -128,13 +128,45 @@ def band_report(pred_xyxy, true_xyxy) -> dict:
     lo, hi = 1 / ZOOM_ALLOW[1], 1 / ZOOM_ALLOW[0]
     in_size = (ratio >= lo) & (ratio <= hi)
     in_pos = off <= ZOOM_CENTER_MAX
-    return {"n": int(ok.sum()),
-            "ratio_median": float(np.nanmedian(ratio)),
-            "off_median": float(np.median(off)),
-            "in_size": float(np.nanmean(in_size)),
-            "in_pos": float(np.mean(in_pos)),
-            "both": float(np.nanmean(in_size & in_pos)),
-            "band": [lo, hi], "center_max": float(ZOOM_CENTER_MAX)}
+    rep = {"n": int(ok.sum()),
+           "ratio_median": float(np.nanmedian(ratio)),
+           "off_median": float(np.median(off)),
+           "in_size": float(np.nanmean(in_size)),
+           "in_pos": float(np.mean(in_pos)),
+           "both": float(np.nanmean(in_size & in_pos)),
+           "band": [lo, hi], "center_max": float(ZOOM_CENTER_MAX)}
+    rep["baseline"] = _baseline(t, lo, hi)
+    return rep
+
+
+def _baseline(true_xyxy, lo: float, hi: float) -> dict:
+    """★ **아무것도 안 배운 네모** — 화면 한가운데 · 크기는 실측 병변 중앙값.
+
+    왜 이걸 같이 내나 — STEP 42 에서 검출기 **배율 75.0%** 를 보고 "배율은
+    풀렸다" 고 읽을 뻔했습니다. 같은 val 에서 이 하한선이 **72.3%** 입니다.
+    번 것은 **+2.7%p** 뿐이고, 검출기가 실제로 배운 것은 **위치**였습니다
+    (10.1% → 38.7%).
+
+    ⚠️ 이건 STEP 29 와 **같은 실수**입니다 — 거기서는 계열 정확도 0.84 를
+    앞세웠는데 최빈 묶음만 말해도 0.671 이었습니다. 작업 규칙 1.
+
+    관문으로 쓰지 않고 **찍기만** 합니다 (`over_triage` 와 같은 처방).
+    """
+    import numpy as np
+
+    from src.config import ZOOM_CENTER_MAX
+    from src.experiments import FIXEDSCALE_LESION_FRAC
+
+    t = np.asarray(true_xyxy, dtype=float)
+    t_long = np.maximum(t[:, 2] - t[:, 0], t[:, 3] - t[:, 1])
+    ratio = FIXEDSCALE_LESION_FRAC / np.maximum(t_long, 1e-9)
+    off = np.maximum(np.abs((t[:, 0] + t[:, 2]) / 2 - 0.5),
+                     np.abs((t[:, 1] + t[:, 3]) / 2 - 0.5))
+    in_size = (ratio >= lo) & (ratio <= hi)
+    in_pos = off <= ZOOM_CENTER_MAX
+    return {"in_size": float(in_size.mean()), "in_pos": float(in_pos.mean()),
+            "both": float((in_size & in_pos).mean()),
+            "off_median": float(np.median(off)), "size_frac": FIXEDSCALE_LESION_FRAC}
 
 
 def print_report(rep: dict, *, human_both: float = 0.05,
@@ -151,6 +183,19 @@ def print_report(rep: dict, *, human_both: float = 0.05,
     print(f"    위치     {rep['in_pos']:.1%}")
     print(f"    둘 다    {rep['both']:.1%}      "
           f"(사람 {human_both:.1%} · 창탐지기 {window_both:.1%})")
+    b = rep.get("baseline")
+    if b:
+        # ★ 하한선을 **같이** 찍습니다 — 관문으로는 안 씁니다 (작업 규칙 1·2).
+        print()
+        print(f"■ 하한선 — 화면 한가운데 · 크기 {b['size_frac']:.3f} 고정 "
+              f"(아무것도 안 배운 네모)")
+        print(f"    배율     {b['in_size']:.1%}    ← 검출기가 번 것 "
+              f"{rep['in_size'] - b['in_size']:+.1%}")
+        print(f"    위치     {b['in_pos']:.1%}    ← 검출기가 번 것 "
+              f"{rep['in_pos'] - b['in_pos']:+.1%}")
+        print(f"    둘 다    {b['both']:.1%}    ← 검출기가 번 것 "
+              f"{rep['both'] - b['both']:+.1%}")
+        print("    ⚠️ 하한선을 안 보면 '배율은 풀렸다' 로 읽게 됩니다 (STEP 29 와 같은 실수).")
     ok = rep["both"] >= DETECT_MIN_USABLE
     print(f"\n■ 사전등록 문턱 {DETECT_MIN_USABLE:.0%}")
     print("  ⭕ **통과** — 다음은 이 네모로 자른 크롭의 **커버리지**입니다."

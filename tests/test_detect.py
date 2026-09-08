@@ -121,6 +121,33 @@ if nb.is_file():
     check("크롭 데이터셋을 쓰면 안 된다고 적혀 있다", "가운데 놓고 자른" in t)
     check("★ 밴드만 통과해도 채택 아니라고 적혀 있다", "커버리지가 안 오르면" in t)
 
+print()
+print("[8] ★ 하한선을 **같이 찍는가** (STEP 42 에서 당한 것)")
+# 검출기 배율 75.0% 를 보고 "배율은 풀렸다" 로 읽을 뻔했습니다 —
+# 같은 val 에서 하한선이 72.3% 입니다 (순이득 +2.7%p).
+rng = np.random.default_rng(0)
+c = rng.uniform(0.2, 0.8, (400, 2))
+s = rng.uniform(0.08, 0.45, 400)
+t_rand = np.stack([c[:, 0] - s / 2, c[:, 1] - s / 2,
+                   c[:, 0] + s / 2, c[:, 1] + s / 2], 1)
+rep_r = D.band_report(t_rand.copy(), t_rand)          # 완벽한 예측
+check("band_report 가 baseline 을 같이 낸다", "baseline" in rep_r)
+b = rep_r.get("baseline", {})
+check("하한선 크기가 실측 병변 중앙값이다",
+      b.get("size_frac") == FIXEDSCALE_LESION_FRAC, str(b.get("size_frac")))
+check("완벽한 예측은 1.0 인데 하한선은 그보다 낮다",
+      rep_r["both"] == 1.0 and b.get("both", 1.0) < 1.0,
+      str((rep_r["both"], b.get("both"))))
+# 하한선을 그대로 예측으로 넣으면 순이득이 0 이어야 합니다
+hf = FIXEDSCALE_LESION_FRAC / 2
+p_base = np.tile([0.5 - hf, 0.5 - hf, 0.5 + hf, 0.5 + hf], (len(t_rand), 1))
+rep_b = D.band_report(p_base, t_rand)
+check("★ 하한선을 예측으로 넣으면 순이득 0",
+      abs(rep_b["both"] - rep_b["baseline"]["both"]) < 1e-9,
+      str((rep_b["both"], rep_b["baseline"]["both"])))
+src_t = (Path(__file__).resolve().parents[1] / "src" / "detect.py").read_text(encoding="utf-8")
+check("print_report 가 하한선을 찍는다", "하한선" in src_t.split("def print_report")[-1])
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 raise SystemExit(1 if fail else 0)
