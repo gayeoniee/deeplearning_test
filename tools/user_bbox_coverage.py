@@ -66,7 +66,9 @@ def main() -> None:
 
     from src import crop, data, env, models, train
     from src.config import CFG, CLASSES, MORPH_GROUP_KEEP_A6
-    from src.experiments import NAMING_TARGET_ERROR
+    from src.experiments import (FIXEDSCALE_LESION_FRAC,
+                                 FIXEDSCALE_MIN_COVERAGE_GAIN,
+                                 NAMING_TARGET_ERROR)
 
     from user_bbox_sim import user_box_stats
 
@@ -154,8 +156,11 @@ def main() -> None:
             return None
         wx, wy = rng.uniform(lo_x, hi_x), rng.uniform(lo_y, hi_y)
         im = full.crop((int(wx), int(wy), int(wx + side0), int(wy + side0)))
+        full.close()          # ⚠️ 안 닫으면 쌓여서 메모리가 터집니다 (STEP 40)
         if im.size[0] != 1080:
-            im = im.resize((1080, 1080))
+            im2 = im.resize((1080, 1080))
+            im.close()
+            im = im2
         W = im.size[0]
         s = W / side0
         lb = [(b0[0] - wx) * s, (b0[1] - wy) * s, (b0[2] - wx) * s, (b0[3] - wy) * s]
@@ -163,12 +168,18 @@ def main() -> None:
         cx = (lb[0] + lb[2]) / 2 + rng.uniform(-center_off, center_off) * W
         cy = (lb[1] + lb[3]) / 2 + rng.uniform(-center_off, center_off) * W
         ub = [cx - side / 2, cy - side / 2, cx + side / 2, cy + side / 2]
-        return im, lb, ub, W
+        # ★ **고정 배율** — 사용자 네모의 **중심만** 쓰고 크기는 버립니다.
+        #   크기를 그대로 쓰면 m2.5 창이 100% 포화돼 크롭이 아예 안 걸립니다.
+        #   `FIXEDSCALE_LESION_FRAC` 은 실측 병변 중앙값이라 **결과가 아니라
+        #   데이터의 성질**에서 온 값입니다.
+        fs = FIXEDSCALE_LESION_FRAC * W
+        fb = [cx - fs / 2, cy - fs / 2, cx + fs / 2, cy + fs / 2]
+        return im, lb, ub, fb, W
 
-    res = {c: {"p1": [], "p2": []} for c in ("label", "user")}
+    CONDS = ("label", "user", "fixed")
+    res = {c: {"p1": [], "p2": []} for c in CONDS}
     truth = []
-    buf = {(c, k): [] for c in ("label", "user")
-           for k in range(1 + len(net2))}
+    buf = {(c, k): [] for c in CONDS for k in range(1 + len(net2))}
     t0 = time.perf_counter()
 
     def flush():
@@ -188,9 +199,9 @@ def main() -> None:
         got = photo_and_boxes(r)
         if got is None:
             continue
-        im, lb, ub, W = got
+        im, lb, ub, fb, W = got
         ok = True
-        for c, box in (("label", lb), ("user", ub)):
+        for c, box in (("label", lb), ("user", ub), ("fixed", fb)):
             row = {"bbox": list(box), "img_w": W, "img_h": W}
             w1 = crop.crop_window(row, tag="f320", cfg=cfg)
             if w1 is None:
@@ -259,10 +270,20 @@ def main() -> None:
 
     cl, kl, al, ul = coverage("label")
     cu, ku, au, uu = coverage("user")
+    cf, kf, af, uf = coverage("fixed")
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함)")
     print(f"    라벨 네모    {cl:.1%}  ({kl:,}장)")
     print(f"    사용자 네모  {cu:.1%}  ({ku:,}장)")
     print(f"    차이         {cu - cl:+.1%}p   상대 {((cu - cl) / cl if cl else 0):+.1%}")
+    print(f"\n■ ★ 고정 배율 (네모 **크기를 버리고** 중심만 + "
+          f"{FIXEDSCALE_LESION_FRAC:.1%} 로 자름)")
+    print(f"    고정 배율    {cf:.1%}  ({kf:,}장)")
+    gain = cf - cu
+    print(f"    사용자 네모 대비 {gain:+.1%}p   "
+          f"(문턱 +{FIXEDSCALE_MIN_COVERAGE_GAIN:.0%})")
+    print(f"    메울 수 있던 폭 {cl - cu:.1%}p 중 **{gain / (cl - cu) if cl > cu else 0:.0%}** 회복")
+    print("  " + ("⭕ **문턱 통과** — 씨앗 하나 더 확인해야 채택입니다."
+                  if gain >= FIXEDSCALE_MIN_COVERAGE_GAIN else "❌ 문턱 미달"))
     print("\n■ ★ 왜 그만큼 무너지나 — 두 몫으로 가릅니다")
     print(f"    {'':14}{'전부 말했을 때 정확도':>22}{'확신도 변별력(AUROC)':>22}")
     print(f"    {'라벨 네모':14}{al:>22.1%}{ul:>22.4f}")
@@ -295,8 +316,9 @@ def main() -> None:
     OUT.write_text(json.dumps(
         {"n": int(len(y)), "label": cl, "user": cu, "delta": cu - cl,
          "relative": (cu - cl) / cl if cl else 0, "arms": len(net2),
-         "acc": {"label": al, "user": au},
-         "conf_auroc": {"label": ul, "user": uu},
+         "fixed": cf, "fixed_gain": cf - cu,
+         "acc": {"label": al, "user": au, "fixed": af},
+         "conf_auroc": {"label": ul, "user": uu, "fixed": uf},
          "by_crop": cov_by},
         ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"원본: {OUT}")
