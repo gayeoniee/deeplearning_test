@@ -1,0 +1,37 @@
+{
+ "n": 2920,
+ "n_abnormal": 1446,
+ "seed": 99,
+ "tau": 0.1466064453125,
+ "T": 0.9225252866744995,
+ "exp": "stage1_effnetv2_s_f320_384_n233k_moderate_photometric",
+ "stimulus_center_off_median": 0.25762921908762715,
+ "by_cond": {
+  "label": {
+   "auroc": 0.9081774267102811,
+   "recall": 0.896957123098202,
+   "false_alarm_rate": 0.24898236092265943,
+   "fa_share_of_passed": 0.2205528846153846
+  },
+  "user": {
+   "auroc": 0.7956647355452087,
+   "recall": 0.7614107883817427,
+   "false_alarm_rate": 0.3066485753052917,
+   "fa_share_of_passed": 0.2910495814552479
+  },
+  "none": {
+   "auroc": 0.6933833285477554,
+   "recall": 0.6493775933609959,
+   "false_alarm_rate": 0.3419267299864315,
+   "fa_share_of_passed": 0.3492723492723493
+  }
+ },
+ "recall_drop_user_to_none": 0.11203319502074682,
+ "passed": false,
+ "gate": 0.01,
+ "box_frac": [
+  0.49687500000000007,
+  0.7
+ ],
+ "center_off": 0.1608397537370284
+}
