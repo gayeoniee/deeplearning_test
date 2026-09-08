@@ -194,6 +194,67 @@ def _dist(probs: list[tuple[str, float]]) -> list[dict]:
             for c, p in sorted(probs, key=lambda kv: -kv[1])]
 
 
+def lesion_group_dist(probs: list[tuple[str, float]] | None) -> list[dict]:
+    """★ **계열 네 묶음의 확률 분포** — 화면 막대가 쓰는 값.
+
+    6종을 **자른 게 아니라 더한 것**입니다. 여섯 개가 전부 어딘가에 들어가
+    있어 **아무것도 안 숨깁니다** — `cautions/03 §7-B` 의 *"상위 몇 개로
+    자르지 마라"* 취지가 그대로 지켜집니다.
+
+    ⚠️ `lesion_group()`(주장) 과 다릅니다. 이건 **분포**라 확신과 무관하게
+       항상 나옵니다. 확신이 낮으면 `group` 이 `null` 이 되고 막대만 남습니다.
+
+    ⚠️ 묶음표는 `MORPH_GROUP_KEEP_A6` **한 곳**에서만 읽습니다.
+    """
+    from src.config import MORPH_GROUP_KEEP_A6
+
+    if not probs:
+        return []
+    tot: dict[str, float] = {}
+    for code, p in probs:
+        g = MORPH_GROUP_KEEP_A6.get(code)
+        if g is None:
+            return []                       # 모르는 코드가 섞이면 안 그립니다
+        tot[g] = tot.get(g, 0.0) + float(p)
+    return [{"name": k, "prob": round(v, 4), "percent": round(v * 100, 1)}
+            for k, v in sorted(tot.items(), key=lambda kv: -kv[1])]
+
+
+def a6_alert(probs: list[tuple[str, float]] | None,
+             abnormal_p: float | None = None) -> dict | None:
+    """★ **"덩어리가 의심됩니다"** — 유일하게 병변 이름을 말하는 자리입니다.
+
+    점수는 **`p(이상) × p(A6)`** 이고 문턱은 `config.A6_ALERT_MIN`(0.40).
+    ⚠️ `p(A6)` 단독으로 재면 STEP 34 의 표를 못 읽습니다 — 거기 문턱은
+       `tools/naming_granularity.py` 의 `score = p1 * ens[:, ia6]` 기준입니다.
+
+    실측(STEP 34): 문턱 0.40 에서 재현율 **val 61.1% / holdout 59.4%**.
+    정밀도(81.4% / 71.3%)는 **유병률에 좌우되므로 기준으로 쓰지 않습니다.**
+
+    왜 여기만 이름을 말하나 — 임상 해설이 *"A6 으로 오탐하는 건 상대적으로
+    안전"* 이라 적었고(병원에 가서 확인하면 되니까), A6 은 **종양 감별**이
+    필요한 유일한 클래스라 4묶음에서도 혼자 뒀습니다. 놓치는 쪽이 훨씬 나쁩니다.
+    """
+    from src.config import A6_ALERT_MIN
+    from src.message import SHOW_A6_ALERT
+
+    if not SHOW_A6_ALERT or not probs:
+        return None
+    p6 = dict(probs).get("A6")
+    if p6 is None:
+        return None
+    score = float(p6) * (abnormal_p if abnormal_p is not None else 1.0)
+    if score < A6_ALERT_MIN:
+        return None
+    return {"code": "A6",
+            "score": round(score, 4),
+            "threshold": A6_ALERT_MIN,
+            # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다.
+            "text": "덩어리가 의심됩니다.",
+            "action": "빠른 진료를 권합니다.",
+            "caveat": "진단이 아닙니다. 덩어리처럼 보이는 다른 병변일 수 있습니다."}
+
+
 def lesion_group(probs: list[tuple[str, float]] | None,
                  abnormal_p: float | None = None) -> dict | None:
     """★ **계열** 한 덩어리 — 이름이 아니라 묶음입니다.
@@ -296,11 +357,20 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
             #    보정 안 된 확률을 "보정됨" 으로 내보내면 앱이 그걸 믿고 띄웁니다.
             "calibrated": bool(calibrated),
         },
-        # 병변 6종 분포. verdict != "abnormal" 이면 비어 있습니다.
-        # ⚠️ `group` 은 **꺼져 있으면 `null`** 입니다 (기본값). 앱·콘솔은
-        #    `null` 이면 아무것도 안 그리면 됩니다 — 필드가 늘어도 안 깨집니다.
+        # ★ 2026-09-08 화면 규격 — **앱은 `groups`(계열 4개)만 그립니다.**
+        #   `distribution`(6종)은 계약에 그대로 남습니다: 콘솔이 쓰고, 마음이
+        #   바뀌어도 앱 한 줄이지 규격 변경이 아닙니다.
+        #
+        #   groups        계열 4묶음 **분포** — 확신과 무관하게 항상 나옵니다 (막대)
+        #   group         계열 **주장** — 확신이 낮으면 `null` (한 줄)
+        #   alert         "덩어리가 의심됩니다" — 안 뜨면 `null`
+        #   distribution  병변 6종. 앱은 **안 그립니다**
+        #
+        # ⚠️ `null` 이면 통째로 안 그리면 됩니다 — 필드가 늘어도 안 깨집니다.
         "stage2": {"shown": bool(stage2), "distribution": _dist(stage2 or []),
-                   "group": lesion_group(stage2, abnormal_p)},
+                   "groups": lesion_group_dist(stage2),
+                   "group": lesion_group(stage2, abnormal_p),
+                   "alert": a6_alert(stage2, abnormal_p)},
         "text": text,
         "disclaimer": DISCLAIMER,
         "meta": {**(meta or {})},

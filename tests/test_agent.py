@@ -184,9 +184,13 @@ check("흔들려도 되는 건 소요시간뿐",
 check("mock 임을 밝힘", r1["meta"]["mock"] is True)
 check("진짜와 같은 키", set(r1) == set(full))
 check("mock 도 금지 키 없음", not [k for k in keys_of(r1) if k.lower() in BANNED])
-check("text 가 여섯 줄 분포를 담음",
+# 2026-09-08: 보호자 화면은 **계열 4묶음**입니다 (6종은 계약에만 남아 콘솔이 씀).
+check("text 가 계열 네 줄 분포를 담음",
       r1["verdict"] != "abnormal" or
-      sum(1 for ln in r1["text"].splitlines() if ln.startswith("    ") and "%" in ln) == 6)
+      sum(1 for ln in r1["text"].splitlines() if ln.startswith("    ") and "%" in ln) == 4)
+check("★ 계약에는 6종이 그대로 남아 있음",
+      r1["verdict"] != "abnormal" or len(r1["stage2"]["distribution"]) == 6,
+      str(len(r1["stage2"]["distribution"])))
 check("못 읽는 파일은 retake",
       m.screen("존재하지-않는-파일.jpg")["verdict"] == "retake")
 check("mock 도 가이드 검사를 진짜로 함",
@@ -427,10 +431,66 @@ _ab.stage2_probs = [("A2", 0.31), ("A3", 0.22)]
 _txt = _msg.compose_screening_message(_ab)
 check("기권이어도 이상 소견을 말함", "이상 소견이 보입니다" in _txt)
 check("기권이어도 재촬영 문구가 안 나옴", "판단이 어려운 사진" not in _txt)
-check("기권이어도 분포가 보임", CLASS_KO["A2"] in _txt)
+# A2 는 "표면 변화" 로 묶여 이름이 사라집니다 — 묶음이 보이는지로 봅니다.
+check("기권이어도 분포가 보임", "표면 변화" in _txt)
 check("기권이어도 진료를 권함", "수의사 진료를 받아보시기를 권합니다" in _txt)
 check("기권일 때 다시 찍으라고 하지 않음",
       "더 선명하게 다시 찍으면" not in _txt)
+
+print()
+print("[A6] ★ 덩어리 경보 — 유일하게 병변 이름을 말하는 자리")
+import os as _os2                                                # noqa: E402
+import importlib as _il2                                         # noqa: E402
+
+import src.message as _M2                                        # noqa: E402
+from src.config import A6_ALERT_MIN, URGENCY_HINT as _UH         # noqa: E402
+
+
+def _al(p6, p1):
+    d = [("A6", p6)] + [(c, (1 - p6) / 5) for c in ("A1", "A2", "A3", "A4", "A5")]
+    return agent.contract("abnormal", abnormal_p=p1, threshold=0.15, stage2=d)["stage2"]
+
+
+check("계약에 alert 필드가 있다", "alert" in _al(0.1, 0.5))
+check("문턱 아래면 null", _al(0.30, 0.50)["alert"] is None)
+check("문턱 위면 뜼다", _al(0.80, 0.90)["alert"] is not None)
+# ★ 점수가 p1 x p(A6) 인가 — p(A6) 단독이면 STEP 34 표를 못 읽습니다.
+#   p(A6)=0.80 으로 같은데 p1 만 다릅니다: 0.32(꺼짐) vs 0.72(켜짐)
+check("★ 점수가 p1 x p(A6) 이다",
+      _al(0.80, 0.40)["alert"] is None and _al(0.80, 0.90)["alert"] is not None)
+_a = _al(0.80, 0.90)["alert"]
+check("점수와 문턱을 같이 실어 보낸다",
+      abs(_a["score"] - 0.72) < 1e-6 and _a["threshold"] == A6_ALERT_MIN, str(_a))
+check("code 가 A6 이다", _a["code"] == "A6")
+check("문구·행동·면책을 서버가 준다",
+      all(_a.get(k) for k in ("text", "action", "caveat")))
+check("긴급도 문구(URGENCY_HINT)를 그대로 안 쓴다",
+      not any(h in _a["text"] for h in _UH.values() if h and h != "관찰"))
+_d5 = [("A5", 0.90)] + [(c, 0.02) for c in ("A1", "A2", "A3", "A4", "A6")]
+check("★ A5 가 셔도 경보는 안 뜼다",
+      agent.contract("abnormal", abnormal_p=0.95, threshold=0.15,
+                     stage2=_d5)["stage2"]["alert"] is None)
+# ★ 되돌릴 수 있어야 합니다 — 제품 결정은 뒤집힐 수 있습니다.
+_was = _os2.environ.get("DOG_SKIN_SHOW_A6_ALERT")
+_os2.environ["DOG_SKIN_SHOW_A6_ALERT"] = "0"
+_il2.reload(_M2)
+check("★ DOG_SKIN_SHOW_A6_ALERT=0 이면 꺼진다", _al(0.80, 0.90)["alert"] is None)
+if _was is None:
+    _os2.environ.pop("DOG_SKIN_SHOW_A6_ALERT", None)
+else:
+    _os2.environ["DOG_SKIN_SHOW_A6_ALERT"] = _was
+_il2.reload(_M2)
+check("되돌리면 다시 켜진다", _al(0.80, 0.90)["alert"] is not None)
+
+print()
+print("[계열] groups 는 분포, group 은 주장")
+_flat = [(c, 1 / 6) for c in ("A1", "A2", "A3", "A4", "A5", "A6")]
+_s = agent.contract("abnormal", abnormal_p=0.30, threshold=0.15, stage2=_flat)["stage2"]
+check("확신이 낮아도 groups 는 나온다 (막대)", len(_s["groups"]) == 4)
+check("확신이 낮으면 group 은 null (주장 안 함)", _s["group"] is None)
+check("groups 합이 1 이다", abs(sum(g["prob"] for g in _s["groups"]) - 1) < 1e-6)
+check("★ groups 는 6종을 **더한** 것 (자른 게 아니라)",
+      len(_s["distribution"]) == 6 and len(_s["groups"]) == 4)
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")

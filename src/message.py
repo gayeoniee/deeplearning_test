@@ -149,6 +149,11 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
 #: 둘 다 `tests/test_screening_message.py` 와 `test_granularity_gates.py` 가 지킵니다.
 SHOW_GROUP = os.environ.get("DOG_SKIN_SHOW_GROUP", "1") != "0"
 
+#: ★ **"덩어리가 의심됩니다" 경보** — **켜짐 (2026-09-08 사용자 결정)**.
+#: 끄려면 `DOG_SKIN_SHOW_A6_ALERT=0`. 문턱과 근거는 `config.A6_ALERT_MIN`.
+#: ⚠️ 이 경보만 병변 이름을 말합니다 — 예외인 이유도 거기 적혀 있습니다.
+SHOW_A6_ALERT = os.environ.get("DOG_SKIN_SHOW_A6_ALERT", "1") != "0"
+
 #: 계열 한 줄을 말할 확신도 문턱. holdout 에서 오답률 20% 를 지키는 지점입니다
 #: (`experiments.NAMING_TARGET_ERROR`, STEP 33 의 계열 4군 문턱 0.469).
 #: ⚠️ 이 값은 **1단계 확률을 곱한** 뒤의 값과 비교합니다 — `p1 × p(계열)`.
@@ -175,8 +180,11 @@ def lesion_group_line(dist: list[tuple[str, float]],
     g = lesion_group(list(dist), abnormal_p)
     if g is None:
         return ""                          # 꺼져 있거나 확신이 낮으면 아무 말 안 함
-    # ⚠️ "…계열로 보입니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
-    return f"모양만 보면 **{g['name']}** 계열에 가깝습니다. (진단이 아닙니다)"
+    # ⚠️ "…계열에 가깝습니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
+    # ⚠️ 꼬리에 "(진단이 아닙니다)" 를 붙이지 않습니다 — **바로 다음 줄**이
+    #    "판단할 수 없습니다" 라 같은 말을 두 번 하게 됩니다. 면책을 반복하면
+    #    아무도 안 읽습니다 (2026-09-08: 다섯 번 하던 것을 두 번으로 줄였습니다).
+    return f"모양만 보면 **{g['name']}** 계열에 가깝습니다."
 
 
 def compose_screening_message(pred: Prediction, abnormal_p: float | None = None) -> str:
@@ -242,34 +250,51 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         L.append(f"_{DISCLAIMER}_")
         return "\n".join(L)
 
+    # 깎기 전 원본 분포를 씁니다 (합 = 1). pred.topk 는 1단계 확률을 곱해
+    # 낮춰둔 값이라, 그걸 그대로 띄우면 여섯 개가 다 작아져 분포로 안 읽힙니다.
+    dist = pred.stage2_probs if pred.stage2_probs else pred.topk
+
+    # ── ★ A6 경보 — **맨 위**입니다 (2026-09-08) ──────────────────
+    #   가장 급한 신호라 제일 먼저 옵니다. 유일하게 병변 이름을 말하는 자리이고
+    #   예외인 이유는 `config.A6_ALERT_MIN` 에 적혀 있습니다.
+    from src.agent import a6_alert, lesion_group_dist          # noqa: E402
+
+    al = a6_alert(list(dist), abnormal_p)
+    if al:
+        L.append(f"⚠️ **{al['text']}** {al['action']}")
+        L.append("")
+
     head = "🔎 **피부에 이상 소견이 보입니다.**"
     if abnormal_p is not None:
         head += f" (이상 가능성 {abnormal_p:.0%})"
     L.append(head)
     L.append("")
-    L.append("**어떤 병변인지는 이 사진만으로 판단할 수 없습니다.** "
-             "아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다.")
-    L.append("")
 
-    # 깎기 전 원본 분포를 씁니다 (합 = 1). pred.topk 는 1단계 확률을 곱해
-    # 낮춰둔 값이라, 그걸 그대로 띄우면 여섯 개가 다 작아져 분포로 안 읽힙니다.
-    dist = pred.stage2_probs if pred.stage2_probs else pred.topk
-
-    # ★ 여섯 개를 **전부** 보여줍니다. 상위 몇 개만 자르면 그게 답처럼 읽힙니다.
-    width = max((_cells(CLASS_KO.get(cc, cc)) for cc, _ in dist), default=10)
-    for cc, pp in dist:
-        name = _pad(CLASS_KO.get(cc, cc), width)
-        bar = "█" * max(0, round(pp * 20))
-        L.append(f"    {name}  {pp:>4.0%}  {bar}")
-
-    # ── ★ 계열 한 줄 (기본 꺼짐) ──────────────────────────────────
-    #   STEP 28~33 이 실측했습니다: **6종 이름은 못 말해도 계열은 말할 수
-    #   있습니다** — holdout 커버리지 41.1% vs **67.9%**.
-    #   다만 켤지는 **제품 결정**이라 기본값은 꺼둡니다.
+    # ── ★ 계열 한 줄 (주장) — 확신 있을 때만 ──────────────────────
+    #   STEP 28~33: 6종 이름은 holdout 커버리지 41.1% 로 못 쓰는데
+    #   계열 4군은 67.9%(하향 방지 규칙 적용 66.5%) 입니다.
     grp = lesion_group_line(dist, abnormal_p)
     if grp:
-        L.append("")
         L.append(grp)
+    # ⚠️ 면책 ①/② — 이 줄은 **숫자보다 위**에 옵니다 (§7-B 규칙 4).
+    #    확신이 낮아 위 한 줄이 없을 때는 이 줄이 혼자 남습니다.
+    L.append("**어떤 병변인지까지는 이 사진만으로 판단할 수 없습니다.**")
+    L.append("")
+
+    # ── ★ 계열 4묶음 막대 (분포) — 2026-09-08 부터 6종 대신 ────────
+    #   ⚠️ 6종을 **자른 게 아니라 더한 것**이라 아무것도 안 숨깁니다.
+    #      6종 분포는 계약(`stage2.distribution`)에 그대로 남아 콘솔이 씁니다.
+    groups = lesion_group_dist(list(dist))
+    if groups:
+        width = max(_cells(g["name"]) for g in groups)
+        for g in groups:
+            bar = "█" * max(0, round(g["prob"] * 20))
+            L.append(f"    {_pad(g['name'], width)}  {g['prob']:>4.0%}  {bar}")
+    else:                                   # 묶음을 못 만들면 6종으로 물러섭니다
+        width = max((_cells(CLASS_KO.get(cc, cc)) for cc, _ in dist), default=10)
+        for cc, pp in dist:
+            bar = "█" * max(0, round(pp * 20))
+            L.append(f"    {_pad(CLASS_KO.get(cc, cc), width)}  {pp:>4.0%}  {bar}")
 
     L.append("")
     L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
