@@ -136,12 +136,13 @@ def main() -> None:
     mb = sum(p.stat().st_size for p in imgs.iterdir()) / 1e6
     print(f"\n■ {len(d):,}장 · {mb/1000:.2f}GB · {(time.perf_counter()-t0)/60:.1f}분")
     print(f"■ 개체 {d['group'].nunique():,} · 클래스 {d['label'].nunique()}종")
-    print(f"\n다음 — 캐글에 **Private** 으로 올립니다:")
-    print(f"    cd {out}")
-    print( "    kaggle datasets init -p .")
-    print( "    # dataset-metadata.json 의 title/id 를 채우고")
-    print( "    kaggle datasets create -p . --dir-mode zip")
-    print( "\n⚠️ `--public` 을 붙이지 마세요 — AI Hub 데이터는 재배포 금지입니다.")
+    print(f"\n다음 — 캐글에 **Private** 으로 올립니다.")
+    print( "\n[웹] zip 하나로 묶어 New Dataset 에 올립니다 (CLI 키가 없어도 됩니다):")
+    print(f"    uv run python tools/zip_for_kaggle.py")
+    print( "    → https://www.kaggle.com/datasets → New Dataset → 그 zip")
+    print( "\n[CLI] kaggle.json 이 ~/.kaggle/ 에 있다면:")
+    print(f"    uv run --with kaggle kaggle datasets create -p {out} --dir-mode zip")
+    print( "\n⚠️ 공개 범위를 Private 에서 바꾸지 마세요 — AI Hub 데이터는 재배포 금지입니다.")
 
 
 if __name__ == "__main__":

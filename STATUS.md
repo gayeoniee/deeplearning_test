@@ -62,15 +62,29 @@
 
 ### 사용자님이 하실 것
 
-```bash
-cd data/work/detect
-kaggle datasets create -p . --dir-mode zip     # ⚠️ --public 붙이지 마세요
-```
+⚠️ **`kaggle` CLI 는 이 PC 에 없습니다** — 패키지도 안 깔려 있고
+`~/.kaggle/kaggle.json` 도 비어 있습니다. 키를 발급받아 넣는 것보다
+**웹으로 zip 하나를 올리는 쪽이 빠릅니다.**
 
-그다음 캐글에서 `13_병변_검출기.ipynb` Import → **Add input** 으로 그
-데이터셋 붙이기 → **Save Version → Save & Run All (Commit)**.
+| | |
+|---|---|
+| 올릴 것 | `data/work/dogskin-detect.zip` (1.11GB) |
+| 어디에 | <https://www.kaggle.com/datasets> → **New Dataset** |
+| 공개 범위 | **Private** (기본값). ⚠️ 바꾸지 마세요 — AI Hub 데이터는 재배포 금지입니다 |
+
+캐글 웹 업로더는 올린 zip 을 **자동으로 풉니다** — `boxes.parquet` 과
+`images/` 가 데이터셋 뿌리에 놓입니다. 노트북 1번 셀은 `rglob` 으로 찾으니
+캐글이 폴더를 한 겹 더 싸도 괜찮습니다.
+
+그다음 `13_병변_검출기.ipynb` Import → **Add input** 으로 그 데이터셋 붙이기
+→ **Save Version → Save & Run All (Commit)**.
 
 ⚠️ 대화형으로 돌리면 탭 닫는 순간 끝납니다.
+
+**나중에 CLI 를 쓰고 싶다면** — 캐글 Settings → API → *Create New Token* 으로
+받은 `kaggle.json` 을 `~/.kaggle/` 에 두고
+`uv run --with kaggle kaggle datasets create -p data/work/detect --dir-mode zip`.
+⚠️ 키를 코드나 노트북 셀에 붙여넣지 마세요.
 
 ### 왜 캐글인가
 
