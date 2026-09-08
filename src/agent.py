@@ -199,7 +199,8 @@ def lesion_group(probs: list[tuple[str, float]] | None,
     """★ **계열** 한 덩어리 — 이름이 아니라 묶음입니다.
 
     `None` 이면 화면에 아무것도 띄우지 않습니다. 두 경우입니다:
-      · `message.SHOW_GROUP` 이 꺼져 있음 (제품 결정 전 기본값)
+      · `message.SHOW_GROUP` 이 꺼져 있음 (2026-09-08 부터 기본은 **켜짐**.
+        끄려면 `DOG_SKIN_SHOW_GROUP=0`)
       · 확신이 문턱 아래 — **확신 없으면 말하지 않습니다**
 
     ⚠️ **이건 "1등 병변" 이 아닙니다.** 6종 중 하나를 고르는 게 아니라

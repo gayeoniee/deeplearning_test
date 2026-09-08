@@ -138,7 +138,7 @@ check("to_dict 에 stage1_abnormal 이 남음", d["stage1_abnormal"] == 0.62)
 # ──────────────────────────────────────────────────────────────
 # ★ 계열 한 줄 (STEP 34) — 기본 꺼짐, 켜도 규칙을 깨지 않는가
 # ──────────────────────────────────────────────────────────────
-print("\n[계열] SHOW_GROUP — 기본은 꺼져 있어야 합니다")
+print("\n[계열] SHOW_GROUP — 2026-09-08 부터 기본 **켜짐** (사용자 결정)")
 import os as _os                                                  # noqa: E402
 
 import src.message as _M                                          # noqa: E402
@@ -147,10 +147,22 @@ from src.message import Prediction, compose_screening_message      # noqa: E402
 _DIST = [("A1", .45), ("A4", .30), ("A2", .10), ("A3", .06), ("A5", .05), ("A6", .04)]
 _FLAT = [("A1", .2), ("A2", .2), ("A3", .2), ("A4", .2), ("A5", .1), ("A6", .1)]
 
-check("환경변수가 없으면 꺼져 있다",
-      _M.SHOW_GROUP is False or _os.environ.get("DOG_SKIN_SHOW_GROUP") == "1")
-check("꺼져 있으면 빈 문자열", _M.lesion_group_line(_DIST, 0.9) == ""
-      if not _M.SHOW_GROUP else True)
+check("환경변수가 없으면 **켜져 있다** (2026-09-08 결정)",
+      _M.SHOW_GROUP is True or _os.environ.get("DOG_SKIN_SHOW_GROUP") == "0")
+# ★ 되돌릴 수 있어야 합니다 — 제품 결정은 뒤집힐 수 있고, 그때 코드를 고치는
+#   게 아니라 환경변수 하나로 꺼져야 합니다.
+_env_was = _os.environ.get("DOG_SKIN_SHOW_GROUP")
+_os.environ["DOG_SKIN_SHOW_GROUP"] = "0"
+import importlib as _il                                            # noqa: E402
+_il.reload(_M)
+check("★ DOG_SKIN_SHOW_GROUP=0 이면 꺼진다", _M.SHOW_GROUP is False)
+check("꺼지면 빈 문자열", _M.lesion_group_line(_DIST, 0.9) == "")
+if _env_was is None:
+    _os.environ.pop("DOG_SKIN_SHOW_GROUP", None)
+else:
+    _os.environ["DOG_SKIN_SHOW_GROUP"] = _env_was
+_il.reload(_M)
+check("되돌리면 다시 켜진다", _M.SHOW_GROUP is True)
 
 _was = _M.SHOW_GROUP
 _M.SHOW_GROUP = True

@@ -125,8 +125,22 @@ MORPH_GROUP_KEEP_A6: dict[str, str] = {
     "A5": "미란·궤양", "A6": "결절·종괴",
 }
 
+#: ★ **문헌 근거 (2026-09-08 확인)** — 세 축이 각각 표준에 있습니다:
+#:   ① primary / secondary — MSD·Merck Vet Manual, Clinicians Brief
+#:   ② **1cm 경계** (구진 ≤1cm / 결절 >1cm, 결절은 진피·피하로 더 깊이) —
+#:      Merck Vet Manual · Cornell · Veterian Key → **A6 을 따로 둔 근거**
+#:   ③ **표피 소실 여부** — *"Unlike erosions and ulcers which involve loss of
+#:      epidermis, collarettes …"* (Edinburgh CLIVE) → **A5 를 가르는 선**
+#:   그리고 A2+A3 는 **Hensel, Santoro, Favrot, Hill, Griffin (2015),
+#:   BMC Vet Res**(ICADA 개 아토피 가이드라인)의 한 문장에 같이 있습니다:
+#:      "Typical secondary skin lesions are excoriations, alopecia,
+#:       **lichenification, hyperpigmentation, crusting, and seborrhea**."
+#: ⚠️ 단 그 목록엔 `excoriations` 도 들어 있는데 우리는 그걸 A5 쪽으로 가릅니다.
+#:    즉 그 문장 하나로 정해지지 않고 **②③ 축과의 조합**이 우리 묶음입니다.
+#:    **이 조합을 쓴 선례는 못 찾았습니다.**
+#:
 #: ⚠️ **정직하게 적어둡니다** — 임상 해설이 "안전한 혼동" 으로 **명시한 것은
-#: 두 쌍뿐**입니다 (A1↔A4 · A5↔A6). `MORPH_GROUP` 의 A2+A3 은 문서가 인정한
+#: 두 쌍뿐**입니다 (A1↔A4 · A5↔A6). `MORPH_GROUP` 의 A2+A3 은 그 문서가 인정한
 #: 게 아니라 **남은 것**이고, 이득의 대부분이 거기서 나옵니다:
 #:     6종 33.7% → 문서가 인정한 병합만 42.5% → A2+A3 까지 62.1%
 #: 즉 **"임상적으로 비슷해서 묶었다" 는 절반만 맞습니다.**
