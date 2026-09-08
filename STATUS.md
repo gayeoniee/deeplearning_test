@@ -81,6 +81,13 @@
 
 ⚠️ 대화형으로 돌리면 탭 닫는 순간 끝납니다.
 
+🔴 **노트북을 다시 Import 하세요 (2026-09-08).** 1차 실행이 56초 만에
+`ModuleNotFoundError: No module named 'src.detect'` 로 죽었습니다 — 환경 셀을
+12번에서 복사하면서 `NB_BRANCH` 가 **`src/detect.py` 가 없는 옛 브랜치**를
+가리키고 있었습니다. 지금은 `main` 으로 고쳤지만 **노트북 셀은 `git pull` 로
+안 바뀝니다** — 캐글에 올린 `.ipynb` 를 지우고 새로 Import 해야 합니다.
+데이터셋은 그대로 두면 됩니다 (붙이는 것도, 개체 분할도 정상이었습니다).
+
 **나중에 CLI 를 쓰고 싶다면** — 캐글 Settings → API → *Create New Token* 으로
 받은 `kaggle.json` 을 `~/.kaggle/` 에 두고
 `uv run --with kaggle kaggle datasets create -p data/work/detect --dir-mode zip`.

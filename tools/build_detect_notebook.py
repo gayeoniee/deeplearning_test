@@ -17,6 +17,30 @@ ROOT = Path(__file__).resolve().parents[1]
 NB = ROOT / "notebooks" / "13_병변_검출기.ipynb"
 SRC = ROOT / "notebooks" / "12_홀드아웃_확인.ipynb"
 
+# ★ 이 노트북이 받아야 할 브랜치. **베낀 셀의 값을 그대로 쓰면 안 됩니다** —
+# 12번은 `claude/dog-disease-diagnosis-model-1s6jtf` 를 못 박아 뒀는데 거기엔
+# `src/detect.py` 가 없습니다 (main 보다 44 커밋 뒤). 그대로 물려받아 캐글에서
+# `ModuleNotFoundError: No module named 'src.detect'` 로 죽었습니다.
+#
+# ⚠️ 클론·검증 **로직**은 베끼는 게 맞지만 `NB_BRANCH` 는 로직이 아니라
+# **노트북마다 다른 설정**입니다. 그래서 여기서 덮어씁니다.
+NB_BRANCH = "main"
+
+
+def _pin_branch(cell: dict, branch: str) -> dict:
+    """베껴 온 환경 셀의 `NB_BRANCH` 한 줄만 바꿉니다."""
+    out, hit = [], 0
+    for line in cell["source"]:
+        if line.lstrip().startswith("NB_BRANCH ="):
+            nl = "\n" if line.endswith("\n") else ""
+            out.append(f'NB_BRANCH = "{branch}"{nl}')
+            hit += 1
+        else:
+            out.append(line)
+    if hit != 1:
+        raise SystemExit(f"[X] NB_BRANCH 줄을 {hit}개 찾았습니다 (1개여야 합니다).")
+    return {**cell, "source": out}
+
 
 def md(text: str) -> dict:
     return {"cell_type": "markdown", "metadata": {},
@@ -34,6 +58,7 @@ def main() -> None:
                      if "0. 환경 준비" in "".join(c["source"])), None)
     if env_cell is None:
         raise SystemExit("[X] 12번에서 환경 셀을 못 찾았습니다.")
+    env_cell = _pin_branch(env_cell, NB_BRANCH)
 
     cells = [
         md(r"""
@@ -89,6 +114,12 @@ def main() -> None:
 것이라 정답이 항상 한가운데입니다 — 모델이 "가운데" 만 외우면 됩니다.
 """),
         env_cell,
+        md(r"""
+⚠️ **위 셀이 받는 브랜치를 확인하세요.** 이 노트북은 `main` 을 받습니다 —
+`src/detect.py` 가 거기 있습니다. 다른 브랜치를 받으면
+`ModuleNotFoundError: No module named 'src.detect'` 로 죽습니다
+(실제로 한 번 그랬습니다).
+"""),
         md(r"""
 ## 1. 데이터 붙이기
 
