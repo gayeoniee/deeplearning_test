@@ -82,3 +82,7 @@ Thumbs.db
 #      *.jpg 규칙이 이미 막지만, 폴더째 무시해 실수를 한 겹 더 막습니다.
 reports/_*
 data/work/detect*/
+
+# patch(1) 가 남기는 백업
+*.orig
+*.rej
