@@ -90,12 +90,14 @@ for name, source in FILES.items():
 (CODE / 'sitecustomize.py').write_text('from PIL import ImageFile\\nImageFile.LOAD_TRUNCATED_IMAGES = True\\n')
 ENV = dict(os.environ)
 ENV['PYTHONPATH'] = str(CODE)
-for package in ['timm==1.0.29', 'albumentations']:   # photo 팔이 albumentations 를 씁니다
-    module = package.split('==')[0]
-    try:
-        __import__(module)
-    except ImportError:
-        subprocess.run([sys.executable, '-m', 'pip', 'install', package], check=True)
+os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
+ENV['NO_ALBUMENTATIONS_UPDATE'] = '1'
+try:
+    import timm
+except ImportError:
+    subprocess.run([sys.executable, '-m', 'pip', 'install', 'timm==1.0.29'], check=True)
+# 검증한 버전으로 고정. 이미 설치된 구버전도 교체하고 학습은 새 subprocess에서 시작.
+subprocess.run([sys.executable, '-m', 'pip', 'install', 'albumentations==2.0.8'], check=True)
 # 실제 사용할 모델의 GPU forward/backward 를 먼저 확인.
 probe = \"\"\"import torch
 from tools.kaggle_safe_crop import make_model

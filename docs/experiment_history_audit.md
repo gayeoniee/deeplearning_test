@@ -22,7 +22,7 @@
 | 2단계 증강 7종 | 과거 완료·추가 채택 없음 | STEP4B, `src/config.py` 프리셋. 1단계 전체에 일반화 불가 |
 | 1단계 photometric | 과거 완료·채택 | STEP6: 흐림 교란 하락 개선. 새 ROI 파일럿에는 빠져 있음 |
 | full→f320 / m1.5→m2.5 | 과거 완료·채택 | STEP9A / STEP4C. 이번 all-box ROI는 과거 first-box f320과 다름 |
-| 백본 학습률 강도 | 과거 moderate 채택 기록 | STEP4A, `FT_PRESETS`, `src/models.py:param_groups`. 이번 단일 LR와 다름 |
+| 백본 학습률 강도 | 1단계 뚜렷한 개선 없음; 2단계는 기간 연장과 함께 개선 | STEP4A 2차: 1단계 AUROC .8031→.8100, 기록상 오차 범위. 3차: 1단계 .8020, 2단계 F1 .4865→.5514. 학습률 단독 효과로 분리 불가 |
 | 1단계 Swin·ConvNeXt 등 | 과거 비교 완료·교체 미채택 | STEP14 판 A/B. 다시 백본 탐색을 1순위로 제안하지 않음 |
 | 2단계 ConvNeXt·Swin | 과거 개선 기록 있음 | STEP12/13. STEP9는 미수렴 무효, SigLIP도 성공/실패 확정 불가 |
 | 혼동행렬·오답 출처 분석 | 과거 완료 | STEP11. A2 중심이라는 사실은 새 발견이 아님 |

@@ -49,7 +49,8 @@ holdout 은 학습에도 모델 선택에도 안 쓴 마지막 시험지입니�
 | **`13_병변_검출기`** | **`dogskin-detect`** (Private) | 검출 학습 | 1~2시간 | ★ **대기** — STEP 42. 사람 말고 **모델이 네모를 찾게**. ⚠️ **크롭 데이터셋 못 씁니다** (정답이 항상 한가운데) |
 | **`14_원본_병변보존_crop_파일럿`** | `dogskin-safecrop` (Private) | 1단계 ×2 (같은 초기 가중치) | 3시간 56분 | ❌ 끝 — STEP 44 **이득 없음**. 문턱 재조정 전 macro-F1 0.3457 vs 0.6488 |
 | **`15_ROI_crop_비교`** | `dogskin-roi` (Private) | 1단계 ×2 (EfficientNetV2-S) | 80분 | ❌ 끝 — STEP 45 **기각**. 고정 ROI 가 F1·AUROC 둘 다 앞섬 (0.8552/0.9342 vs 0.8157/0.8980) |
-| **`16_photometric_복원_비교`** | `dogskin-photo` (Private) | 1단계 ×2 (EfficientNetV2-S) | ~3시간 | ★ **대기** — 이력 감사 ①. 고정 ROI 를 고정해 두고 **`photometric` 만** 켜고 끔. ⚠️ **손으로 고치지 말고** `tools/build_photo_notebook.py` 로 만드세요 |
+| **`16_photometric_복원_비교`** | `dogskin-photo` (Private) | 1단계 ×2 (EfficientNetV2-S) | 83분 | ✅ 끝 — STEP 46 **통과**. 흐림 하락 10.57%p → **0.73%p**. ⚠️ **손으로 고치지 말고** `tools/build_photo_notebook.py` 로 만드세요 |
+| **`17_VL01_photometric_확장평가`** | `dogskin-vl01-photo` (Private) | **학습 없음** (추론만) | — | ★ **대기** — STEP 47. VL01 6,183장 확대 확인. 패키지 1.97GiB 준비됨 |
 
 ⚠️ **`03f` · `03g` · `03h` · `14` · `15` 는 채택되지 않았거나 미완입니다**
 (03f 축 닫힘, 03g 헛알림 +1.8%p, 03h 는 재개 조건이 발동 안 함 — STEP 23,
