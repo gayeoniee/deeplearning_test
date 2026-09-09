@@ -1,5 +1,21 @@
 # 노트북 — 무엇을 언제 돌리나
 
+후속 ROI 비교: **[`03i_ROI_crop_비교.ipynb`](03i_ROI_crop_비교.ipynb)**.
+기존 Kaggle Dataset 그대로 사용, EfficientNetV2-S·384px 고정 ROI vs 병변 보존 random ROI.
+기본 3시간 예산, 별도 `roi_crop_pilot_resume.zip`으로 재개합니다.
+과거 f320 실험의 완전 재현은 아닙니다. [비교 설계](../docs/roi_crop_pilot.md).
+
+새 원본 crop 예비 실험: **`03h_원본_병변보존_crop_파일럿.ipynb`**.
+`dogskin_safe_crop_pilot.zip`만 Private Dataset으로 업로드해서 사용합니다.
+학습 20,000장·검증 4,000장, 일반 crop/병변 보존 crop을 같은 초기 가중치로
+최대 5 epoch씩 비교합니다. 기본 실행 예산 7시간, holdout 미사용.
+실행·재개 방법은 [전용 안내](../docs/kaggle_safe_crop_pilot.md)를 참고하세요.
+아래 과거 노트북 상태표와 별개의 새 분할·새 실험입니다.
+
+⚠️ **`03h` 가 둘입니다** — `03h_2단계_학습률.ipynb`(기존)와
+`03h_원본_병변보존_crop_파일럿.ipynb`(위). 서로 다른 실험이고, 이 파일럿은
+main 보다 뒤처진 체크아웃에서 만들어져 번호가 겹쳤습니다. 번호로 부르지 마세요.
+
 ## 🚨 holdout 을 여는 노트북은 **넷입니다** — `05` · `06` · `07` · `12`
 
 ⚠️ 여기 오래 *"06 하나뿐"* 이라고 적혀 있었는데 **사실이 아니었습니다.**
