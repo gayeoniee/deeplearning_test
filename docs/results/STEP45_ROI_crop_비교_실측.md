@@ -77,6 +77,12 @@ STEP 44 의 대조군은 *"병변을 자를 수도 있는 일반 random crop"* �
 
 ## ⚠️ 한계
 
+- ★★ **이 파일럿은 채택된 학습법의 재현이 아닙니다.**
+  `photometric` · backbone LR 배율 · warmup · EMA 가 **전부 빠져 있습니다**.
+  실제 백본 LR 은 **3e-4** 로 `moderate`(9e-5)와 다릅니다
+  (`protocol.cfg` 에 기본값이 남아 있어도 runner 가 안 씁니다).
+  → **"이 설정에서 safe 가 졌다"** 이지 *"채택 레시피에서도 진다"* 가 아닙니다.
+  자세한 대조는 [`docs/experiment_history_audit.md`](../experiment_history_audit.md)
 - **단일 seed · 5 epoch** 입니다
 - 검증이 **정답 주석 기반 고정 ROI** 입니다 — 실사용자 사진에는 정답 주석이
   없으므로 이 검증만으로 **사용자 사진에서의 강건성**을 말할 수 없습니다.
