@@ -1,7 +1,10 @@
-"""Audit original archives and build an isolated, all-annotation manifest.
+"""원본 아카이브를 감사하고 **격리된** 전체-주석 매니페스트를 만듭니다 (STEP 44).
 
-Run: python -m tools.prepare_safe_crop [--verify-images]
-Never modifies legacy crops or manifests. Quarantines questionable annotations.
+    python -m tools.prepare_safe_crop [--verify-images]
+
+기존 크롭·매니페스트는 **건드리지 않습니다**. 의심스러운 주석은 지우지 않고
+격리해 `*_audit.json` 에 남깁니다 — 이름 체계가 바뀐 것일 수도 있어서
+라벨이 틀렸다고 단정하지 않습니다.
 """
 from __future__ import annotations
 
@@ -65,7 +68,7 @@ def prepare(archive, out, verify_images=False):
                 if not w or not h:
                     raise ValueError('Missing image dimensions')
                 boxes = annotation_boxes(rec)
-                # Validate every box even if this image would use full fallback.
+                # 전체 사진으로 물러설 사진이라도 box 는 전부 검사합니다.
                 sample_window(w, h, boxes, rng=random.Random(0), attempts=1)
                 if not boxes:
                     raise ValueError('Missing ROI annotations (including normal ROI)')
@@ -80,7 +83,7 @@ def prepare(archive, out, verify_images=False):
                         if im.size != (w, h):
                             raise ValueError('Image dimensions differ from JSON')
                         im.verify()
-                    # JPEG header/ZIP CRC checks do not decode the pixel stream.
+                    # ⚠️ JPEG 헤더·ZIP CRC 검사는 픽셀까지 안 봅니다 — 손상 5장이 여기를 빠져나갔습니다.
                     with Image.open(io.BytesIO(raw)) as im:
                         im.convert('RGB').load()
                     counts['images_verified'] += 1

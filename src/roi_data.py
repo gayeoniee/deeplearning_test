@@ -1,4 +1,4 @@
-"""Matched fixed versus randomized lesion-near crops; validation is fixed ROI."""
+"""고정 ROI vs 병변 근처 random ROI — 검증은 둘 다 고정 ROI (STEP 44 후속)."""
 import json
 import math
 import random
@@ -9,7 +9,7 @@ from src.safe_crop import sample_window
 
 def roi_window(width, height, boxes, *, augment=False, rng=None):
     rng = rng or random
-    # Reuse strict coordinate validation. No annotations: same full frame in both arms.
+    # 좌표 검사는 safe_crop 것을 그대로 씁니다. 주석이 없으면 두 방법 모두 원본 전체.
     sample_window(width, height, boxes, attempts=1, rng=random.Random(0))
     if not boxes:
         return (0, 0, width, height)

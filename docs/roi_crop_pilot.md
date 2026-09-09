@@ -1,6 +1,6 @@
 # ROI crop 후속 비교
 
-실행: `notebooks/03i_ROI_crop_비교.ipynb`를 Kaggle에 Import하고 기존
+실행: `notebooks/15_ROI_crop_비교.ipynb`를 Kaggle에 Import하고 기존
 `safe-crop-pilot` Dataset을 연결한다. GPU T4 / Internet ON. 코드는 노트북에
 포함되므로 8GB 데이터 재업로드는 필요 없다. 기본 HOURS=3, batch=16,
 EPOCHS=5이며 남은 GPU 시간에 맞춰 HOURS만 조절한다. 완료 시간 보장은 없다.

@@ -38,7 +38,7 @@ def test_roi_paired_run_and_resume(packaged, tmp_path):
 
 
 def test_notebook_embedded_runner(packaged, tmp_path):
-    notebook = json.loads(Path('notebooks/03i_ROI_crop_비교.ipynb').read_text())
+    notebook = json.loads(Path('notebooks/15_ROI_crop_비교.ipynb').read_text())
     for cell in notebook['cells']:
         if cell['cell_type'] == 'code':
             compile(''.join(cell['source']), '<notebook>', 'exec')

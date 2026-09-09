@@ -1,4 +1,4 @@
-"""Freeze a new split and audit crop proposals using training rows only."""
+"""새 분할을 고정하고, **학습 행만으로** crop 후보를 감사합니다 (STEP 44)."""
 from __future__ import annotations
 
 import argparse
@@ -32,11 +32,11 @@ def finalize(root):
     rejected = df[df.sha256.isin(conflicts)]
     rejected.to_parquet(root / 'conflicting_labels.parquet', index=False)
     df = df[~df.sha256.isin(conflicts)].reset_index(drop=True)
-    # Keep every source record but force identical JPEG bytes into one group.
-    # Near-duplicate detection is not claimed here.
+    # 원본 기록은 다 남기되 JPEG 바이트가 같은 것만 한 그룹으로 묶습니다.
+    # ⚠️ 유사 이미지 중복(pHash)은 여기서 주장하지 않습니다.
     df['dup_cluster'] = pd.factorize(df.sha256, sort=True)[0]
     df = split.assign(df, CFG())
-    # Deduplicate AFTER forming groups: retain transitive animal-ID relations.
+    # 중복 제거는 그룹을 만든 **뒤에** — 개체 ID 의 전이 관계를 살립니다.
     before = len(df)
     df = df.drop_duplicates('sha256').reset_index(drop=True)
     split.verify(df, fold=0, strict=True)
@@ -79,7 +79,7 @@ def audit(root, df):
         torch.manual_seed(42)
         for row in sample.itertuples():
             boxes = json.loads(row.boxes)
-            # Only image size is used by get_params; no original decode needed.
+            # get_params 는 이미지 크기만 씁니다 — 원본을 디코딩할 필요가 없습니다.
             canvas = Image.new('L', (row.img_w, row.img_h))
             for repeat in range(5):
                 window = sample_window(row.img_w, row.img_h, boxes,
@@ -103,7 +103,7 @@ def audit(root, df):
         min_retention=('min_roi_retention', 'min')).reset_index()
     summary.to_csv(root / 'crop_summary.csv', index=False)
     print(summary.to_string(index=False), flush=True)
-    # One training example per class: original with annotations, then two crops.
+    # 클래스당 한 장: 주석이 있는 원본, 그리고 크롭 두 개.
     sheet = Image.new('RGB', (960, 7*210), 'white')
     rng = random.Random(17)
     for i, (_, row) in enumerate(sample.groupby('label').first().iterrows()):

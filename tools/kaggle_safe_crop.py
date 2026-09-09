@@ -1,7 +1,9 @@
-"""Time-budgeted paired stage-1 pilot, with epoch-boundary resume.
+"""시간 예산이 있는 1단계 짝 비교 — epoch 경계에서 이어받습니다 (STEP 44).
 
-python tools/kaggle_safe_crop.py --data DATASET_ROOT --out OUTPUT_DIR
-This executable and its src snapshot are bundled with the pilot data.
+    python tools/kaggle_safe_crop.py --data DATASET_ROOT --out OUTPUT_DIR
+
+이 실행기와 `src/` 스냅샷은 파일럿 데이터에 **같이 담겨** 나갑니다 —
+캐글에서 git clone 도 API 키도 필요 없게.
 """
 from __future__ import annotations
 
@@ -103,7 +105,7 @@ def metrics(probability, target, original_labels):
 
 def one_epoch(model, optimizer, scaler, tr, va, cfg, mode, epoch, device,
               deadline, max_train_batches=None):
-    """Return None on deadline; caller retains the previous committed epoch."""
+    """마감을 넘기면 None — 부르는 쪽이 직전에 커밋된 epoch 를 그대로 유지합니다."""
     seed_everything(cfg.seed + epoch)
     model.train()
     dataset = OriginalDataset
@@ -186,7 +188,7 @@ def write_comparison(output, histories):
 
 
 def export_resume(output):
-    # Keep images and the dataset out of Kaggle outputs. Only small run artifacts.
+    # 사진과 데이터셋은 캐글 출력에 안 넣습니다 — 작은 실행 산출물만.
     profile = json.loads((output / 'protocol.json').read_text()).get('profile', 'original')
     archive = output.parent / ('roi_crop_pilot_resume.zip' if profile == 'roi' else 'safe_crop_pilot_resume.zip')
     temporary = archive.with_suffix('.zip.part')
@@ -263,7 +265,7 @@ def run(args):
         if state and state['initial_sha256'] != initial_digest:
             raise ValueError('Initialization mismatch')
         histories[mode] = state['history'] if state else []
-    # Reserve 10 minutes for checkpoint/export. --hours is this invocation's wall time.
+    # 체크포인트·내보내기에 10분을 남깁니다. --hours 는 이번 호출의 벽시계 시간입니다.
     reserve = min(600, args.hours*3600*0.1)
     deadline = started + args.hours*3600 - reserve
     reason = 'completed'
@@ -293,7 +295,7 @@ def run(args):
                     del state
                 else:
                     model.load_state_dict(load_checkpoint(initial_path))
-                # Epoch-indexed schedule makes interrupted epoch replay deterministic.
+                # epoch 로 색인한 스케줄이라 중단된 epoch 를 다시 돌려도 결정론적입니다.
                 lr = cfg.lr * (0.1 + 0.9*(1+math.cos(math.pi*epoch/cfg.epochs))/2)
                 for group in optimizer.param_groups:
                     group['lr'] = lr
@@ -310,7 +312,7 @@ def run(args):
                 if record['macro_f1'] >= max(r['macro_f1'] for r in histories[mode]):
                     atomic_save({'model': model.state_dict(), 'epoch': epoch+1,
                                  'initial_sha256': initial_digest}, args.out / f'{mode}_best.pt')
-                # Small per-epoch predictions allow common-epoch comparisons after resume.
+                # epoch 마다 작은 예측을 남겨야 이어받은 뒤에도 **공통 epoch** 비교가 됩니다.
                 np.savez_compressed(args.out / f'{mode}_epoch{epoch+1}_val.npz',
                                     probability=probabilities, sha256=va.sha256.to_numpy(dtype=str),
                                     original_label=va.original_label.to_numpy(dtype=str))

@@ -3,14 +3,14 @@
 ## 준비물
 
 - `data/packages/dogskin_safe_crop_pilot.zip`: 원본 JPG 24,000장, 원본 JSON, 전체 ROI 좌표, 고정 표본, 실행 코드 스냅샷. 원본 사진을 리사이즈하거나 재압축하지 않는다.
-- `notebooks/03h_원본_병변보존_crop_파일럿.ipynb`: 이 패키지를 찾아 실행하는 노트북.
+- `notebooks/14_원본_병변보존_crop_파일럿.ipynb`: 이 패키지를 찾아 실행하는 노트북.
 
 학습 20,000장·검증 4,000장을 기존 fold 0의 각 분할에서 A1–A7 비율에 맞춰 추출했다. 새로 train/val을 나누지 않는다. holdout은 포함하지 않는다. 두 방법이 완전히 같은 표본을 사용한다. 대용 개체 ID와 완전 동일 JPG의 분할 간 중복은 없다. 유사 사진 중복과 실제 개체 ID 부재의 제한은 원래 실험과 같다.
 
 ## 실행 순서
 
 1. Kaggle Datasets → New Dataset에서 `dogskin_safe_crop_pilot.zip`을 **Private**로 업로드한다. 업로드와 Dataset 처리 완료까지 GPU를 켜지 않는다.
-2. 새 Notebook에 `03h_원본_병변보존_crop_파일럿.ipynb`를 Import한다. Add Input으로 위 Dataset만 붙인다. GitHub 코드나 191 GiB 원본 ZIP 전체는 필요 없다.
+2. 새 Notebook에 `14_원본_병변보존_crop_파일럿.ipynb`를 Import한다. Add Input으로 위 Dataset만 붙인다. GitHub 코드나 191 GiB 원본 ZIP 전체는 필요 없다.
 3. **GPU T4 x2**, Internet On으로 설정한다. 이 파일럿은 한 장만 사용한다. 첫 셀에서 별도 프로세스로 ResNet50 FP32/AMP 순전파·역전파·optimizer 실행을 검사한다. 통과한 뒤 첫 학습에서 torchvision 사전학습 ResNet50 가중치를 다운로드한다.
 4. 남은 GPU 시간을 확인하고 노트북의 `HOURS`를 설정한다. 9시간이 남았을 때 기본값은 **7.0시간**이다. 데이터 준비·가중치 다운로드·출력 저장 여유를 남긴다.
 5. **Save Version → Save & Run All**로 한 번 실행한다. 같은 전체 학습을 편집 세션에서 먼저 실행하고 다시 Save & Run All로 중복 실행하지 않는다.

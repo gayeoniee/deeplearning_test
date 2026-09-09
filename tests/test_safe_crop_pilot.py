@@ -135,7 +135,7 @@ def test_packaged_cli_works_outside_repository(packaged, tmp_path):
 
 
 def test_notebook_cells_and_resume_zip_end_to_end(packaged, tmp_path, monkeypatch):
-    notebook = Path(__file__).resolve().parents[1] / 'notebooks/03h_원본_병변보존_crop_파일럿.ipynb'
+    notebook = Path(__file__).resolve().parents[1] / 'notebooks/14_원본_병변보존_crop_파일럿.ipynb'
     cells = json.loads(notebook.read_text())['cells']
     input_root = tmp_path / 'input'
     shutil.copytree(packaged, input_root / 'dataset')
@@ -167,7 +167,7 @@ def test_notebook_cells_and_resume_zip_end_to_end(packaged, tmp_path, monkeypatc
 
 
 def test_notebook_stops_before_data_when_cuda_kernel_is_unsupported(monkeypatch):
-    notebook = Path(__file__).resolve().parents[1] / 'notebooks/03h_원본_병변보존_crop_파일럿.ipynb'
+    notebook = Path(__file__).resolve().parents[1] / 'notebooks/14_원본_병변보존_crop_파일럿.ipynb'
     source = ''.join(json.loads(notebook.read_text())['cells'][1]['source'])
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: True)
     monkeypatch.setattr(torch.cuda, 'get_device_name', lambda index: 'Tesla P100')

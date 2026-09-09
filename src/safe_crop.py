@@ -1,7 +1,10 @@
-"""Original-image random crops retaining every annotated lesion.
+"""원본 사진에서 **주석된 병변을 하나도 안 자르는** random crop (STEP 44).
 
-Coordinates must come from the original JSON, not the first-box legacy manifest.
-No torch dependency: usable during local preprocessing and training alike.
+멘토 제안 — *"병변이 최대한 안 잘리는 범위로 random crop"*. 저장된 크롭
+(`m2.5`·`f320`)은 이미 병변을 가운데 놓고 자른 결과라 여기서 못 씁니다.
+좌표는 **원본 JSON** 에서 옵니다 — 매니페스트의 첫 box 하나가 아닙니다.
+
+torch 를 안 씁니다: 로컬 전처리와 학습 양쪽에서 그대로 부릅니다.
 """
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ import re
 
 
 def annotation_boxes(record):
-    """Collect boxes and polygon bounds, including multiple lesions."""
+    """box 와 polygon 외접값을 전부 모읍니다 — 병변이 여러 개인 사진 포함."""
     boxes = []
     for item in record.get("labelingInfo") or []:
         if not isinstance(item, dict):
@@ -49,12 +52,12 @@ def annotation_boxes(record):
 
 def sample_window(width, height, boxes, *, scale=(0.35, 1.0),
                   ratio=(0.85, 1.18), padding=0.05, attempts=50, rng=None):
-    """Sample an image-area crop containing all boxes plus relative padding.
+    """모든 box 를 여유와 함께 담는 창을 뽑습니다. `scale` 은 **원본 면적 대비 비율**.
 
-    If the requested size/aspect cannot contain the lesions, retain the entire
-    image. Missing annotations also retain the entire image (not a random
-    background patch). Invalid coordinates fail rather than silently training
-    on a mislabeled crop. `scale` is crop area / original image area.
+    요청한 크기·비율로 병변을 다 담을 수 없으면 **원본 전체**로 물러섭니다.
+    주석이 없는 사진도 원본 전체입니다 — 배경 아무 곳이나 자르지 않습니다.
+    좌표가 잘못됐으면 **실패시킵니다**: 조용히 잘못된 크롭으로 학습하는 것보다
+    멈추는 게 낫습니다.
     """
     if width <= 0 or height <= 0:
         raise ValueError("Image dimensions must be positive")
@@ -95,6 +98,6 @@ def sample_window(width, height, boxes, *, scale=(0.35, 1.0),
 
 
 def crop_original(image, record, *, rng=None, **kwargs):
-    """Return PIL crop and its original-coordinate window; no resizing."""
+    """PIL 크롭과 그 원본 좌표 창을 돌려줍니다 — 리사이즈는 안 합니다."""
     window = sample_window(*image.size, annotation_boxes(record), rng=rng, **kwargs)
     return image.crop(window), window

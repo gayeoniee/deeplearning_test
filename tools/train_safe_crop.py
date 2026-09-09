@@ -1,11 +1,12 @@
-"""Matched original-image experiments, compatible with the existing trainer.
+"""원본 사진 짝 비교 — 기존 학습기에 그대로 물립니다 (STEP 44).
 
-python -m tools.train_safe_crop --mode safe --task stage1
-python -m tools.train_safe_crop --mode random --task stage1
-python -m tools.train_safe_crop --mode full --task stage1
+    python -m tools.train_safe_crop --mode safe   --task stage1
+    python -m tools.train_safe_crop --mode random --task stage1
+    python -m tools.train_safe_crop --mode full   --task stage1
 
-All runs share the frozen new split and full-image validation. Historical crop
-metrics are not comparable. --smoke checks I/O/backprop, not model quality.
+세 실행이 **고정된 새 분할**과 원본 전체 검증을 공유합니다.
+⚠️ 과거 크롭 지표와 **비교 금지** — 분할이 다릅니다.
+⚠️ `--smoke` 는 입출력과 역전파만 봅니다. 모델 품질이 아닙니다.
 """
 from __future__ import annotations
 

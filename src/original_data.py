@@ -1,8 +1,10 @@
-"""Original ZIP loader for matched full/random/safe-crop experiments.
+"""원본 ZIP 을 직접 읽는 학습 로더 — full / random / safe 를 같은 조건으로 (STEP 44).
 
-All modes use the same full-frame letterbox validation. Safe cropping operates
-before resizing, using all original annotation boxes. Subsequent transforms do
-not crop, rotate, translate, or erase the retained ROI.
+★ **검증은 세 방법 모두 원본 전체 letterbox 로 동일**합니다. 다른 것은 학습
+입력뿐이라, 차이가 나면 crop 방식으로 좁혀집니다.
+
+보존 crop 은 리사이즈 **전에** 원본 좌표에서 자릅니다. 그 뒤 변환은 남긴
+ROI 를 자르거나 회전·이동·지우지 않습니다.
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ from src.safe_crop import sample_window
 
 
 def letterbox(image, size):
-    """Preserve aspect ratio and the complete field of view."""
+    """가로세로비를 지키고 화각을 통째로 남깁니다."""
     image = ImageOps.contain(image, (size, size), Image.Resampling.BILINEAR)
     result = Image.new('RGB', (size, size), (128, 128, 128))
     result.paste(image, ((size-image.width)//2, (size-image.height)//2))
@@ -44,7 +46,7 @@ class OriginalDataset(Dataset):
         if not self.df.label.isin(self.classes).all():
             raise ValueError('Unknown labels in original dataset')
         self.targets = self.df.label.map(mapping).to_numpy(dtype=np.int64)
-        # Include preprocessing version in paths used by the logits fingerprint.
+        # 로짓 지문이 쓰는 경로에 전처리 버전을 넣습니다 — 설정이 다른 실행에 이어붙지 않게.
         self.paths = [f'original-letterbox-v1:{p}' for p in self.df.image_path]
         self._archives = {}
         self._pid = os.getpid()
@@ -68,7 +70,7 @@ class OriginalDataset(Dataset):
         self._archives = {}
 
     def __getitem__(self, index):
-        # A process must never share another worker's seekable ZIP handle.
+        # ZIP 핸들은 seek 를 쓰므로 워커끼리 **절대** 공유하면 안 됩니다.
         if self._pid != os.getpid():
             self.close()
             self._pid = os.getpid()
@@ -107,7 +109,7 @@ class OriginalDataset(Dataset):
 
 def build_original_loaders(train_df, val_df, cfg, model=None, *, mode='safe',
                            classes=None, scale=(0.35, 1.0), padding=0.05):
-    """Compatible with src.train.fit; explicitly rejects batch occlusion."""
+    """`src.train.fit` 에 그대로 물립니다. 배치 가림(occlusion)은 명시적으로 거부합니다."""
     if cfg.mixup_alpha or cfg.cutmix_alpha:
         raise ValueError('Original crop comparison requires mixup/cutmix disabled')
     if cfg.balance_strategy not in ('none', 'class_weight', 'weighted_sampler'):
@@ -125,7 +127,7 @@ def build_original_loaders(train_df, val_df, cfg, model=None, *, mode='safe',
     nw = cfg.resolved_num_workers()
     options = dict(num_workers=nw, pin_memory=torch.cuda.is_available(),
                    persistent_workers=nw > 0)
-    # Limit batches queued in RAM: each worker has ZIP central directories too.
+    # RAM 에 쌓이는 배치를 제한합니다 — 워커마다 ZIP 목차까지 물고 있습니다.
     if nw:
         options['prefetch_factor'] = 2
     bs = cfg.resolved_batch_size()

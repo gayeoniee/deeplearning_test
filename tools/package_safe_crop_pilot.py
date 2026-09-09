@@ -1,4 +1,4 @@
-"""Build a portable, byte-preserving Kaggle pilot; never include holdout."""
+"""캐글 파일럿 패키지 — 바이트를 보존해 옮기고, **holdout 은 절대 안 넣습니다** (STEP 44)."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ def stratified_sample(df, size, seed):
     counts = df.label.value_counts().sort_index()
     if size < len(counts) or size > len(df):
         raise ValueError('Sample size must cover all classes and fit in its split')
-    # Largest remainder allocation preserves original class proportions.
+    # 최대 잔여 배분 — 원래 클래스 비율을 그대로 지킵니다.
     expected = counts * size / len(df)
     quotas = np.floor(expected).astype(int)
     for label in (expected-quotas).sort_values(ascending=False, kind='stable').index[:size-int(quotas.sum())]:
@@ -95,7 +95,7 @@ def package(manifest, destination, train_size=20000, val_size=4000):
             report['code_sha256'][name] = hashlib.sha256(content).hexdigest()
         output.writestr('pilot_package.json', json.dumps(report, ensure_ascii=False, indent=2))
         output.writestr('README.md', (repo / 'docs/kaggle_safe_crop_pilot.md').read_bytes())
-    # Read the completed ZIP once to check every output entry's CRC.
+    # 완성된 ZIP 을 한 번 다시 읽어 모든 항목의 CRC 를 확인합니다.
     with zipfile.ZipFile(temporary) as output:
         bad = output.testzip()
         if bad:
