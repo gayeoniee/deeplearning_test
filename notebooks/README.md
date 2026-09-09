@@ -49,6 +49,7 @@ holdout 은 학습에도 모델 선택에도 안 쓴 마지막 시험지입니�
 | **`13_병변_검출기`** | **`dogskin-detect`** (Private) | 검출 학습 | 1~2시간 | ★ **대기** — STEP 42. 사람 말고 **모델이 네모를 찾게**. ⚠️ **크롭 데이터셋 못 씁니다** (정답이 항상 한가운데) |
 | **`14_원본_병변보존_crop_파일럿`** | `dogskin-safecrop` (Private) | 1단계 ×2 (같은 초기 가중치) | 3시간 56분 | ❌ 끝 — STEP 44 **이득 없음**. 문턱 재조정 전 macro-F1 0.3457 vs 0.6488 |
 | **`15_ROI_crop_비교`** | `dogskin-roi` (Private) | 1단계 ×2 (EfficientNetV2-S) | 80분 | ❌ 끝 — STEP 45 **기각**. 고정 ROI 가 F1·AUROC 둘 다 앞섬 (0.8552/0.9342 vs 0.8157/0.8980) |
+| **`16_photometric_복원_비교`** | `dogskin-photo` (Private) | 1단계 ×2 (EfficientNetV2-S) | ~3시간 | ★ **대기** — 이력 감사 ①. 고정 ROI 를 고정해 두고 **`photometric` 만** 켜고 끔. ⚠️ **손으로 고치지 말고** `tools/build_photo_notebook.py` 로 만드세요 |
 
 ⚠️ **`03f` · `03g` · `03h` · `14` · `15` 는 채택되지 않았거나 미완입니다**
 (03f 축 닫힘, 03g 헛알림 +1.8%p, 03h 는 재개 조건이 발동 안 함 — STEP 23,
@@ -57,6 +58,13 @@ holdout 은 학습에도 모델 선택에도 안 쓴 마지막 시험지입니�
 [`docs/results/`](../docs/results/) 의 `STEP14_1단계_백본_판A_실측.md` ·
 `STEP15_털가중샘플러_실측.md` · `STEP44_병변보존_random_crop_실측.md` ·
 `STEP45_ROI_crop_비교_실측.md` 에 있습니다.
+
+⚠️ **`15`·`16` 은 `src/` 스냅샷을 셀 안에 문자열로 담습니다** (8GB 데이터를
+다시 안 올리려고). 그래서 **소스를 고쳐도 노트북은 안 따라옵니다.**
+`16` 은 `tools/build_photo_notebook.py` 로 다시 만드세요.
+⚠️ **이미 돌린 노트북(`15`)의 스냅샷은 건드리지 마세요** — 그게 그때 실제로 돈
+코드라서, 바꾸면 `protocol.json` 의 `runtime_code_sha256` 와 어긋나고 그 실행을
+재현할 수 없게 됩니다.
 
 `00`~`02` 가 없는 이유: 데이터 확보·전처리는 노트북 말고 **한국 PC 의
 `prepare_local.py`** 가 합니다 (AI Hub 가 해외 IP 를 막습니다).

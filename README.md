@@ -190,6 +190,8 @@ STEP 45 (EffNetV2-S 384)   고정 ROI  0.8552   보존 random 0.8157
 > 같은 고정 ROI 에서 **`photometric` 유무만** 바꿔 비교하고, clean 점수뿐
 > 아니라 **같은 사진의 흐림 교란 전후**를 같이 저장합니다. LR·EMA·기간을
 > 동시에 바꾸면 무엇의 효과인지 못 가릅니다.
+> → [`notebooks/16_photometric_복원_비교.ipynb`](notebooks/16_photometric_복원_비교.ipynb)
+> 를 만들어 뒀습니다 (대기). 판정 규칙은 **첫 셀에 돌리기 전에** 박아뒀습니다.
 
 ### 그 고정 ROI 모델의 오답은 어디로 가나 (epoch 3 · 검증 4,000장)
 

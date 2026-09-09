@@ -75,7 +75,7 @@ def load_data(root):
 
 
 def make_model(smoke, pretrained=False, profile="original"):
-    if profile in ("roi", "photo") and not smoke:
+    if profile == "roi" and not smoke:
         import timm
         return timm.create_model("tf_efficientnetv2_s.in21k_ft_in1k", pretrained=pretrained,
                                  num_classes=2, drop_rate=0.2, drop_path_rate=0.1)
@@ -112,10 +112,6 @@ def one_epoch(model, optimizer, scaler, tr, va, cfg, mode, epoch, device,
     if getattr(cfg, 'experiment_profile', 'original') == 'roi':
         from src.roi_data import ROIDataset
         dataset = ROIDataset
-    if getattr(cfg, 'experiment_profile', 'original') == 'photo':
-        from src.photo_data import PhotoDataset
-        dataset = PhotoDataset
-        cfg.photo_epoch = epoch
     ds_tr = dataset(tr, cfg, train=True, mode=mode, classes=['A7', 'ABNORMAL'])
     ds_va = dataset(va, cfg, train=False, mode=mode, classes=['A7', 'ABNORMAL'])
     generator = torch.Generator().manual_seed(cfg.seed + epoch)
@@ -153,7 +149,6 @@ def one_epoch(model, optimizer, scaler, tr, va, cfg, mode, epoch, device,
                 break
         model.eval()
         probabilities, targets = [], []
-        blurred = {1: [], 2: []} if getattr(cfg, 'experiment_profile', '') == 'photo' else {}
         with torch.no_grad():
             for x, y in dl_va:
                 if time.monotonic() >= deadline:
@@ -162,20 +157,9 @@ def one_epoch(model, optimizer, scaler, tr, va, cfg, mode, epoch, device,
                     logits = model(x.to(device))
                 probabilities.extend(logits.float().softmax(1)[:, 1].cpu().tolist())
                 targets.extend(y.tolist())
-                if blurred:
-                    from torchvision.transforms.functional import gaussian_blur
-                    for sigma in blurred:
-                        if time.monotonic() >= deadline:
-                            return None
-                        with torch.autocast(device_type=device, enabled=device == 'cuda'):
-                            altered = model(gaussian_blur(x.to(device), [13,13], [float(sigma)]*2))
-                        blurred[sigma].extend(altered.float().softmax(1)[:,1].cpu().tolist())
         if device == 'cuda':
             torch.cuda.synchronize()
         result = metrics(np.asarray(probabilities), np.asarray(targets), va.original_label.to_numpy())
-        for sigma, values in blurred.items():
-            scores = metrics(np.asarray(values), np.asarray(targets), va.original_label.to_numpy())
-            result.update({f'blur{sigma}_{k}': v for k,v in scores.items()})
         result.update(epoch=epoch+1, mode=mode, train_loss=losses/max(trained, 1),
                       elapsed_sec=time.monotonic()-started, train_rows=trained, val_rows=len(va))
         return result, np.asarray(probabilities)
@@ -188,16 +172,16 @@ def write_comparison(output, histories):
     records = [r for history in histories.values() for r in history]
     table = pd.DataFrame(records) if records else pd.DataFrame(columns=['mode', 'epoch', 'macro_f1'])
     table.to_csv(output / 'history.csv', index=False)
-    baseline_mode, treatment_mode = list(histories)
-    common = min(len(histories[baseline_mode]), len(histories[treatment_mode]))
+    baseline_mode = next(m for m in histories if m != 'safe')
+    common = min(len(histories[baseline_mode]), len(histories['safe']))
     summary = {'completed_epochs': {k: len(v) for k, v in histories.items()},
                'common_epoch': common, 'comparison': None,
                'note': 'Exploratory stage-1 pilot; compare only the same epoch. No holdout evaluation.'}
     if common:
-        baseline, safe = (histories[m][common-1] for m in [baseline_mode, treatment_mode])
-        summary['comparison'] = {key: {baseline_mode: baseline[key], treatment_mode: safe[key],
-                                       f'{treatment_mode}_minus_{baseline_mode}': safe[key]-baseline[key]}
-                                 for key in [k for k in ['macro_f1', 'abnormal_recall', 'normal_specificity', 'balanced_accuracy', 'auroc', 'blur1_macro_f1', 'blur2_macro_f1', 'blur1_auroc', 'blur2_auroc'] if k in baseline and baseline[k] is not None and safe[k] is not None]}
+        baseline, safe = (histories[m][common-1] for m in [baseline_mode, 'safe'])
+        summary['comparison'] = {key: {baseline_mode: baseline[key], 'safe': safe[key],
+                                       f'safe_minus_{baseline_mode}': safe[key]-baseline[key]}
+                                 for key in ['macro_f1', 'abnormal_recall', 'normal_specificity', 'balanced_accuracy']}
     (output / 'comparison.json').write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2), flush=True)
     return summary
@@ -206,7 +190,7 @@ def write_comparison(output, histories):
 def export_resume(output):
     # 사진과 데이터셋은 캐글 출력에 안 넣습니다 — 작은 실행 산출물만.
     profile = json.loads((output / 'protocol.json').read_text()).get('profile', 'original')
-    archive = output.parent / {'roi':'roi_crop_pilot_resume.zip', 'photo':'photo_crop_pilot_resume.zip'}.get(profile,'safe_crop_pilot_resume.zip')
+    archive = output.parent / ('roi_crop_pilot_resume.zip' if profile == 'roi' else 'safe_crop_pilot_resume.zip')
     temporary = archive.with_suffix('.zip.part')
     with zipfile.ZipFile(temporary, 'w', zipfile.ZIP_STORED) as z:
         for path in sorted(output.rglob('*')):
@@ -219,7 +203,7 @@ def export_resume(output):
 def run(args):
     started = time.monotonic()
     profile = getattr(args, 'profile', 'original')
-    modes = {'roi':['fixed','safe'], 'photo':['fixed','photo']}.get(profile,['random','safe'])
+    modes = ['fixed', 'safe'] if profile == 'roi' else ['random', 'safe']
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     if device != 'cuda' and not args.smoke:
         raise RuntimeError('Select a GPU accelerator; use --smoke only for local tests')
@@ -230,7 +214,7 @@ def run(args):
     if args.smoke:
         tr = tr.groupby('original_label', group_keys=False).head(2).reset_index(drop=True)
         va = va.groupby('original_label', group_keys=False).head(1).reset_index(drop=True)
-    cfg = CFG(seed=42, img_size=32 if args.smoke else (384 if profile in ('roi','photo') else 288), batch_size=args.batch_size,
+    cfg = CFG(seed=42, img_size=32 if args.smoke else (384 if profile == 'roi' else 288), batch_size=args.batch_size,
               num_workers=args.workers, epochs=args.epochs, lr=3e-4,
               rotate_deg=0, random_erasing=0, amp=device == 'cuda')
     protocol = {'version': 1, 'manifest_sha256': metadata['pilot_manifest_sha256'],
@@ -240,12 +224,12 @@ def run(args):
                 'validation': 'full-frame letterbox', 'task': 'stage1',
                 'schedule': 'paired alternating epochs; fixed cosine horizon',
                 'torch_version': str(torch.__version__)}
-    if profile in ('roi','photo'):
+    if profile == 'roi':
         import timm
         from PIL import ImageFile
         cfg.model_name = 'tf_efficientnetv2_s.in21k_ft_in1k'
-        cfg.experiment_profile = profile
-        protocol.update(profile=profile, version=2,
+        cfg.experiment_profile = 'roi'
+        protocol.update(profile='roi', version=2,
                         cfg=cfg.to_dict(),
                         load_truncated_images=ImageFile.LOAD_TRUNCATED_IMAGES,
                         model='tiny' if args.smoke else 'tf_efficientnetv2_s.in21k_ft_in1k',
@@ -257,15 +241,6 @@ def run(args):
                             (Path(__file__).resolve().parents[1] / name).read_bytes()).hexdigest()
                             for name in ['tools/kaggle_safe_crop.py', 'src/roi_data.py',
                                          'src/original_data.py', 'src/safe_crop.py', 'src/config.py']})
-    if profile == 'photo':
-        import albumentations as A
-        protocol.update(roi_side_multiplier=[1.0,1.0],
-                        augmentation='fixed ROI both arms; photo adds historical photometric operators after letterbox',
-                        photometric={'clahe_p':.2,'blur_p':.3,'noise_p':.25,'jpeg_p':.3},
-                        albumentations_version=A.__version__,
-                        robustness='all val every epoch: clean + tensor Gaussian kernel13 sigma1/sigma2 reflect padding')
-        protocol['runtime_code_sha256']['src/photo_data.py'] = hashlib.sha256(
-            (Path(__file__).resolve().parents[1]/'src/photo_data.py').read_bytes()).hexdigest()
     protocol_path = args.out / 'protocol.json'
     if protocol_path.exists():
         if json.loads(protocol_path.read_text()) != json.loads(json.dumps(protocol)):
@@ -368,7 +343,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--batch-size', type=int, default=32)
     parser.add_argument('--workers', type=int, default=2)
-    parser.add_argument('--profile', choices=['original', 'roi', 'photo'], default='original')
+    parser.add_argument('--profile', choices=['original', 'roi'], default='original')
     parser.add_argument('--smoke', action='store_true')
     run(parser.parse_args())
 
