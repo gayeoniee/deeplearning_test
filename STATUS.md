@@ -66,9 +66,36 @@
 - **되돌리기가 환경 변수 하나** — REPO 를 비우면 예전 방식. 토큰 없는 개발 PC 도 그대로
 - 검사 **7개**가 위를 하나씩 지킵니다 (`test_screening_release_source.py`)
 
-### 🔴 사용자님이 하실 것
+### 상태
 
-- **`.env` 값 채우기** — 지금 `.env.example` 은 **빈 칸**입니다. 개발서버·GCP **양쪽 같은 값**으로
+- ✅ **`.env` 값은 담당자가 서버에 넣었습니다** (2026-09-09). 리포의 `.env.example`
+  은 빈 칸이 정상입니다 — 값이 커밋되면 안 되니까요
+- ⏳ **두 환경이 같은 값인지는 아직 눈으로 확인 안 됨** — 아래
+
+### ⚠️ 이건 눈으로는 안 보입니다 — `/healthz` 로 보세요
+
+코드 주석이 직접 경고합니다: 개발서버와 GCP 값이 **다르면 두 곳이 다른 모델로
+도는데 응답은 양쪽 다 200** 입니다. 그래서 `/healthz` 가 그걸 보라고 만들어졌습니다
+(*"사진 없이 `curl` 한 번"*).
+
+```bash
+# 두 환경에 각각. 세 값이 같아야 합니다
+curl -s https://<개발서버>/screen/healthz | jq '{release_repo, release_revision, stage2_arms_available}'
+curl -s https://<GCP>/screen/healthz      | jq '{release_repo, release_revision, stage2_arms_available}'
+```
+
+| 봐야 할 것 | 맞는 값 |
+|---|---|
+| `release_repo` | 두 곳이 **같아야** 합니다 |
+| `release_revision` | 두 곳이 같고, **`null` 이 아니어야** 합니다 (`null` 이면 `main` 을 따라갑니다) |
+| `stage2_arms_available` | **3** |
+| `stage2_arms` (`loaded: true` 일 때) | **3** — `available` 과 다르면 프로세스가 옛것을 물고 있습니다 (재시작) |
+
+⚠️ `stage2_arms` 는 **모델이 올라온 뒤에만** 나옵니다 (지연 로딩). 첫 요청 전이면
+`loaded: false` 가 정상입니다.
+
+### 🔴 남은 것 하나
+
 - **HF 리포에 크롭·매니페스트를 같이 올리지 않기** — 가중치는 학습 결과물이라
   배포가 자유롭지만 그 둘은 **AI Hub 재배포 금지** 대상입니다
 
