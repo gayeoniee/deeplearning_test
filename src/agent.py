@@ -273,8 +273,8 @@ def lesion_group(probs: list[tuple[str, float]] | None,
     계열 4군은 **67.9%** 이고, 긴급도 하향 3.7% · A6 오명명 12.5% 로
     두 안전 관문 안입니다.
     """
-    from src.config import (DOWNGRADE_BLOCK_MIN, MORPH_GROUP_KEEP_A6,
-                            URGENT_GROUPS)
+    from src.config import (DOWNGRADE_BLOCK_MIN, GROUP_DETAIL, GROUP_FEATURE,
+                            MORPH_GROUP_KEEP_A6, URGENT_GROUPS)
     from src.message import GROUP_CONF_MIN, SHOW_GROUP
 
     if not SHOW_GROUP or not probs:
@@ -303,10 +303,19 @@ def lesion_group(probs: list[tuple[str, float]] | None,
             "prob": round(float(p), 4),
             "percent": round(float(p) * 100, 1),
             "confidence": round(float(conf), 4),
-            # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다. 각자 지어 쓰면
+            # ⚠️ 앱·콘솔이 이 문장들을 **그대로** 띄우게 합니다. 각자 지어 쓰면
             #    표현이 갈리고, 갈리면 한쪽이 단정적으로 읽힙니다.
-            "text": f"모양만 보면 {name} 계열에 가깝습니다.",
-            "caveat": "진단이 아닙니다. 같은 계열 안에서도 원인 질환은 여럿입니다."}
+            # ⚠️ 새 이름은 "…변화 / …혹 / …상처" 로 끝나 **"계열" 을 붙이면 어색**합니다
+            #    ("피부 표면·색·두께 변화 계열에"). 넷 다 받침과 무관하게 조사가
+            #    "에" 라 그대로 이어 붙습니다.
+            "text": f"모양만 보면 {name}에 가깝습니다.",
+            # ★ 보호자가 사진에서 **직접 확인할 수 있는** 특징 (2026-09-10).
+            #   이름만으로는 자기 개 사진과 대조가 안 됩니다.
+            "feature": GROUP_FEATURE.get(name, ""),
+            # ★ "자세히 보기" 전용 — 본문에 띄우지 마세요 (STEP 30 과잉 문제).
+            "detail": GROUP_DETAIL.get(name, ""),
+            "caveat": "진단이 아닙니다. 염증·감염·기생충·알레르기·면역질환 등 "
+                      "여러 원인에서 나타날 수 있어 모양만으로는 원인을 알 수 없어요."}
 
 
 def contract(verdict: str, *, abnormal_p: float | None = None,

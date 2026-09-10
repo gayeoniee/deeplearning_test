@@ -47,7 +47,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools"))
 
 OUT = ROOT / "reports" / "user_bbox_coverage.json"
-G4 = ["융기·발진", "표면 변화", "미란·궤양", "결절·종괴"]
+# ★ 파생 — 이름을 손으로 적지 않습니다 (2026-09-10 이름 교체).
+from src.config import MORPH_GROUP_KEEP_A6 as _M4  # noqa: E402
+G4 = list(dict.fromkeys(_M4[c] for c in ("A1", "A2", "A5", "A6")))
 
 
 def main() -> None:

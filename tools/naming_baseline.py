@@ -191,7 +191,7 @@ def main() -> int:
         print(f"  {k:14}{int(m.sum()):>8,}{per[k]['recall']:>9.3f}   {top}")
     tier_of = {k: max(URGENCY_TIER[c] for c in CLASSES if mp[c] == k) for k in keys}
     said_tier = np.array([tier_of[p] for p in pred])
-    m6 = tg == "결절·종괴"
+    m6 = tg == MORPH_GROUP_KEEP_A6["A6"]
     under = float((said_tier[m6] < 2).mean())
     to_watch = float((said_tier[m6] == 0).mean())
     print(f"\n  ★ 실제 결절·종괴 {int(m6.sum()):,}장 중 긴급도를 낮춰 부른 비율 "

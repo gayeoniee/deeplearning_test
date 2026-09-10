@@ -164,6 +164,12 @@ body{
 .row .v{font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums}
 .row .track{grid-column:1/-1; height:6px}
 .row .fill{background:var(--pink)}
+.more{
+  /* ★ 자세히 보기 — 접어 둡니다. 본문에 두면 안 되는 것만 여기 들어갑니다. */
+  margin-top:11px; font-size:11.5px; color:var(--muted); line-height:1.55;
+}
+.more summary{cursor:pointer; font-size:11.5px; color:var(--muted); padding:3px 0}
+.more p{margin:6px 0 0}
 .cta{
   margin-top:13px; padding:11px 13px; border-radius:13px; text-align:center;
   line-height:1.45;
@@ -706,7 +712,11 @@ function card(j) {
     //   ⚠️ 긴급도('조기 진료' 등)를 여기에 붙이지 마세요 — 말한 것의 절반이
     //      한 단계 부풀려집니다 (과잉 52.4%, STEP 30·33).
     if (j.stage2.group && j.stage2.group.text) {
-      h += `<div class="grp">${esc(j.stage2.group.text)}</div>`;
+      // ★ `feature` — 보호자가 **사진에서 직접 확인할 수 있는** 특징 (2026-09-10).
+      //    이름만으로는 자기 개 사진과 대조가 안 됩니다. 서버가 주는 문장을 그대로.
+      const ft = j.stage2.group.feature
+        ? `<span>${esc(j.stage2.group.feature)} 같은 모습이 보이는 상태예요.</span>` : '';
+      h += `<div class="grp">${esc(j.stage2.group.text)}${ft}</div>`;
     }
     // ★ 면책 ① — 숫자보다 **위**에 옵니다 (cautions/03 §7-B).
     h += `<div class="cant">어떤 병변인지까지는 이 사진만으로 판단할 수 없어요.</div>`;
@@ -720,6 +730,19 @@ function card(j) {
             <div class="row"><span class="n">${esc(g.name)}</span><span class="v">${g.percent}%</span>
               <div class="track"><div class="fill" style="width:${g.percent}%"></div></div>
             </div>`).join('') + '</div>';
+    }
+    // ★ 자세히 보기 — **접어 둡니다** (2026-09-10).
+    //   ⚠️ primary/secondary 는 *진단 순서*의 축이지 *보호자에게 뭐라고 부를지*의
+    //      축이 아닙니다. 본문에 두면 STEP 32 에서 과잉 88.4% 로 기각된 그 축을
+    //      다시 앞에 세우는 셈입니다. 궁금한 사람만 펴 보게 합니다.
+    if (j.stage2.group && j.stage2.group.detail) {
+      h += `<details class="more"><summary>자세히 보기</summary>
+            <p>${esc(j.stage2.group.detail)}</p>
+            <p>${esc(j.stage2.group.caveat || '')}</p>
+            <p>이 결과는 사진에서 관찰되는 피부 형태를 분류한 스크리닝 정보이며
+               질병을 진단하지 않습니다. 정확한 원인 확인에는 수의사의 신체검사와
+               피부 세포검사, 피부 긁기 검사 또는 조직검사 등이 필요할 수 있습니다.</p>
+            </details>`;
     }
   } else {
     // 가이드 밴드 밖이면 왜 돌려보냈는지 구체적으로 말해줍니다

@@ -135,12 +135,24 @@ check("기권이어도 진료를 권함", "수의사 진료를 받아보시기�
 # 2단계의 불확실은 사진 탓이 아니라 모델 한계라, 다시 찍으라고 하면 안 됩니다
 check("기권일 때 다시 찍으라고 안 함", "더 선명하게 다시 찍으면" not in _ab_txt)
 
-# ── 6. 표 정렬 (한글은 두 칸) ─────────────────────────────────
-print("\n[6] 표 정렬")
+# ── 6. 막대가 휴대폰 폭 안에 들어가는가 ───────────────────────
+# ⚠️ 2026-09-10 에 레이아웃이 바뀌었습니다. 예전엔 `라벨 + % + 막대` 가 **한 줄**
+#    이라 *"백분율이 같은 칸에서 끝나는가"* 로 정렬을 봤는데, 계열 이름이
+#    보호자 말로 길어지면서 한 줄이 **50칸**이 됐습니다 (휴대폰 세로 약 40칸).
+#    라벨을 막대 **위**로 올려 28칸으로 줄였고, 그래서 정렬 검사는 뜻을 잃었습니다.
+#    대신 **지켜야 할 것**을 봅니다 — 줄이 화면을 안 넘는가.
+print("\n[6] 막대 폭")
 check("_cells 는 한글을 2 로 셈", infer._cells("비듬") == 4 and infer._cells("ab") == 2)
-rows = [ln for ln in lines if ln.startswith("    ") and "%" in ln]
-cols = {infer._cells(ln[:ln.index("%") + 1]) for ln in rows}
-check("백분율이 같은 칸에서 끝남", len(cols) == 1, str(cols))
+_indented = [ln for ln in lines if ln.startswith("    ") and ln.strip()]
+check("막대 줄이 하나라도 있다", bool(_indented))
+_widest = max((infer._cells(ln) for ln in _indented), default=0)
+check("★ 가장 긴 줄이 휴대폰 폭(40칸) 안", _widest <= 40,
+      f"{_widest}칸 — 이름이 길어지면 여기서 걸립니다")
+# 라벨 줄과 막대 줄이 짝을 이뤄야 합니다 (하나가 빠지면 표가 어긋납니다)
+_label = [ln for ln in _indented if "%" in ln]
+_bars = [ln for ln in _indented if "█" in ln]
+check("라벨 줄과 막대 줄이 같은 수", len(_label) == len(_bars),
+      f"라벨 {len(_label)} / 막대 {len(_bars)}")
 
 # ── 7. 엔진이 이 함수를 쓰는가 ────────────────────────────────
 print("\n[7] 배선")
@@ -205,7 +217,7 @@ try:
     leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in line]
     check("★ 6종 이름이 안 새어 나간다", not leaked, str(leaked))
     check("계열 이름만 쓴다",
-          any(g in line for g in ("융기·발진", "표면 변화", "미란·궤양", "결절·종괴")))
+          any(g in line for g in GROUPS))
     # ⚠️ 계열 줄 꼬리에 "(진단이 아닙니다)" 를 **안 붙입니다** — 바로 다음
     #    줄이 "판단할 수 없습니다" 라 같은 말이 두 번 됩니다 (2026-09-08).
     check("★ 계열 줄에 면책 꼬리를 안 붙인다", "진단이 아닙니다" not in line, repr(line))
@@ -215,7 +227,15 @@ try:
                    confidence_band="보통", stage1_abnormal=.9)
     p.stage2_probs = _DIST
     msg = compose_screening_message(p)
-    check("전체 문구에 계열 줄이 들어간다", "계열에 가깝습니다" in msg)
+    # ⚠️ 이름을 손으로 적지 않습니다 — 2026-09-10 에 계열 이름이 바뀌면서
+    #    `"계열에 가깝습니다"` 가 `"…에 가깝습니다"` 로 바뀌었습니다.
+    check("전체 문구에 계열 줄이 들어간다",
+          "에 가깝습니다" in msg and any(g in msg for g in GROUPS), msg[:120])
+    # ★ 보호자가 사진과 대조할 수 있는 **특징**이 같이 나가야 합니다 (2026-09-10)
+    from src.config import GROUP_FEATURE                            # noqa: E402
+    check("★ 계열 이름만 띄우지 않고 특징도 같이 말한다",
+          any(f in msg for f in GROUP_FEATURE.values()),
+          "이름만 있으면 보호자가 자기 개 사진과 대조할 수 없습니다")
     check("★ 전체 문구에도 긴급도 문구가 안 붙는다",
           not any(h in msg for h in ("종양 감별 필요", "감염 동반 가능",
                                      "만성 경과 가능", "피부 장벽 손상")),
