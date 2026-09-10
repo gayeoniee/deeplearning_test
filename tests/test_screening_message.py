@@ -79,18 +79,23 @@ check("★ 묶여 없어진 6종 이름(A1~A4)이 안 샌다", not _leaked(msg),
 
 print("\n[2b] ★ 면책은 두 번까지 (주저리주저리 금지)")
 #   2026-09-08 이전엔 같은 말을 **다섯 번** 했습니다. 반복하면 아무도 안 읽습니다.
-_DENY = ("판단할 수 없", "진단이 아니", "진료를 대체하지")
+# ⚠️ 문구를 손으로 적으면 문구가 바뀔 때 **조용히 안 세게 됩니다.**
+#    2026-09-10 에 "판단할 수 없" → "알 수 없" 으로 바뀌면서 실제로 그럴 뻔했습니다.
+_DENY = ("판단할 수 없", "알 수 없", "진단이 아니", "진료를 대체하지")
 _n_deny = sum(1 for ln in msg.splitlines() if any(d in ln for d in _DENY))
 check("면책 줄이 2줄 이하", _n_deny <= 2,
       str([ln for ln in msg.splitlines() if any(d in ln for d in _DENY)]))
 check("그래도 최소 한 번은 한다", _n_deny >= 1)
 
-# ── 3. 순서 — "판단할 수 없습니다" 가 숫자보다 위 ──────────────
+# ── 3. 순서 — **한계를 말하는 줄**이 숫자보다 위 ─────────────────
+#    ⚠️ 문구 자체를 적지 않습니다 — 바뀌면 `next()` 가 StopIteration 으로 죽거나
+#       (운이 나쁘면) 다른 줄을 집습니다. 서버가 내는 본문에서 가져옵니다.
 print("\n[3] 순서")
 lines = msg.splitlines()
-i_cant = next(i for i, ln in enumerate(lines) if "판단할 수 없습니다" in ln)
+_limit_head = infer.BODY_ABNORMAL_HEAD if hasattr(infer, "BODY_ABNORMAL_HEAD") else "알 수 없습니다"
+i_cant = next(i for i, ln in enumerate(lines) if _limit_head in ln)
 i_num = next(i for i, ln in enumerate(lines) if ln.startswith("    ") and "%" in ln)
-check("'판단할 수 없습니다' 가 숫자 위", i_cant < i_num, f"{i_cant} vs {i_num}")
+check("한계를 말하는 줄이 숫자 위", i_cant < i_num, f"{i_cant} vs {i_num}")
 check("진료 권유가 숫자 아래", msg.rindex("수의사 진료를 받아보시기를 권합니다") > msg.index("%"))
 check("면책 문구 포함", infer.DISCLAIMER in msg)
 

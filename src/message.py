@@ -90,7 +90,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     if pred.abstain or not pred.topk:
         L.append("📷 **판단이 어려운 사진입니다.**")
         L.append("")
-        L.append("병변 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
+        L.append("이상한 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
         L.append("털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다.")
         L.append("")
         L.append(f"_{DISCLAIMER}_")
@@ -100,7 +100,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     ko = CLASS_KO.get(c, c)
 
     if c == NORMAL_LABEL:
-        L.append("🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.**")
+        L.append("🟢 **뚜렷한 이상 소견은 보이지 않습니다.**")
         L.append("")
         L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
@@ -223,7 +223,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     if not pred.abstain and not pred.topk and abnormal_p is not None:
         L.append("🔎 **피부에 이상 소견이 보입니다.**" + f" (이상 가능성 {abnormal_p:.0%})")
         L.append("")
-        L.append("**어떤 병변인지는 판단하지 않습니다.** 이 사진만으로는 알 수 없습니다.")
+        L.append("**무엇 때문인지까지는 판단하지 않습니다.** 이 사진만으로는 알 수 없습니다.")
         L.append("")
         L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
         L.append("")
@@ -246,7 +246,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     c0 = pred.topk[0][0]
     if c0 == NORMAL_LABEL:
         p_norm = pred.topk[0][1]
-        L.append(f"🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
+        L.append(f"🟢 **뚜렷한 이상 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
         L.append("")
         L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
@@ -283,7 +283,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         L.append(grp)
     # ⚠️ 면책 ①/② — 이 줄은 **숫자보다 위**에 옵니다 (§7-B 규칙 4).
     #    확신이 낮아 위 한 줄이 없을 때는 이 줄이 혼자 남습니다.
-    L.append("**어떤 병변인지까지는 이 사진만으로 판단할 수 없습니다.**")
+    L.append("**무엇 때문인지까지는 이 사진만으로 알 수 없습니다.**")
     L.append("")
 
     # ── ★ 계열 4묶음 막대 (분포) — 2026-09-08 부터 6종 대신 ────────

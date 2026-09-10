@@ -252,7 +252,7 @@ def a6_alert(probs: list[tuple[str, float]] | None,
             # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다.
             "text": "덩어리가 의심됩니다.",
             "action": "빠른 진료를 권합니다.",
-            "caveat": "진단이 아닙니다. 덩어리처럼 보이는 다른 병변일 수 있습니다."}
+            "caveat": "진단이 아닙니다. 덩어리처럼 보이는 다른 것일 수 있습니다."}
 
 
 def lesion_group(probs: list[tuple[str, float]] | None,
@@ -333,7 +333,7 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
         raise ValueError(f"verdict 는 normal/abnormal/retake 중 하나입니다 — {verdict!r}")
 
     HEAD = {
-        "normal": "뚜렷한 피부 병변 소견은 보이지 않습니다.",
+        "normal": "뚜렷한 이상 소견은 보이지 않습니다.",
         "abnormal": "피부에 이상 소견이 보입니다.",
         "retake": "판단이 어려운 사진입니다.",
     }
@@ -341,9 +341,9 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
         "normal": ("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다. "
                    "가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
                    "결과와 무관하게 병원에 가보시는 것을 권합니다."),
-        "abnormal": ("어떤 병변인지는 이 사진만으로 판단할 수 없습니다. "
+        "abnormal": ("무엇 때문인지까지는 이 사진만으로 알 수 없습니다. "
                      "아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다."),
-        "retake": ("병변 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
+        "retake": ("이상한 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
                    "털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다."),
     }
     ACTION = {
