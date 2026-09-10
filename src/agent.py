@@ -253,7 +253,7 @@ def a6_alert(probs: list[tuple[str, float]] | None,
             # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다.
             "text": "덩어리가 의심됩니다.",
             "action": "빠른 진료를 권합니다.",
-            "caveat": "진단이 아닙니다. 덩어리처럼 보이는 다른 병변일 수 있습니다."}
+            "caveat": "진단이 아닙니다. 덩어리처럼 보이는 다른 것일 수 있습니다."}
 
 
 def lesion_group(probs: list[tuple[str, float]] | None,
@@ -274,8 +274,8 @@ def lesion_group(probs: list[tuple[str, float]] | None,
     계열 4군은 **67.9%** 이고, 긴급도 하향 3.7% · A6 오명명 12.5% 로
     두 안전 관문 안입니다.
     """
-    from src.config import (DOWNGRADE_BLOCK_MIN, MORPH_GROUP_KEEP_A6,
-                            URGENT_GROUPS)
+    from src.config import (DOWNGRADE_BLOCK_MIN, GROUP_DETAIL, GROUP_FEATURE,
+                            GROUP_LABELS, MORPH_GROUP_KEEP_A6, URGENT_GROUPS)
     from src.message import GROUP_CONF_MIN, SHOW_GROUP
 
     if not SHOW_GROUP or not probs:
@@ -304,10 +304,24 @@ def lesion_group(probs: list[tuple[str, float]] | None,
             "prob": round(float(p), 4),
             "percent": round(float(p) * 100, 1),
             "confidence": round(float(conf), 4),
-            # ⚠️ 앱·콘솔이 이 문장을 **그대로** 띄우게 합니다. 각자 지어 쓰면
+            # ⚠️ 앱·콘솔이 이 문장들을 **그대로** 띄우게 합니다. 각자 지어 쓰면
             #    표현이 갈리고, 갈리면 한쪽이 단정적으로 읽힙니다.
-            "text": f"모양만 보면 {name} 계열에 가깝습니다.",
-            "caveat": "진단이 아닙니다. 같은 계열 안에서도 원인 질환은 여럿입니다."}
+            # ⚠️ 새 이름은 "…변화 / …혹 / …상처" 로 끝나 **"계열" 을 붙이면 어색**합니다
+            #    ("피부 표면·색·두께 변화 계열에"). 넷 다 받침과 무관하게 조사가
+            #    "에" 라 그대로 이어 붙습니다.
+            "text": f"모양만 보면 {name}에 가깝습니다.",
+            # ★ 그 묶음이 담는 **라벨 이름** (2026-09-10). 화면에 괄호로 붙습니다.
+            #   `솟아오른 변화` 만 들고 병원에 가면 수의사가 못 알아듣습니다.
+            #   ⚠️ "1등 병변" 이 아닙니다 — **순서가 코드순으로 고정**이라
+            #      확률과 무관합니다. 단정이 아니라 용어 풀이입니다.
+            "labels": GROUP_LABELS.get(name, ""),
+            # ★ 보호자가 사진에서 **직접 확인할 수 있는** 특징 (2026-09-10).
+            #   이름만으로는 자기 개 사진과 대조가 안 됩니다.
+            "feature": GROUP_FEATURE.get(name, ""),
+            # ★ "자세히 보기" 전용 — 본문에 띄우지 마세요 (STEP 30 과잉 문제).
+            "detail": GROUP_DETAIL.get(name, ""),
+            "caveat": "진단이 아닙니다. 염증·감염·기생충·알레르기·면역질환 등 "
+                      "여러 원인에서 나타날 수 있어 모양만으로는 원인을 알 수 없어요."}
 
 
 def contract(verdict: str, *, abnormal_p: float | None = None,
@@ -325,7 +339,7 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
         raise ValueError(f"verdict 는 normal/abnormal/retake 중 하나입니다 — {verdict!r}")
 
     HEAD = {
-        "normal": "뚜렷한 피부 병변 소견은 보이지 않습니다.",
+        "normal": "뚜렷한 이상 소견은 보이지 않습니다.",
         "abnormal": "피부에 이상 소견이 보입니다.",
         "retake": "판단이 어려운 사진입니다.",
     }
@@ -333,9 +347,9 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
         "normal": ("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다. "
                    "가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
                    "결과와 무관하게 병원에 가보시는 것을 권합니다."),
-        "abnormal": ("어떤 병변인지는 이 사진만으로 판단할 수 없습니다. "
+        "abnormal": ("무엇 때문인지까지는 이 사진만으로 알 수 없습니다. "
                      "아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다."),
-        "retake": ("병변 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
+        "retake": ("이상한 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
                    "털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다."),
     }
     ACTION = {

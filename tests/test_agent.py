@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import inspect                                                   # noqa: E402
 
 from src import agent                                            # noqa: E402
-from src.config import CLASS_KO, CLASSES                         # noqa: E402
+from src.config import CLASS_KO, CLASSES, MORPH_GROUP_KEEP_A6 as _M  # noqa: E402
 
 ok = fail = 0
 
@@ -431,8 +431,9 @@ _ab.stage2_probs = [("A2", 0.31), ("A3", 0.22)]
 _txt = _msg.compose_screening_message(_ab)
 check("기권이어도 이상 소견을 말함", "이상 소견이 보입니다" in _txt)
 check("기권이어도 재촬영 문구가 안 나옴", "판단이 어려운 사진" not in _txt)
-# A2 는 "표면 변화" 로 묶여 이름이 사라집니다 — 묶음이 보이는지로 봅니다.
-check("기권이어도 분포가 보임", "표면 변화" in _txt)
+# A2 는 묶음으로 흡수돼 이름이 사라집니다 — 묶음이 보이는지로 봅니다.
+# ★ 이름을 손으로 적지 않습니다 (2026-09-10 이름 교체 때 여기가 안 따라오면 거짓 통과).
+check("기권이어도 분포가 보임", _M["A2"] in _txt)
 check("기권이어도 진료를 권함", "수의사 진료를 받아보시기를 권합니다" in _txt)
 check("기권일 때 다시 찍으라고 하지 않음",
       "더 선명하게 다시 찍으면" not in _txt)

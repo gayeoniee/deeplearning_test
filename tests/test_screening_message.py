@@ -59,7 +59,7 @@ check("긴급도 문구(URGENCY_HINT) 없음",
 #      아무것도 안 숨깁니다 — 취지(상위 몇 개로 자르지 마라)는 그대로입니다.
 #      6종은 계약(`stage2.distribution`)에 남아 콘솔이 씁니다 — [2b] 가 감시.
 print("\n[2] 계열 네 묶음 전체 노출")
-from src.config import MORPH_GROUP_KEEP_A6                     # noqa: E402
+from src.config import GROUP_FEATURE, MORPH_GROUP_KEEP_A6      # noqa: E402
 
 GROUPS = sorted(set(MORPH_GROUP_KEEP_A6.values()))
 for g in GROUPS:
@@ -70,27 +70,57 @@ check("네 줄 모두 백분율이 붙음",
 # ⚠️ A5·A6 은 혼자 있는 묶음이라 **계열 이름 == 클래스 이름**입니다.
 #    그래서 "6종 이름이 뜨나" 를 그대로 세면 항상 걸립니다. 물어야 할 것은
 #    **묶여 없어진 이름(A1~A4)이 새어 나오나** 입니다.
+#
+# ★ 2026-09-10 — 규칙이 **한 번 더** 좁아졌습니다.
+#   이제 라벨 이름이 `(구진·플라크·농포·여드름)` 처럼 **괄호 안에** 나갑니다.
+#   `솟아오른 변화` 만 들고 병원에 가면 수의사가 못 알아듣기 때문입니다.
+#   ⚠️ 그건 **단정이 아니라 용어 풀이**라 46.3% 오답 문제가 안 걸립니다.
+#      금지된 것은 여전히 *"이 개는 구진입니다"* 라고 **하나를 고르는 것**입니다.
+#   → 그래서 **괄호 줄을 걷어내고** 나머지에서 이름이 새는지 봅니다.
+_LABEL_LINE = __import__("re").compile(r"^\(.+\)$")
+
+
+def _strip_labels(text):
+    """라벨 괄호 줄만 걷어냅니다 — 거기 이름이 있는 건 **의도한 것**입니다."""
+    return "\n".join(ln for ln in text.splitlines() if not _LABEL_LINE.match(ln.strip()))
+
+
 def _leaked(text):
+    body = _strip_labels(text)
     return [CLASS_KO[c] for c in LESION
-            if CLASS_KO[c] in text and CLASS_KO[c] not in GROUPS]
+            if CLASS_KO[c] in body and CLASS_KO[c] not in GROUPS]
 
 
-check("★ 묶여 없어진 6종 이름(A1~A4)이 안 샌다", not _leaked(msg), str(_leaked(msg)))
+check("★ 묶여 없어진 6종 이름(A1~A4)이 **괄호 밖으로** 안 샌다",
+      not _leaked(msg), str(_leaked(msg)))
+
+# ★★ 라벨 괄호의 **순서가 코드순 고정**이어야 합니다 (표본과 무관한 성질).
+#    확률순으로 두면 괄호 첫 이름이 "1등" 으로 읽혀서 그때는 진짜 top1 부활입니다.
+#    ⚠️ 막대 4개의 순서는 **확률순 그대로**입니다 — 그건 당연하고 안 건드립니다.
+from src.config import GROUP_LABELS, MORPH_GROUP_KEEP_A6 as _MG   # noqa: E402
+check("★★ 라벨 순서가 코드순(A1→A6) 고정 — 확률과 무관",
+      all(GROUP_LABELS[g] == "·".join(CLASS_KO[c] for c in LESION if _MG[c] == g)
+          for g in GROUP_LABELS), str(GROUP_LABELS))
 
 print("\n[2b] ★ 면책은 두 번까지 (주저리주저리 금지)")
 #   2026-09-08 이전엔 같은 말을 **다섯 번** 했습니다. 반복하면 아무도 안 읽습니다.
-_DENY = ("판단할 수 없", "진단이 아니", "진료를 대체하지")
+# ⚠️ 문구를 손으로 적으면 문구가 바뀔 때 **조용히 안 세게 됩니다.**
+#    2026-09-10 에 "판단할 수 없" → "알 수 없" 으로 바뀌면서 실제로 그럴 뻔했습니다.
+_DENY = ("판단할 수 없", "알 수 없", "진단이 아니", "진료를 대체하지")
 _n_deny = sum(1 for ln in msg.splitlines() if any(d in ln for d in _DENY))
 check("면책 줄이 2줄 이하", _n_deny <= 2,
       str([ln for ln in msg.splitlines() if any(d in ln for d in _DENY)]))
 check("그래도 최소 한 번은 한다", _n_deny >= 1)
 
-# ── 3. 순서 — "판단할 수 없습니다" 가 숫자보다 위 ──────────────
+# ── 3. 순서 — **한계를 말하는 줄**이 숫자보다 위 ─────────────────
+#    ⚠️ 문구 자체를 적지 않습니다 — 바뀌면 `next()` 가 StopIteration 으로 죽거나
+#       (운이 나쁘면) 다른 줄을 집습니다. 서버가 내는 본문에서 가져옵니다.
 print("\n[3] 순서")
 lines = msg.splitlines()
-i_cant = next(i for i, ln in enumerate(lines) if "판단할 수 없습니다" in ln)
+_limit_head = infer.BODY_ABNORMAL_HEAD if hasattr(infer, "BODY_ABNORMAL_HEAD") else "알 수 없습니다"
+i_cant = next(i for i, ln in enumerate(lines) if _limit_head in ln)
 i_num = next(i for i, ln in enumerate(lines) if ln.startswith("    ") and "%" in ln)
-check("'판단할 수 없습니다' 가 숫자 위", i_cant < i_num, f"{i_cant} vs {i_num}")
+check("한계를 말하는 줄이 숫자 위", i_cant < i_num, f"{i_cant} vs {i_num}")
 check("진료 권유가 숫자 아래", msg.rindex("수의사 진료를 받아보시기를 권합니다") > msg.index("%"))
 check("면책 문구 포함", infer.DISCLAIMER in msg)
 
@@ -135,12 +165,24 @@ check("기권이어도 진료를 권함", "수의사 진료를 받아보시기�
 # 2단계의 불확실은 사진 탓이 아니라 모델 한계라, 다시 찍으라고 하면 안 됩니다
 check("기권일 때 다시 찍으라고 안 함", "더 선명하게 다시 찍으면" not in _ab_txt)
 
-# ── 6. 표 정렬 (한글은 두 칸) ─────────────────────────────────
-print("\n[6] 표 정렬")
+# ── 6. 막대가 휴대폰 폭 안에 들어가는가 ───────────────────────
+# ⚠️ 2026-09-10 에 레이아웃이 바뀌었습니다. 예전엔 `라벨 + % + 막대` 가 **한 줄**
+#    이라 *"백분율이 같은 칸에서 끝나는가"* 로 정렬을 봤는데, 계열 이름이
+#    보호자 말로 길어지면서 한 줄이 **50칸**이 됐습니다 (휴대폰 세로 약 40칸).
+#    라벨을 막대 **위**로 올려 28칸으로 줄였고, 그래서 정렬 검사는 뜻을 잃었습니다.
+#    대신 **지켜야 할 것**을 봅니다 — 줄이 화면을 안 넘는가.
+print("\n[6] 막대 폭")
 check("_cells 는 한글을 2 로 셈", infer._cells("비듬") == 4 and infer._cells("ab") == 2)
-rows = [ln for ln in lines if ln.startswith("    ") and "%" in ln]
-cols = {infer._cells(ln[:ln.index("%") + 1]) for ln in rows}
-check("백분율이 같은 칸에서 끝남", len(cols) == 1, str(cols))
+_indented = [ln for ln in lines if ln.startswith("    ") and ln.strip()]
+check("막대 줄이 하나라도 있다", bool(_indented))
+_widest = max((infer._cells(ln) for ln in _indented), default=0)
+check("★ 가장 긴 줄이 휴대폰 폭(40칸) 안", _widest <= 40,
+      f"{_widest}칸 — 이름이 길어지면 여기서 걸립니다")
+# 라벨 줄과 막대 줄이 짝을 이뤄야 합니다 (하나가 빠지면 표가 어긋납니다)
+_label = [ln for ln in _indented if "%" in ln]
+_bars = [ln for ln in _indented if "█" in ln]
+check("라벨 줄과 막대 줄이 같은 수", len(_label) == len(_bars),
+      f"라벨 {len(_label)} / 막대 {len(_bars)}")
 
 # ── 7. 엔진이 이 함수를 쓰는가 ────────────────────────────────
 print("\n[7] 배선")
@@ -200,12 +242,18 @@ try:
           _M.lesion_group_line(_FLAT, 0.5) == "",
           repr(_M.lesion_group_line(_FLAT, 0.5)))
 
-    # ★ 켜도 6종 이름은 절대 안 나가야 합니다
+    # ★ 켜도 6종 이름은 **괄호 밖으로** 안 나가야 합니다 (2026-09-10).
+    #   괄호 안(`(구진·플라크·농포·여드름)`)은 **의도한 것**입니다 — 보호자가
+    #   병원에 전할 말입니다. 금지된 건 여전히 *하나를 골라 단정하는 것*입니다.
     from src.config import CLASS_KO, CLASSES                       # noqa: E402
-    leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in line]
-    check("★ 6종 이름이 안 새어 나간다", not leaked, str(leaked))
+    leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in _strip_labels(line)]
+    check("★ 6종 이름이 괄호 밖으로 안 새어 나간다", not leaked, str(leaked))
     check("계열 이름만 쓴다",
-          any(g in line for g in ("융기·발진", "표면 변화", "미란·궤양", "결절·종괴")))
+          any(g in line for g in GROUPS))
+    # ★ 병원에서 쓰는 이름이 괄호로 나가는가 — 없으면 보호자가 전할 말이 없습니다.
+    check("★ 병원에서 쓰는 이름이 괄호로 나간다",
+          any(f"({v})" in line for v in GROUP_LABELS.values()),
+          "괄호가 없으면 `솟아오른 변화` 만 들고 병원에 가게 됩니다")
     # ⚠️ 계열 줄 꼬리에 "(진단이 아닙니다)" 를 **안 붙입니다** — 바로 다음
     #    줄이 "판단할 수 없습니다" 라 같은 말이 두 번 됩니다 (2026-09-08).
     check("★ 계열 줄에 면책 꼬리를 안 붙인다", "진단이 아닙니다" not in line, repr(line))
@@ -215,14 +263,21 @@ try:
                    confidence_band="보통", stage1_abnormal=.9)
     p.stage2_probs = _DIST
     msg = compose_screening_message(p)
-    check("전체 문구에 계열 줄이 들어간다", "계열에 가깝습니다" in msg)
+    # ⚠️ 이름을 손으로 적지 않습니다 — 2026-09-10 에 계열 이름이 바뀌면서
+    #    `"계열에 가깝습니다"` 가 `"…에 가깝습니다"` 로 바뀌었습니다.
+    check("전체 문구에 계열 줄이 들어간다",
+          "에 가깝습니다" in msg and any(g in msg for g in GROUPS), msg[:120])
+    # ★ 보호자가 사진과 대조할 수 있는 **특징**이 같이 나가야 합니다 (2026-09-10)
+    check("★ 계열 이름만 띄우지 않고 특징도 같이 말한다",
+          any(f in msg for f in GROUP_FEATURE.values()),
+          "이름만 있으면 보호자가 자기 개 사진과 대조할 수 없습니다")
     check("★ 전체 문구에도 긴급도 문구가 안 붙는다",
           not any(h in msg for h in ("종양 감별 필요", "감염 동반 가능",
                                      "만성 경과 가능", "피부 장벽 손상")),
           "계열과 긴급도를 같이 띄우면 절반이 한 단계 부풀려집니다 (STEP 30·33)")
     _lk = [CLASS_KO[c] for c in CLASSES
-           if CLASS_KO[c] in msg and CLASS_KO[c] not in GROUPS]
-    check("★ 묶여 없어진 6종 이름이 안 샌다", not _lk, str(_lk))
+           if CLASS_KO[c] in _strip_labels(msg) and CLASS_KO[c] not in GROUPS]
+    check("★ 묶여 없어진 6종 이름이 괄호 밖으로 안 샌다", not _lk, str(_lk))
     check("진료 권고가 그대로 있다", "수의사 진료를 받아보시기를 권합니다" in msg)
 finally:
     _M.SHOW_GROUP = _was

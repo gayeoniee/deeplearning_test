@@ -38,7 +38,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.config import MORPH_GROUP_KEEP_A6  # noqa: E402
+from src.config import MORPH_GROUP_KEEP_A6, URGENT_GROUPS  # noqa: E402
 from src.experiments import (  # noqa: E402
     A5_RULE_COVERAGE_LOSS_MAX,
     A5_RULE_UNDER_GAIN_MIN,
@@ -46,9 +46,11 @@ from src.experiments import (  # noqa: E402
     NAMING_TARGET_ERROR,
 )
 
-G4 = ["융기·발진", "표면 변화", "미란·궤양", "결절·종괴"]
+# ★ 이름을 손으로 적지 않습니다 — `MORPH_GROUP_KEEP_A6` 에서 파생합니다.
+#   2026-09-10 에 이름이 바뀌었을 때 여기가 안 따라오면 조용히 틀립니다.
+G4 = list(dict.fromkeys(MORPH_GROUP_KEEP_A6[c] for c in ("A1", "A2", "A5", "A6")))
 #: 묶음의 긴급도. 묶음 안에서 **높은 쪽**을 씁니다 (보수적으로).
-TIER = {"융기·발진": 1, "표면 변화": 1, "미란·궤양": 2, "결절·종괴": 2}
+TIER = {g: (2 if g in URGENT_GROUPS else 1) for g in G4}
 LOW = [g for g in G4 if TIER[g] == 1]
 HIGH = [g for g in G4 if TIER[g] == 2]
 C6 = ["A1", "A2", "A3", "A4", "A5", "A6"]
@@ -103,7 +105,7 @@ def speak(p1, P, true_g, *, block=None, k=None):
 
 def a5_under(said, sp, true_g):
     """말한 A5 중 **덜 급하다고 부른** 비율."""
-    m = (true_g == "미란·궤양") & sp
+    m = (true_g == MORPH_GROUP_KEEP_A6["A5"]) & sp
     return (int(m.sum()),
             float((m & np.isin(said, LOW)).sum() / m.sum()) if m.sum() else 0.0)
 

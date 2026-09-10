@@ -90,7 +90,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     if pred.abstain or not pred.topk:
         L.append("📷 **판단이 어려운 사진입니다.**")
         L.append("")
-        L.append("병변 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
+        L.append("이상한 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
         L.append("털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다.")
         L.append("")
         L.append(f"_{DISCLAIMER}_")
@@ -100,7 +100,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     ko = CLASS_KO.get(c, c)
 
     if c == NORMAL_LABEL:
-        L.append("🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.**")
+        L.append("🟢 **뚜렷한 이상 소견은 보이지 않습니다.**")
         L.append("")
         L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
@@ -180,11 +180,19 @@ def lesion_group_line(dist: list[tuple[str, float]],
     g = lesion_group(list(dist), abnormal_p)
     if g is None:
         return ""                          # 꺼져 있거나 확신이 낮으면 아무 말 안 함
-    # ⚠️ "…계열에 가깝습니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
+    # ⚠️ "…에 가깝습니다" 까지입니다. 병명도 아니고 6종 이름도 아닙니다.
     # ⚠️ 꼬리에 "(진단이 아닙니다)" 를 붙이지 않습니다 — **바로 다음 줄**이
     #    "판단할 수 없습니다" 라 같은 말을 두 번 하게 됩니다. 면책을 반복하면
     #    아무도 안 읽습니다 (2026-09-08: 다섯 번 하던 것을 두 번으로 줄였습니다).
-    return f"모양만 보면 **{g['name']}** 계열에 가깝습니다."
+    # ★ 특징 한 줄을 같이 냅니다 (2026-09-10) — 이름만으로는 보호자가 **자기 개
+    #   사진과 대조할 수 없습니다.** 문장은 `agent.lesion_group` 이 만듭니다.
+    line = f"모양만 보면 **{g['name']}**에 가깝습니다."
+    # ★ 병원에서 쓰는 이름을 괄호로 붙입니다 (2026-09-10) — 보호자가 전달할 말입니다.
+    if g.get("labels"):
+        line += f"\n({g['labels']})"
+    if g.get("feature"):
+        line += f"\n{g['feature']} 같은 모습이 보이는 상태예요."
+    return line
 
 
 def compose_screening_message(pred: Prediction, abnormal_p: float | None = None) -> str:
@@ -218,7 +226,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     if not pred.abstain and not pred.topk and abnormal_p is not None:
         L.append("🔎 **피부에 이상 소견이 보입니다.**" + f" (이상 가능성 {abnormal_p:.0%})")
         L.append("")
-        L.append("**어떤 병변인지는 판단하지 않습니다.** 이 사진만으로는 알 수 없습니다.")
+        L.append("**무엇 때문인지까지는 판단하지 않습니다.** 이 사진만으로는 알 수 없습니다.")
         L.append("")
         L.append("→ **수의사 진료를 받아보시기를 권합니다.**")
         L.append("")
@@ -241,7 +249,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     c0 = pred.topk[0][0]
     if c0 == NORMAL_LABEL:
         p_norm = pred.topk[0][1]
-        L.append(f"🟢 **뚜렷한 피부 병변 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
+        L.append(f"🟢 **뚜렷한 이상 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
         L.append("")
         L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
@@ -278,7 +286,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         L.append(grp)
     # ⚠️ 면책 ①/② — 이 줄은 **숫자보다 위**에 옵니다 (§7-B 규칙 4).
     #    확신이 낮아 위 한 줄이 없을 때는 이 줄이 혼자 남습니다.
-    L.append("**어떤 병변인지까지는 이 사진만으로 판단할 수 없습니다.**")
+    L.append("**무엇 때문인지까지는 이 사진만으로 알 수 없습니다.**")
     L.append("")
 
     # ── ★ 계열 4묶음 막대 (분포) — 2026-09-08 부터 6종 대신 ────────
@@ -286,10 +294,13 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
     #      6종 분포는 계약(`stage2.distribution`)에 그대로 남아 콘솔이 씁니다.
     groups = lesion_group_dist(list(dist))
     if groups:
-        width = max(_cells(g["name"]) for g in groups)
+        # ★ 라벨을 막대 **위**에 둡니다 (2026-09-10). 옆에 두면 이름이 길어져
+        #   한 줄이 50칸이 되는데 휴대폰 세로가 약 40칸입니다. 위로 올리면
+        #   28칸이라 **이름을 한 글자도 안 줄이고** 들어갑니다.
         for g in groups:
-            bar = "█" * max(0, round(g["prob"] * 20))
-            L.append(f"    {_pad(g['name'], width)}  {g['prob']:>4.0%}  {bar}")
+            bar = "█" * max(1, round(g["prob"] * 20))
+            L.append(f"    {g['name']}  {g['prob']:.0%}")
+            L.append(f"    {bar}")
     else:                                   # 묶음을 못 만들면 6종으로 물러섭니다
         width = max((_cells(CLASS_KO.get(cc, cc)) for cc, _ in dist), default=10)
         for cc, pp in dist:

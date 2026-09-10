@@ -158,12 +158,19 @@ body{
   font-size:12.5px; color:var(--ink); line-height:1.5;
 }
 .grp span{display:block; color:var(--muted); font-size:11px; margin-top:3px}
+.grp .lab{color:var(--ink); font-size:11.5px; margin-top:2px}
 .dist{margin-top:12px; display:flex; flex-direction:column; gap:9px}
 .row{display:grid; grid-template-columns:1fr auto; gap:3px 8px}
 .row .n{font-size:12.5px; font-weight:400}      /* ★ 굵게 쓰지 않습니다 */
 .row .v{font-size:11.5px; color:var(--muted); font-variant-numeric:tabular-nums}
 .row .track{grid-column:1/-1; height:6px}
 .row .fill{background:var(--pink)}
+.more{
+  /* ★ 자세히 보기 — 접어 둡니다. 본문에 두면 안 되는 것만 여기 들어갑니다. */
+  margin-top:11px; font-size:11.5px; color:var(--muted); line-height:1.55;
+}
+.more summary{cursor:pointer; font-size:11.5px; color:var(--muted); padding:3px 0}
+.more p{margin:6px 0 0}
 .cta{
   margin-top:13px; padding:11px 13px; border-radius:13px; text-align:center;
   line-height:1.45;
@@ -369,6 +376,11 @@ input[type=file]{display:none}
 <script>
 const $  = s => document.querySelector(s);
 const log = $('#log');
+
+/* ★ 개발자 화면 여부. `?dev=1` 이나 `#dev` 일 때만 참입니다.
+   보호자에게는 응답 시간·가이드 프레임 여부·원본 JSON 을 보여주지 않습니다 —
+   화면을 어지럽히고, 무슨 뜻인지 물어볼 사람도 없습니다. */
+const DEV = new URLSearchParams(location.search).has('dev') || location.hash.includes('dev');
 const DOT = {abnormal:'#E87F7F', normal:'#7FC98F', retake:'#A79089'};
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const now = () => new Date().toLocaleTimeString('ko-KR', {hour:'2-digit', minute:'2-digit'});
@@ -529,7 +541,7 @@ function attachBox(stage, hole, tip, onState) {
     hole.style.left = b.x * 100 + '%';  hole.style.top = b.y * 100 + '%';
     hole.style.width = b.w * 100 + '%'; hole.style.height = b.h * 100 + '%';
     let msg, bad = false;
-    if (b.w < BAND.allow[0]) { msg = '<b>너무 작아요</b> — 병변에 더 가까이'; bad = true; }
+    if (b.w < BAND.allow[0]) { msg = '<b>너무 작아요</b> — 더 가까이'; bad = true; }
     else if (b.w > BAND.allow[1]) { msg = '<b>너무 커요</b> — 주변 피부도 보이게'; bad = true; }
     else if (b.w < BAND.rec[0] || b.w > BAND.rec[1]) msg = `괜찮아요 · 가로 ${(b.w * 100) | 0}%`;
     else msg = `딱 좋아요 👍 · 가로 ${(b.w * 100) | 0}%`;
@@ -591,7 +603,7 @@ async function cameraStep() {
   }
 
   const w = bubble('bot',
-    '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춘 다음 찍어줘.</p>' + HAIR_TIP +
+    '<p>이상한 부위가 <b>네모 안에 꽉 차게</b> 맞춘 다음 찍어줘.</p>' + HAIR_TIP +
     `<div class="cam" id="cam"><video id="vid" playsinline muted></video>
        <div class="hole" id="hole"></div><div class="tip" id="tip"></div></div>
      <button class="shutter" id="shot" aria-label="촬영"></button>
@@ -626,7 +638,7 @@ function frameStep(file, preset) {
   const url = URL.createObjectURL(file);
   const w = bubble('bot',
     (preset ? '<p>찍은 그대로면 <b>확인하기</b>를 눌러줘. 고치고 싶으면 네모를 다시 맞춰도 돼.</p>'
-            : '<p>병변이 <b>네모 안에 꽉 차게</b> 맞춰줘. 끌어서 옮기고, 오른쪽 아래 동그라미로 크기를 바꿔.</p>'
+            : '<p>이상한 부위가 <b>네모 안에 꽉 차게</b> 맞춰줘. 끌어서 옮기고, 오른쪽 아래 동그라미로 크기를 바꿔.</p>'
              + HAIR_TIP) +
     `<div class="framer" id="framer"><img src="${url}" alt="올린 사진">
        <div class="hole" id="hole"></div><div class="tip" id="tip"></div></div>
@@ -703,10 +715,19 @@ function card(j) {
     //   ⚠️ 긴급도('조기 진료' 등)를 여기에 붙이지 마세요 — 말한 것의 절반이
     //      한 단계 부풀려집니다 (과잉 52.4%, STEP 30·33).
     if (j.stage2.group && j.stage2.group.text) {
-      h += `<div class="grp">${esc(j.stage2.group.text)}</div>`;
+      // ★ `feature` — 보호자가 **사진에서 직접 확인할 수 있는** 특징 (2026-09-10).
+      //    이름만으로는 자기 개 사진과 대조가 안 됩니다. 서버가 주는 문장을 그대로.
+      const ft = j.stage2.group.feature
+        ? `<span>${esc(j.stage2.group.feature)} 같은 모습이 보이는 상태예요.</span>` : '';
+      // ★ 병원에서 쓰는 이름 (2026-09-10). `솟아오른 변화` 만 들고 가면 수의사가
+      //    못 알아듣습니다. ⚠️ "1등 병변" 이 아닙니다 — 순서가 **코드순 고정**이라
+      //    확률과 무관하고, 단정이 아니라 용어 풀이입니다.
+      const lb = j.stage2.group.labels
+        ? `<span class="lab">(${esc(j.stage2.group.labels)})</span>` : '';
+      h += `<div class="grp">${esc(j.stage2.group.text)}${lb}${ft}</div>`;
     }
     // ★ 면책 ① — 숫자보다 **위**에 옵니다 (cautions/03 §7-B).
-    h += `<div class="cant">어떤 병변인지까지는 이 사진만으로 판단할 수 없어요.</div>`;
+    h += `<div class="cant">무엇 때문인지까지는 이 사진만으로 알 수 없어요.</div>`;
     // ★ 계열 **네 묶음** 막대 (2026-09-08 부터 6종 대신).
     //   ⚠️ 6종을 **자른 게 아니라 더한 것**입니다 — 여섯 개가 전부 어딘가에
     //      들어 있어 아무것도 안 숨깁니다. 6종 분포(`stage2.distribution`)는
@@ -718,6 +739,23 @@ function card(j) {
               <div class="track"><div class="fill" style="width:${g.percent}%"></div></div>
             </div>`).join('') + '</div>';
     }
+    // ★ 자세히 보기 — **접어 둡니다** (2026-09-10).
+    //   ⚠️ primary/secondary 는 *진단 순서*의 축이지 *보호자에게 뭐라고 부를지*의
+    //      축이 아닙니다. 본문에 두면 STEP 32 에서 과잉 88.4% 로 기각된 그 축을
+    //      다시 앞에 세우는 셈입니다. 궁금한 사람만 펴 보게 합니다.
+    if (j.stage2.group && j.stage2.group.detail) {
+      // ⚠️ 여기에 **한 문단만** 둡니다 (2026-09-10).
+      //    예전엔 셋이었습니다 — `detail`(수의학적 의미) · `caveat` · 아래 문단.
+      //    셋을 겹쳐 놓으니 같은 말("진단이 아니다")이 두 번이고, `detail` 은
+      //    보호자가 읽을 말이 아니었습니다("주로 일차 병변…"). 접어 뒀다고 해서
+      //    아무 말이나 넣어도 되는 자리가 아닙니다.
+      //    ⚠️ `detail` 은 계약에 그대로 남습니다 — **관리자 콘솔**이 씁니다.
+      h += `<details class="more"><summary>자세히 보기</summary>
+            <p>이 결과는 사진에서 관찰되는 피부 형태를 분류한 스크리닝 정보이며
+               질병을 진단하지 않습니다. 정확한 원인 확인에는 수의사의 신체검사와
+               피부 세포검사, 피부 긁기 검사 또는 조직검사 등이 필요할 수 있습니다.</p>
+            </details>`;
+    }
   } else {
     // 가이드 밴드 밖이면 왜 돌려보냈는지 구체적으로 말해줍니다
     const why = j.meta && j.meta.retake_reason;
@@ -726,16 +764,25 @@ function card(j) {
 
   h += `<div class="cta">${esc(j.action)}</div>`;
   h += `<p class="disc">${esc(j.disclaimer)}`;
+  // ★ 보호자에게 보일 것 / 개발자에게만 보일 것을 가릅니다 (2026-09-10).
+  //
+  //   ⚠️ `mock` 과 `미보정` 은 **숨기지 않습니다.** 그 둘은 편의 정보가 아니라
+  //      *"이 숫자를 믿으면 안 된다"* 는 경고입니다. 숨기면 시연 화면을 진짜
+  //      결과로 오해합니다 — 정확히 그러라고 만든 배지입니다.
+  //   · `가이드 프레임 …` · `123ms` · `앱이 받는 JSON` 은 **개발자용**이라
+  //      `?dev=1` 일 때만 보입니다.
   const bits = [];
   if (j.meta && j.meta.mock) bits.push('mock — 모델이 낸 숫자가 아님');
   if (j.stage1 && j.stage1.calibrated === false && j.stage1.abnormal_percent !== null)
     bits.push('1단계 확률 미보정');
-  if (j.meta && j.meta.box_source)
-    bits.push(j.meta.box_source === 'user' ? '가이드 프레임 사용' : '가이드 프레임 없음(중앙)');
-  if (j.meta && j.meta.elapsed_ms != null) bits.push(j.meta.elapsed_ms + 'ms');
+  if (DEV) {
+    if (j.meta && j.meta.box_source)
+      bits.push(j.meta.box_source === 'user' ? '가이드 프레임 사용' : '가이드 프레임 없음(중앙)');
+    if (j.meta && j.meta.elapsed_ms != null) bits.push(j.meta.elapsed_ms + 'ms');
+  }
   if (bits.length) h += `<br>${esc(bits.join(' · '))}`;
   h += '</p>';
-  h += `<details><summary>앱이 받는 JSON</summary><pre>${esc(JSON.stringify(j, null, 2))}</pre></details>`;
+  if (DEV) h += `<details><summary>앱이 받는 JSON</summary><pre>${esc(JSON.stringify(j, null, 2))}</pre></details>`;
   return h;
 }
 

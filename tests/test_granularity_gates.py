@@ -113,8 +113,10 @@ _n = 1000
 _wrong = _rng.random(_n) < 0.15
 _conf = np.where(_wrong, _rng.random(_n) * 0.5, 0.5 + _rng.random(_n) * 0.5)
 _tt, _ts = np.ones(_n, int), np.ones(_n, int)
-_cls = np.where(np.arange(_n) % 5 == 0, "미란·궤양", "표면 변화")
-_tt[(_cls == "미란·궤양") & (np.arange(_n) % 2 == 0)] = 2   # A5 절반만 하향
+# ★ 이름을 손으로 적지 않습니다 — 파생 (2026-09-10 이름 교체).
+from src.config import MORPH_GROUP_KEEP_A6 as _M   # noqa: E402
+_cls = np.where(np.arange(_n) % 5 == 0, _M["A5"], _M["A2"])
+_tt[(_cls == _M["A5"]) & (np.arange(_n) % 2 == 0)] = 2   # A5 절반만 하향
 _r = E.granularity_report("클래스별 시험", {
     "conf": _conf, "wrong": _wrong, "tier_true": _tt, "tier_said": _ts,
     "true_class": _cls})
@@ -124,7 +126,7 @@ check("보고에 under_worst 가 있다", "under_worst" in _r)
 check("★ 한 클래스가 나쁜 것을 잡아낸다 (최악이 전체의 3배 넘음)",
       _r["under_worst"] > _r["under_triage"] * 3,
       f"전체 {_r['under_triage']:.1%} / 최악 {_r['under_worst']:.1%}")
-check("최악 클래스 이름을 짚는다", _r["under_worst_class"] == "미란·궤양",
+check("최악 클래스 이름을 짚는다", _r["under_worst_class"] == _M["A5"],
       str(_r["under_worst_class"]))
 check("전체 평균만 보면 통과해 보인다 (이게 구멍이었습니다)",
       _r["under_triage"] <= E.UNDER_TRIAGE_MAX * 3,
@@ -161,6 +163,36 @@ check("급한 쪽 묶음 이름이 MORPH_GROUP_KEEP_A6 과 글자 그대로 맞�
       set(URGENT_GROUPS) <= set(MORPH_GROUP_KEEP_A6.values()),
       f"{URGENT_GROUPS} vs {sorted(set(MORPH_GROUP_KEEP_A6.values()))}")
 
+# ★★ 2026-09-10 — 이름을 바꿀 때 **조용히 죽던 자리**입니다.
+#    예전엔 `URGENT_GROUPS` 가 이름 문자열 하드코딩이라, 묶음 이름을 바꾸고
+#    여기를 안 고치면 하향 방지 규칙이 **에러 없이** 안 걸렸습니다
+#    (A5 하향 36.8% → 43.8% 로 되돌아감). 이제 `URGENT_CODES` 에서 파생합니다.
+from src.config import URGENT_CODES  # noqa: E402
+check("★ 급한 쪽이 코드에서 파생된다 (이름을 손으로 안 적는다)",
+      set(URGENT_GROUPS) == {MORPH_GROUP_KEEP_A6[c] for c in URGENT_CODES},
+      f"{URGENT_GROUPS} vs {URGENT_CODES}")
+check("급한 쪽은 A5·A6 이다", set(URGENT_CODES) == {"A5", "A6"}, str(URGENT_CODES))
+
+# ★ 보호자에게 보여줄 문장이 네 묶음 **전부** 있어야 합니다.
+#   하나라도 비면 그 계열만 설명 없이 이름만 뜹니다 — 눈에 안 띄는 실패입니다.
+from src.config import GROUP_DETAIL, GROUP_FEATURE  # noqa: E402
+_G4 = set(MORPH_GROUP_KEEP_A6.values())
+check("네 묶음 전부에 '보호자가 보는 특징' 이 있다",
+      set(GROUP_FEATURE) == _G4, f"{sorted(set(GROUP_FEATURE) ^ _G4)}")
+check("네 묶음 전부에 '자세히 보기' 가 있다",
+      set(GROUP_DETAIL) == _G4, f"{sorted(set(GROUP_DETAIL) ^ _G4)}")
+check("특징·자세히보기가 빈 문자열이 아니다",
+      all(GROUP_FEATURE.values()) and all(GROUP_DETAIL.values()))
+
+# ★ 6종 이름이 계열 이름으로 새어 나오지 않는가.
+#   ⚠️ 예전엔 A5·A6 이 혼자 있는 묶음이라 **계열 이름 == 클래스 이름**이었고,
+#      그래서 이 검사를 그대로 세면 **항상 걸렸습니다**. 2026-09-10 에 계열
+#      이름을 보호자 말로 바꾸면서 둘이 갈라졌으니, 이제 세울 수 있습니다.
+from src.config import CLASS_KO  # noqa: E402
+check("★ 계열 이름에 6종 이름이 하나도 안 섞인다",
+      not (_G4 & set(CLASS_KO.values())),
+      f"겹침: {sorted(_G4 & set(CLASS_KO.values()))}")
+
 # 융기·발진 0.60 으로 1등인데 급한 쪽이 0.30 → **덜 급한 쪽을 말하면 안 됩니다**
 _blocked = _lg([("A1", .6), ("A5", .25), ("A6", .05), ("A2", .1)], 0.95)
 check("★ 급한 쪽이 문턱을 넘으면 덜 급한 묶음을 말하지 않는다",
@@ -169,11 +201,11 @@ check("★ 급한 쪽이 문턱을 넘으면 덜 급한 묶음을 말하지 않�
 # 급한 쪽 0.20 (미달) → 예전대로 1등을 말합니다
 _ok = _lg([("A1", .7), ("A5", .15), ("A6", .05), ("A2", .1)], 0.95)
 check("문턱 미달이면 예전대로 1등을 말한다",
-      _ok is not None and _ok["name"] == "융기·발진", str(_ok))
+      _ok is not None and _ok["name"] == _M["A1"], str(_ok))
 # 급한 쪽이 애초에 낮으면 규칙이 개입하지 않습니다
 _free = _lg([("A2", .6), ("A3", .2), ("A1", .1), ("A5", .05), ("A6", .05)], 0.9)
 check("급한 쪽이 낮으면 규칙이 개입 안 한다",
-      _free is not None and _free["name"] == "표면 변화", str(_free))
+      _free is not None and _free["name"] == _M["A2"], str(_free))
 
 # ★ 규칙이 **한 곳**에만 있어야 합니다 — 두 화면이 다른 계열을 말하면 안 됩니다
 _line_src = inspect.getsource(_MSG.lesion_group_line)
