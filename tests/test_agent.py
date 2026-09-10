@@ -161,8 +161,8 @@ big = [0.5 - .80 / 2, 0.5 - .80 / 2, .80, .80]
 check("너무 크면 막고 이유를 말함",
       not agent.check_guide(big)["ok"] and "멀리" in agent.check_guide(big)["reason"])
 off = [0.0, 0.0, 0.44, 0.44]
-check("가운데서 벗어나면 막음",
-      not agent.check_guide(off)["ok"] and "가운데" in agent.check_guide(off)["reason"])
+check("화면 가장자리의 병변도 크기가 맞으면 통과",
+      agent.check_guide(off)["ok"])
 check("허용 경계 안쪽(28%)은 통과",
       agent.check_guide([0.5 - .29 / 2, 0.5 - .29 / 2, .29, .29])["ok"])
 
@@ -266,8 +266,8 @@ check("빈 네모는 빈 dict", be.to_perturbation([.5, .5, 0, 0], T) == {})
 check("네모 허용 밴드는 줌 밴드의 역수",
       abs(be.BOX_ALLOW[0] - 1 / be.ZOOM_ALLOW[1]) < 1e-9
       and abs(be.BOX_ALLOW[1] - 1 / be.ZOOM_ALLOW[0]) < 1e-9)
-check("밴드 값이 agent 와 같은 실측에서 옴",
-      be.SHIFT_MAX == agent.GUIDE_CENTER_MAX)
+check("절대 화면 위치는 촬영 밴드 판정에 쓰지 않음",
+      not hasattr(agent, "GUIDE_CENTER_MAX"))
 # ⚠️ 이 두 줄은 STEP 10 밴드(0.59~1.43배)를 단언하고 있었고, `box_error.py` 가
 #    같은 옛 값을 **베껴 두고 있어서 통과했습니다.** 밴드 출처를 `src/robust.py`
 #    하나로 모으자(2026-09-06) 비로소 드러났습니다 — 두 곳이 같이 옛것이면

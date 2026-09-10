@@ -76,7 +76,6 @@ STAGE2_TAG = "m2.5"         # 2단계 학습 크롭 (STEP 4C 에서 확정)
 #    아무도 모릅니다.
 GUIDE_RECOMMEND = (0.28, 0.48)     # 하락 5% 이내
 GUIDE_ALLOW = (0.24, 0.56)         # 하락 10% 이내
-GUIDE_CENTER_MAX = 0.10            # 화면 중앙에서 이만큼 이내
 
 
 def to_train_space(im):
@@ -107,11 +106,15 @@ def box_to_px(box, w: int, h: int) -> list[float] | None:
 
 
 def check_guide(box) -> dict:
-    """가이드 프레임이 촬영 가이드 밴드 안에 있는가. 추론 **전에** 봅니다.
+    """가이드 프레임의 크기가 촬영 가이드 밴드 안에 있는가. 추론 **전에** 봅니다.
 
     밴드 밖 사진은 모델에 넣지 말고 다시 찍게 하는 게 맞습니다 — 그 구간에서
     성능이 떨어지는 걸 이미 재 뒀는데(STEP 10), 굳이 넣고 나서 틀리는 것보다
     안 넣는 편이 낫습니다.
+
+    프레임의 위치는 검사하지 않습니다. 사진을 고른 뒤 병변은 어디에나 있을 수 있고,
+    이 프레임의 중심이 바로 크롭 중심이 됩니다. 화면 가운데와의 거리는 호환성을 위해
+    meta 에만 남기며, 재촬영 사유가 아닙니다.
 
     Returns:
         {"ok", "reason", "width_frac", "center_off"} — reason 은 보호자에게
@@ -129,8 +132,6 @@ def check_guide(box) -> dict:
         r.update(ok=False, reason="병변이 너무 작게 잡혔습니다. 조금 더 가까이에서 찍어주세요.")
     elif bw > GUIDE_ALLOW[1]:
         r.update(ok=False, reason="너무 가까워서 주변 피부가 안 보입니다. 조금 더 멀리서 찍어주세요.")
-    elif off > GUIDE_CENTER_MAX:
-        r.update(ok=False, reason="병변이 화면 가운데에서 벗어났습니다. 가운데에 오도록 다시 맞춰주세요.")
     return r
 
 
@@ -334,7 +335,7 @@ def contract(verdict: str, *, abnormal_p: float | None = None,
                    "결과와 무관하게 병원에 가보시는 것을 권합니다."),
         "abnormal": ("어떤 병변인지는 이 사진만으로 판단할 수 없습니다. "
                      "아래는 모델이 비슷하다고 본 정도이며, 진단이 아닙니다."),
-        "retake": ("병변 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
+        "retake": ("병변 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요. "
                    "털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다."),
     }
     ACTION = {

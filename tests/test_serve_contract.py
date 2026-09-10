@@ -51,7 +51,7 @@ except ImportError as exc:
     raise SystemExit(0)
 
 import serve  # noqa: E402
-from src.agent import GUIDE_ALLOW, GUIDE_CENTER_MAX, MockAgent  # noqa: E402
+from src.agent import GUIDE_ALLOW, MockAgent  # noqa: E402
 
 #: 계약에 **절대** 들어오면 안 되는 이름 (앱이 제일 크게 띄웁니다)
 BANNED = {"top1", "predicted", "diagnosis", "disease", "label_top", "best", "answer"}
@@ -125,14 +125,15 @@ check("'1등 병변' 계열 필드가 없다", not hit, str(hit))
 print("\n[3] ★ 가이드 밴드 밖이면 **모델 돌리기 전에** 돌려보낸다")
 lo, hi = GUIDE_ALLOW
 for why, box in (("허용보다 큼", [0.05, 0.05, hi + 0.1, hi + 0.1]),
-                 ("허용보다 작음", [0.48, 0.48, lo - 0.05, lo - 0.05]),
-                 ("중앙에서 벗어남", [0.5 + GUIDE_CENTER_MAX, 0.5, 0.3, 0.3])):
+                 ("허용보다 작음", [0.48, 0.48, lo - 0.05, lo - 0.05])):
     _, j = call(mock_app, 0, box)
     check(f"{why} → retake",
           j["verdict"] == "retake" and bool(j["meta"].get("retake_reason")),
           f"{j['verdict']} / {j['meta'].get('retake_reason')}")
 _, j = call(mock_app, 0, GOOD)
 check("밴드 안쪽은 통과한다", j["verdict"] != "retake", j["verdict"])
+_, j = call(mock_app, 0, [0.0, 0.0, 0.3, 0.3])
+check("화면 가장자리의 병변도 크기가 맞으면 통과한다", j["verdict"] != "retake", j["verdict"])
 
 print("\n[4] box 를 안 주면 중앙으로 물러서고 **그걸 밝힌다**")
 _, j = call(mock_app, 0, None)

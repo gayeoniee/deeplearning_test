@@ -90,7 +90,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     if pred.abstain or not pred.topk:
         L.append("📷 **판단이 어려운 사진입니다.**")
         L.append("")
-        L.append("병변 부위가 화면 가운데에 오도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
+        L.append("병변 부위가 잘 보이도록, 밝은 곳에서 초점을 맞춰 다시 찍어주세요.")
         L.append("털에 가려져 있다면 손으로 살짝 헤쳐 피부가 보이게 해주시면 좋습니다.")
         L.append("")
         L.append(f"_{DISCLAIMER}_")
