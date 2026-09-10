@@ -102,7 +102,7 @@ def compose_message(pred: Prediction, topk_show: int = 3) -> str:
     if c == NORMAL_LABEL:
         L.append("🟢 **뚜렷한 이상 소견은 보이지 않습니다.**")
         L.append("")
-        L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
+        L.append("사진으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
                  "결과와 무관하게 병원에 가보시는 것을 권합니다.")
     else:
@@ -251,7 +251,7 @@ def compose_screening_message(pred: Prediction, abnormal_p: float | None = None)
         p_norm = pred.topk[0][1]
         L.append(f"🟢 **뚜렷한 이상 소견은 보이지 않습니다.** (정상 가능성 {p_norm:.0%})")
         L.append("")
-        L.append("다만 사진 한 장으로 확인할 수 있는 범위에는 한계가 있습니다.")
+        L.append("사진으로 확인할 수 있는 범위에는 한계가 있습니다.")
         L.append("가려워하거나, 냄새가 나거나, 계속 핥는 등 평소와 다른 행동이 있다면 "
                  "결과와 무관하게 병원에 가보시는 것을 권합니다.")
         L.append("")
