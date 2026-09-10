@@ -59,7 +59,7 @@ check("긴급도 문구(URGENCY_HINT) 없음",
 #      아무것도 안 숨깁니다 — 취지(상위 몇 개로 자르지 마라)는 그대로입니다.
 #      6종은 계약(`stage2.distribution`)에 남아 콘솔이 씁니다 — [2b] 가 감시.
 print("\n[2] 계열 네 묶음 전체 노출")
-from src.config import MORPH_GROUP_KEEP_A6                     # noqa: E402
+from src.config import GROUP_FEATURE, MORPH_GROUP_KEEP_A6      # noqa: E402
 
 GROUPS = sorted(set(MORPH_GROUP_KEEP_A6.values()))
 for g in GROUPS:
@@ -232,7 +232,6 @@ try:
     check("전체 문구에 계열 줄이 들어간다",
           "에 가깝습니다" in msg and any(g in msg for g in GROUPS), msg[:120])
     # ★ 보호자가 사진과 대조할 수 있는 **특징**이 같이 나가야 합니다 (2026-09-10)
-    from src.config import GROUP_FEATURE                            # noqa: E402
     check("★ 계열 이름만 띄우지 않고 특징도 같이 말한다",
           any(f in msg for f in GROUP_FEATURE.values()),
           "이름만 있으면 보호자가 자기 개 사진과 대조할 수 없습니다")
