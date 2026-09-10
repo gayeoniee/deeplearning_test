@@ -162,6 +162,22 @@ MORPH_GROUP_KEEP_A6: dict[str, str] = {
 URGENT_GROUPS: tuple[str, ...] = tuple(
     dict.fromkeys(MORPH_GROUP_KEEP_A6[c] for c in URGENT_CODES))
 
+#: ★ **그 묶음이 어떤 라벨을 담고 있나** — 화면에 괄호로 붙습니다 (2026-09-10).
+#:
+#:   `솟아오른 변화` 만 들고 병원에 가면 **수의사가 못 알아듣습니다.** 보호자가
+#:   전달할 수 있는 말이 있어야 합니다. 이건 **데이터 라벨의 이름**입니다.
+#:
+#: ⚠️ **"1등 병변" 과 다릅니다.** 그건 *"이 개는 구진입니다"* 라고 **단정**하는
+#:    것이고(holdout 46.3% 틀림), 이건 *"이 묶음은 이런 것들을 담는다"* 는
+#:    **용어 풀이**입니다. 예측이 아니라 정확도 문제가 안 걸립니다.
+#: ⚠️ **순서는 코드순(A1→A6)으로 고정합니다.** 확률순으로 두면 첫 이름이
+#:    "1등" 으로 읽혀서 그때는 진짜로 top1 을 되살리는 셈이 됩니다.
+GROUP_LABELS: dict[str, str] = {
+    g: "·".join(CLASS_KO[c] for c in CLASSES
+                if c != NORMAL_LABEL and MORPH_GROUP_KEEP_A6[c] == g)
+    for g in dict.fromkeys(MORPH_GROUP_KEEP_A6.values())
+}
+
 #: ★ **보호자가 사진에서 보는 특징** (2026-09-10, 수의학 근거 대조 후 채택).
 #:   화면에 계열 이름 바로 아래 한 줄로 붙습니다.
 #:   ⚠️ *"피가 나면 신속 진료"* 같은 **조건부 긴급도를 넣지 마세요** — STEP 30 에서

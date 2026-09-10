@@ -70,12 +70,37 @@ check("네 줄 모두 백분율이 붙음",
 # ⚠️ A5·A6 은 혼자 있는 묶음이라 **계열 이름 == 클래스 이름**입니다.
 #    그래서 "6종 이름이 뜨나" 를 그대로 세면 항상 걸립니다. 물어야 할 것은
 #    **묶여 없어진 이름(A1~A4)이 새어 나오나** 입니다.
+#
+# ★ 2026-09-10 — 규칙이 **한 번 더** 좁아졌습니다.
+#   이제 라벨 이름이 `(구진·플라크·농포·여드름)` 처럼 **괄호 안에** 나갑니다.
+#   `솟아오른 변화` 만 들고 병원에 가면 수의사가 못 알아듣기 때문입니다.
+#   ⚠️ 그건 **단정이 아니라 용어 풀이**라 46.3% 오답 문제가 안 걸립니다.
+#      금지된 것은 여전히 *"이 개는 구진입니다"* 라고 **하나를 고르는 것**입니다.
+#   → 그래서 **괄호 줄을 걷어내고** 나머지에서 이름이 새는지 봅니다.
+_LABEL_LINE = __import__("re").compile(r"^\(.+\)$")
+
+
+def _strip_labels(text):
+    """라벨 괄호 줄만 걷어냅니다 — 거기 이름이 있는 건 **의도한 것**입니다."""
+    return "\n".join(ln for ln in text.splitlines() if not _LABEL_LINE.match(ln.strip()))
+
+
 def _leaked(text):
+    body = _strip_labels(text)
     return [CLASS_KO[c] for c in LESION
-            if CLASS_KO[c] in text and CLASS_KO[c] not in GROUPS]
+            if CLASS_KO[c] in body and CLASS_KO[c] not in GROUPS]
 
 
-check("★ 묶여 없어진 6종 이름(A1~A4)이 안 샌다", not _leaked(msg), str(_leaked(msg)))
+check("★ 묶여 없어진 6종 이름(A1~A4)이 **괄호 밖으로** 안 샌다",
+      not _leaked(msg), str(_leaked(msg)))
+
+# ★★ 라벨 괄호의 **순서가 코드순 고정**이어야 합니다 (표본과 무관한 성질).
+#    확률순으로 두면 괄호 첫 이름이 "1등" 으로 읽혀서 그때는 진짜 top1 부활입니다.
+#    ⚠️ 막대 4개의 순서는 **확률순 그대로**입니다 — 그건 당연하고 안 건드립니다.
+from src.config import GROUP_LABELS, MORPH_GROUP_KEEP_A6 as _MG   # noqa: E402
+check("★★ 라벨 순서가 코드순(A1→A6) 고정 — 확률과 무관",
+      all(GROUP_LABELS[g] == "·".join(CLASS_KO[c] for c in LESION if _MG[c] == g)
+          for g in GROUP_LABELS), str(GROUP_LABELS))
 
 print("\n[2b] ★ 면책은 두 번까지 (주저리주저리 금지)")
 #   2026-09-08 이전엔 같은 말을 **다섯 번** 했습니다. 반복하면 아무도 안 읽습니다.
@@ -217,12 +242,18 @@ try:
           _M.lesion_group_line(_FLAT, 0.5) == "",
           repr(_M.lesion_group_line(_FLAT, 0.5)))
 
-    # ★ 켜도 6종 이름은 절대 안 나가야 합니다
+    # ★ 켜도 6종 이름은 **괄호 밖으로** 안 나가야 합니다 (2026-09-10).
+    #   괄호 안(`(구진·플라크·농포·여드름)`)은 **의도한 것**입니다 — 보호자가
+    #   병원에 전할 말입니다. 금지된 건 여전히 *하나를 골라 단정하는 것*입니다.
     from src.config import CLASS_KO, CLASSES                       # noqa: E402
-    leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in line]
-    check("★ 6종 이름이 안 새어 나간다", not leaked, str(leaked))
+    leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in _strip_labels(line)]
+    check("★ 6종 이름이 괄호 밖으로 안 새어 나간다", not leaked, str(leaked))
     check("계열 이름만 쓴다",
           any(g in line for g in GROUPS))
+    # ★ 병원에서 쓰는 이름이 괄호로 나가는가 — 없으면 보호자가 전할 말이 없습니다.
+    check("★ 병원에서 쓰는 이름이 괄호로 나간다",
+          any(f"({v})" in line for v in GROUP_LABELS.values()),
+          "괄호가 없으면 `솟아오른 변화` 만 들고 병원에 가게 됩니다")
     # ⚠️ 계열 줄 꼬리에 "(진단이 아닙니다)" 를 **안 붙입니다** — 바로 다음
     #    줄이 "판단할 수 없습니다" 라 같은 말이 두 번 됩니다 (2026-09-08).
     check("★ 계열 줄에 면책 꼬리를 안 붙인다", "진단이 아닙니다" not in line, repr(line))
@@ -245,8 +276,8 @@ try:
                                      "만성 경과 가능", "피부 장벽 손상")),
           "계열과 긴급도를 같이 띄우면 절반이 한 단계 부풀려집니다 (STEP 30·33)")
     _lk = [CLASS_KO[c] for c in CLASSES
-           if CLASS_KO[c] in msg and CLASS_KO[c] not in GROUPS]
-    check("★ 묶여 없어진 6종 이름이 안 샌다", not _lk, str(_lk))
+           if CLASS_KO[c] in _strip_labels(msg) and CLASS_KO[c] not in GROUPS]
+    check("★ 묶여 없어진 6종 이름이 괄호 밖으로 안 샌다", not _lk, str(_lk))
     check("진료 권고가 그대로 있다", "수의사 진료를 받아보시기를 권합니다" in msg)
 finally:
     _M.SHOW_GROUP = _was

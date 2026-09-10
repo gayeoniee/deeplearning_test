@@ -200,9 +200,21 @@ try:
     check("확신이 낮으면 **null** — 말하지 않는다", lesion_group(_FLAT, 0.60) is None)
     check("1단계가 애매하면 **null**", lesion_group(_PEAK, 0.55) is None)
     if g:
-        blob = json.dumps(g, ensure_ascii=False)
+        # ★ 2026-09-10 — `labels` 가 생겼습니다. 거기엔 6종 이름이 **일부러**
+        #   들어갑니다 (`(구진·플라크·농포·여드름)`) — `솟아오른 변화` 만 들고
+        #   병원에 가면 수의사가 못 알아듣기 때문입니다.
+        #   ⚠️ 금지된 건 여전히 *하나를 골라 단정하는 것*이라, `labels` 를 뺀
+        #      나머지에서 이름이 새는지 봅니다.
+        blob = json.dumps({k: v for k, v in g.items() if k != "labels"},
+                          ensure_ascii=False)
         leaked = [CLASS_KO[c] for c in CLASSES if CLASS_KO[c] in blob]
-        check("★ 6종 이름이 group 에 안 들어간다", not leaked, str(leaked))
+        check("★ 6종 이름이 group 에 (labels 밖으로) 안 들어간다", not leaked, str(leaked))
+        # ★★ `labels` 는 **코드순 고정**이어야 합니다 — 확률순이면 첫 이름이
+        #    "1등" 으로 읽혀서 그때는 진짜 top1 부활입니다.
+        from src.config import GROUP_LABELS                        # noqa: E402
+        check("★★ labels 가 코드순 고정본과 같다",
+              g.get("labels") == GROUP_LABELS.get(g["name"]),
+              f"{g.get('labels')!r} vs {GROUP_LABELS.get(g['name'])!r}")
         check("계열 이름만 쓴다",
               g["name"] in set(MORPH_GROUP_KEEP_A6.values()))
         check("진단이 아니라고 같이 보낸다", "진단이 아닙니다" in g["caveat"])

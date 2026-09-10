@@ -187,6 +187,9 @@ def lesion_group_line(dist: list[tuple[str, float]],
     # ★ 특징 한 줄을 같이 냅니다 (2026-09-10) — 이름만으로는 보호자가 **자기 개
     #   사진과 대조할 수 없습니다.** 문장은 `agent.lesion_group` 이 만듭니다.
     line = f"모양만 보면 **{g['name']}**에 가깝습니다."
+    # ★ 병원에서 쓰는 이름을 괄호로 붙입니다 (2026-09-10) — 보호자가 전달할 말입니다.
+    if g.get("labels"):
+        line += f"\n({g['labels']})"
     if g.get("feature"):
         line += f"\n{g['feature']} 같은 모습이 보이는 상태예요."
     return line

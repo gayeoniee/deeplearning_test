@@ -274,7 +274,7 @@ def lesion_group(probs: list[tuple[str, float]] | None,
     두 안전 관문 안입니다.
     """
     from src.config import (DOWNGRADE_BLOCK_MIN, GROUP_DETAIL, GROUP_FEATURE,
-                            MORPH_GROUP_KEEP_A6, URGENT_GROUPS)
+                            GROUP_LABELS, MORPH_GROUP_KEEP_A6, URGENT_GROUPS)
     from src.message import GROUP_CONF_MIN, SHOW_GROUP
 
     if not SHOW_GROUP or not probs:
@@ -309,6 +309,11 @@ def lesion_group(probs: list[tuple[str, float]] | None,
             #    ("피부 표면·색·두께 변화 계열에"). 넷 다 받침과 무관하게 조사가
             #    "에" 라 그대로 이어 붙습니다.
             "text": f"모양만 보면 {name}에 가깝습니다.",
+            # ★ 그 묶음이 담는 **라벨 이름** (2026-09-10). 화면에 괄호로 붙습니다.
+            #   `솟아오른 변화` 만 들고 병원에 가면 수의사가 못 알아듣습니다.
+            #   ⚠️ "1등 병변" 이 아닙니다 — **순서가 코드순으로 고정**이라
+            #      확률과 무관합니다. 단정이 아니라 용어 풀이입니다.
+            "labels": GROUP_LABELS.get(name, ""),
             # ★ 보호자가 사진에서 **직접 확인할 수 있는** 특징 (2026-09-10).
             #   이름만으로는 자기 개 사진과 대조가 안 됩니다.
             "feature": GROUP_FEATURE.get(name, ""),
