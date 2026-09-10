@@ -121,14 +121,29 @@ FIND_DATA = """candidates = list(Path('/kaggle/input').rglob('pilot_manifest.par
 assert len(candidates) == 1, f'기존 safe-crop-pilot Dataset 하나를 연결하세요: {candidates}'
 DATA = candidates[0].parent
 # 2단계 실험 결과만 재개. 1단계(roi/photo) ZIP 은 쓰지 않습니다.
-resumes = list(Path('/kaggle/input').rglob('stage2_crop_pilot_resume.zip'))
-if not OUT.exists() and resumes:
-    assert len(resumes) == 1, '재개 ZIP 하나만 연결하세요'
-    with zipfile.ZipFile(resumes[0]) as z:
-        for name in z.namelist():
-            assert not Path(name).is_absolute() and '..' not in Path(name).parts
-        assert json.loads(z.read('protocol.json')).get('profile') == 'stage2'
-        z.extractall(OUT)
+# ⚠️ 캐글은 Dataset 을 만들 때 ZIP 을 **자동으로 풀어** 올립니다 — 그러면 ZIP 이 안 보여
+# 조용히 처음부터 다시 돌았습니다 (2026-09-11, 34분 손실). 풀린 폴더도 같이 찾습니다.
+import shutil
+resumes = list(Path('/kaggle/input').rglob('stage2_crop_pilot_resume*.zip'))
+extracted = [p.parent for p in Path('/kaggle/input').rglob('protocol.json')
+             if json.loads(p.read_text()).get('profile') == 'stage2']
+if not OUT.exists():
+    if resumes:
+        assert len(resumes) == 1, '재개 ZIP 하나만 연결하세요'
+        with zipfile.ZipFile(resumes[0]) as z:
+            for name in z.namelist():
+                assert not Path(name).is_absolute() and '..' not in Path(name).parts
+            assert json.loads(z.read('protocol.json')).get('profile') == 'stage2'
+            z.extractall(OUT)
+    elif extracted:
+        assert len(extracted) == 1, f'재개 폴더 하나만 연결하세요: {extracted}'
+        shutil.copytree(extracted[0], OUT)
+if OUT.exists():
+    done = sorted(p.name for p in OUT.glob('*_epoch*_val.npz'))
+    print('재개:', OUT, '— 끝난 epoch 파일', done)
+    assert done, '재개 폴더에 epoch 결과가 없습니다 — 잘못된 입력'
+else:
+    print('⚠️ 재개 없음 — 처음부터 돕니다. 이어서 돌리려던 거면 지금 멈추고 입력을 확인하세요')
 print('Dataset:', DATA, 'Output:', OUT)
 """
 

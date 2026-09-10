@@ -117,6 +117,22 @@ uv run python tools/build_stage2_notebook.py        # 노트북 18 생성 (소�
 ⚠️ 단일 seed · 파일럿 백본(EfficientNetV2-S) · val 만 — holdout 안 열었습니다.
 ⚠️ 절대값(macro-F1 0.42~0.44)을 배포 모델(0.5990)과 비교하지 마세요 — 백본·데이터 8배·epoch 이 다릅니다.
 
-## 실측 ② — 완주 (5 epoch)
+## 실측 ② — 재개 시도 (2026-09-11, 캐글 19.6분) — **재개가 안 됐습니다**
 
-*(재개 후 여기에.)*
+남은 할당량 34분에 `HOURS = 0.5` 로 재개를 돌렸는데, 받은 ZIP 은 `completed_epochs = 2`
+였습니다. epoch 1·2 의 `history.csv` 행과 `*_epoch2_val.npz` 확률이 실측 ① 과
+**비트 단위로 같습니다** (최대 차이 0.0, `elapsed_sec` 만 다름) — 같은 초기값·같은 seed 로
+**처음부터 다시 돈 것**이지 이어 돈 것이 아닙니다. 새 정보 0, 할당량 34분 소진.
+
+원인(가장 그럴듯한 것): **캐글은 Dataset 을 만들 때 ZIP 을 자동으로 풉니다.** 노트북은
+`rglob('stage2_crop_pilot_resume.zip')` 으로 **ZIP 파일**만 찾았으므로 풀린 폴더는 못 보고
+*재개 없음* 으로 조용히 넘어갔습니다. 이 재개 경로는 문서(`docs/kaggle_safe_crop_pilot.md`)에
+적혀만 있었지 **캐글에서 실제로 돌아간 적이 한 번도 없었습니다** (14·15·16 전부 한 세션에 끝남).
+
+고침: 생성기가 ZIP 과 **풀린 폴더**(`protocol.json` 의 `profile == 'stage2'`) 둘 다 찾고,
+재개면 *끝난 epoch 파일 목록*을, 아니면 **`⚠️ 재개 없음 — 처음부터`** 를 크게 찍습니다.
+노트북 18 을 다시 Import 해야 합니다 (셀은 `git pull` 로 안 바뀝니다).
+
+## 실측 ③ — 완주 (5 epoch)
+
+*(다음 주 재개 후 여기에. 3 epoch ZIP 은 `data/work/stage2_pilot_result/` 에 있습니다.)*

@@ -39,6 +39,7 @@ macro F1, 이상 recall, 정상 specificity, AUROC와 원본 A1–A7별 맞힘 �
 - 시간 예산은 코드 실행 시점부터 계산하고 출력용 여유를 내부에서 추가로 남긴다. epoch 도중 예산에 도달하면 그 미완료 epoch는 폐기하고 마지막 완료 epoch를 보존한다.
 - `random_last.pt` / `safe_last.pt`에는 모델·optimizer·AMP scaler·이력이 들어 있다. `initial.pt`도 함께 보관한다. 재개하면 미완료 epoch부터 같은 epoch seed로 다시 실행한다.
 - 다음 세션에서 원본 파일럿 Dataset과 이전 `safe_crop_pilot_resume.zip`을 함께 Add Input하고 같은 노트북을 실행한다. 노트북이 재개 파일을 찾아 작업 폴더에 복원한다. 여러 재개 파일이 있으면 사용할 경로를 명시한다.
+  ⚠️ **캐글은 Dataset 생성 때 ZIP 을 자동으로 풀어 올린다.** 노트북이 ZIP 파일만 찾으면 재개를 못 보고 **조용히 처음부터** 돈다 (2026-09-11 실제로 그랬음). 노트북 18 부터는 풀린 폴더도 찾고 재개 여부를 찍는다 — 14·15·16 노트북은 안 고쳤으니 그쪽으로 재개하려면 같은 수정이 필요하다.
 - 재개할 때 `EPOCHS`, batch size, workers 등 설정과 코드 스냅샷은 그대로 둔다. `HOURS`만 그 세션의 남은 시간에 맞춰 조정할 수 있다.
 - 플랫폼이 갑자기 세션을 종료하면 최신 Output의 보존은 보장되지 않는다. 코드의 체크포인트 작성만으로 Kaggle의 출력 저장을 대신할 수 없으므로, 정상 종료 후 Output/재개 ZIP을 확보한다.
 
