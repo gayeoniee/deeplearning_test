@@ -519,7 +519,7 @@ async function sampleStep() {
    네모 조작 — 카메라와 첨부가 **같은 코드**를 씁니다.
    두 곳에 따로 두면 갈라지고, 갈라지면 한쪽만 학습과 어긋납니다.
    ══════════════════════════════════════════════════════════════ */
-const BAND = {rec: [0.28, 0.48], allow: [0.24, 0.56], center: 0.10};
+const BAND = {rec: [0.28, 0.48], allow: [0.24, 0.56]};
 
 function attachBox(stage, hole, tip, onState) {
   // b 는 정규화 [x, y, w, h]. 이 값이 그대로 bbox 로 서버에 갑니다.
@@ -540,11 +540,9 @@ function attachBox(stage, hole, tip, onState) {
   function draw() {
     hole.style.left = b.x * 100 + '%';  hole.style.top = b.y * 100 + '%';
     hole.style.width = b.w * 100 + '%'; hole.style.height = b.h * 100 + '%';
-    const off = Math.max(Math.abs(b.x + b.w / 2 - .5), Math.abs(b.y + b.h / 2 - .5));
     let msg, bad = false;
     if (b.w < BAND.allow[0]) { msg = '<b>너무 작아요</b> — 더 가까이'; bad = true; }
     else if (b.w > BAND.allow[1]) { msg = '<b>너무 커요</b> — 주변 피부도 보이게'; bad = true; }
-    else if (off > BAND.center) { msg = '<b>가운데에서 벗어났어요</b>'; bad = true; }
     else if (b.w < BAND.rec[0] || b.w > BAND.rec[1]) msg = `괜찮아요 · 가로 ${(b.w * 100) | 0}%`;
     else msg = `딱 좋아요 👍 · 가로 ${(b.w * 100) | 0}%`;
     tip.innerHTML = msg;
@@ -568,8 +566,7 @@ function attachBox(stage, hole, tip, onState) {
       b.x = Math.min(Math.max(s0.x + dx, 0), 1 - b.w);
       b.y = Math.min(Math.max(s0.y + dy, 0), 1 - b.h);
     } else {
-      // **중심을 고정한 채** 늘립니다. 모서리 기준으로 늘리면 크기를 맞추는
-      // 동안 가운데 정렬이 풀려서 밴드에 걸립니다 (실제로 당했습니다).
+      // 중심을 고정한 채 늘립니다. 크기를 바꾸는 동안 잡아 둔 부위를 놓치지 않습니다.
       const cx = s0.x + s0.w / 2, cy = s0.y + s0.h / 2;
       const roomX = 2 * Math.min(cx, 1 - cx), roomY = 2 * Math.min(cy, 1 - cy) / aspect;
       const k = Math.min(Math.max(s0.w + 2 * Math.max(dx, dy), .10), roomX, roomY);

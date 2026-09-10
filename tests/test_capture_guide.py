@@ -271,7 +271,8 @@ def test_band_has_one_source():
         check(f"agent 의 {name} 밴드 = 배율 ÷ 2.5",
               all(abs(z / 2.5 - g) < 1e-9 for z, g in zip(zoom, guide)),
               f"{tuple(round(z / 2.5, 4) for z in zoom)} vs {guide}")
-    check("중심 허용치도 같다", agent.GUIDE_CENTER_MAX == robust.ZOOM_CENTER_MAX)
+    check("절대 화면 위치는 촬영 밴드 판정에 쓰지 않음",
+          not hasattr(agent, "GUIDE_CENTER_MAX"))
 
     # box_error 는 네모 크기 오차 = 1 / 배율 (torch 없이 도는 도구라 따로 읽습니다)
     spec = importlib.util.spec_from_file_location(
