@@ -27,8 +27,8 @@ INTRO = """# 18b · 노트북 18 의 코랩판 — 캐글 할당량이 없을 �
 ## 준비물 — 캐글 토큰 (파일 아님)
 
 캐글 → Settings → API → **Create New Token** 에서 보이는 **문자열**을 복사해 두세요.
-세 번째 셀이 로그인 창을 띄우면 캐글 사용자명과 그 문자열을 붙여 넣습니다
-(코랩 Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY` 를 넣어두면 창 없이 넘어갑니다).
+세 번째 셀이 **항상** 로그인 창을 띄웁니다 — 캐글 사용자명과 그 문자열을 붙여 넣습니다
+(코랩 Secrets 의 `KAGGLE_*` 는 무시합니다 — 낡은 값이 조용히 쓰여 403 이 난 적이 있습니다).
 토큰은 노트북에 **적지 않습니다.**
 
 ## 무엇을 받나
@@ -55,13 +55,10 @@ import os, shutil, json, zipfile
 from pathlib import Path
 import kagglehub
 # 로그인 창이 뜨면 캐글 사용자명과 토큰(캐글 → Settings → API → Create New Token 에서 보이는 문자열)을 붙여 넣으세요.
-# 코랩 Secrets 에 KAGGLE_USERNAME / KAGGLE_KEY 가 있으면 창 없이 넘어갑니다. 토큰을 노트북에 적지 마세요.
-try:
-    from google.colab import userdata
-    os.environ['KAGGLE_USERNAME'] = userdata.get('KAGGLE_USERNAME')
-    os.environ['KAGGLE_KEY'] = userdata.get('KAGGLE_KEY')
-except Exception:
-    kagglehub.login()
+# 코랩 Secrets 의 낡은 KAGGLE_* 값이 조용히 쓰여 403 이 났던 적이 있어, 환경변수를 지우고 **항상** 창을 띄웁니다.
+for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY', 'KAGGLE_API_TOKEN']:
+    os.environ.pop(key, None)
+kagglehub.login()
 DATA_ROOT = Path(kagglehub.dataset_download(PILOT_DATASET))
 candidates = list(DATA_ROOT.rglob('pilot_manifest.parquet'))
 assert len(candidates) == 1, candidates
