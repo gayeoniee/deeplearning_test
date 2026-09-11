@@ -98,3 +98,18 @@ def test_stage2_notebook_embedded_runner(packaged, tmp_path):
                     '--profile', 'stage2', '--smoke', '--epochs', '1', '--workers', '0'],
                    check=True, capture_output=True)
     assert (tmp_path / 'stage2_crop_pilot_resume.zip').exists()
+
+
+def test_protocol_drift_allows_versions_but_not_data_or_src():
+    saved = {'task': 'stage2', 'torch_version': '2.6.0+cu124', 'timm_version': '1.0.19',
+             'runtime_code_sha256': {'src/config.py': 'a', 'tools/kaggle_safe_crop.py': 'r1'}}
+    current = dict(saved, torch_version='2.8.0+cu126', timm_version='1.0.29',
+                   runtime_code_sha256={'src/config.py': 'a', 'tools/kaggle_safe_crop.py': 'r2'})
+    drift = pilot.protocol_drift(saved, current)
+    assert set(drift) == {'torch_version', 'timm_version', 'tools/kaggle_safe_crop.py'}
+    assert pilot.protocol_drift(saved, saved) == {}
+    import pytest
+    with pytest.raises(ValueError):
+        pilot.protocol_drift(saved, dict(current, task='stage1'))
+    with pytest.raises(ValueError):
+        pilot.protocol_drift(saved, dict(current, runtime_code_sha256={'src/config.py': 'b', 'tools/kaggle_safe_crop.py': 'r2'}))

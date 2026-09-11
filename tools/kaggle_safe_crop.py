@@ -255,6 +255,27 @@ def one_epoch(model, optimizer, scaler, tr, va, cfg, mode, epoch, device,
             ds_shift.close()
 
 
+# 플랫폼이 바뀌어도(캐글 → 코랩) 이어 돌 수 있게, 버전과 실행기 자체의 해시는 **기록만** 합니다.
+# 데이터·설정·`src/` 스냅샷이 다르면 여전히 멈춥니다.
+INFORMATIONAL_PROTOCOL_KEYS = ('torch_version', 'timm_version', 'albumentations_version')
+
+
+def protocol_drift(saved, current):
+    saved, current = dict(saved), dict(current)
+    saved_code, current_code = dict(saved.pop('runtime_code_sha256', {})), dict(current.pop('runtime_code_sha256', {}))
+    drift = {}
+    for key in INFORMATIONAL_PROTOCOL_KEYS:
+        if saved.pop(key, None) != current.get(key):
+            drift[key] = [json.loads(json.dumps(saved.get(key))), current.get(key)]
+        current.pop(key, None)
+    runner = 'tools/kaggle_safe_crop.py'
+    if saved_code.pop(runner, None) != current_code.pop(runner, None):
+        drift[runner] = 'runner changed between sessions'
+    if saved != current or saved_code != current_code:
+        raise ValueError('Resume protocol differs; keep the same data, settings and source snapshot')
+    return drift
+
+
 def write_comparison(output, histories):
     records = [r for history in histories.values() for r in history]
     table = pd.DataFrame(records) if records else pd.DataFrame(columns=['mode', 'epoch', 'macro_f1'])
@@ -349,9 +370,11 @@ def run(args):
                         shift_fraction=STAGE2_SHIFT, groups=dict(MORPH_GROUP_KEEP_A6),
                         decision='argmax only; no stage-1 probability, so coverage is not measured here')
     protocol_path = args.out / 'protocol.json'
+    drift = {}
     if protocol_path.exists():
-        if json.loads(protocol_path.read_text()) != json.loads(json.dumps(protocol)):
-            raise ValueError('Resume protocol differs; keep the same data, settings and source snapshot')
+        drift = protocol_drift(json.loads(protocol_path.read_text()), json.loads(json.dumps(protocol)))
+        if drift:
+            print('⚠️ Resume on a different platform:', json.dumps(drift), flush=True)
     else:
         if any(args.out.iterdir()):
             raise ValueError('Nonempty output directory has no protocol')
@@ -438,7 +461,8 @@ def run(args):
         (args.out / 'session.json').write_text(json.dumps({
             'stop_reason': reason, 'elapsed_sec': time.monotonic()-started,
             'budget_hours': args.hours, 'device': device, 'smoke_only': args.smoke,
-            'initial_sha256': initial_digest}, indent=2))
+            'initial_sha256': initial_digest, 'torch_version': str(torch.__version__),
+            'resume_drift': drift}, indent=2))
         print('Resume bundle:', export_resume(args.out), flush=True)
 
 
