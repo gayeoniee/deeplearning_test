@@ -28,7 +28,7 @@ D-FINE (분포 정제 회귀, Apache-2.0, Objects365→COCO 사전학습) 를 �
 
 - 데이터: STEP 50 과 같은 창 149,800장 + **창 안 모든 네모**(`boxes_multi.parquet`) · fold 0 = 검증
 - 증강(분석으로 고른 것): 좌우반전 · 배율 지터 0.7~1.3 · 밝기/대비 0.2. 모자이크·상하반전·블러 없음
-- `SWEEP = True` 로 바꾸면 서브셋 2만 장·2 epoch 로 증강 조합 3개를 먼저 비교합니다 (마구 실험)
+- 기본으로 **서브셋 2만 장·2 epoch 로 증강 조합 3개를 먼저 비교하고(마구 실험) 이긴 것으로 본 학습까지 한 번에** 갑니다. 조합별 결과는 Drive 에 남아 끊겨도 이어갑니다
 - 매 epoch: fold 0 표본 6,000장에 top-1 네모 vs 가장 큰 정답 → 밴드·**중심 오차 중앙값** (best 기준) · 마지막에 fold 0 전체
 - 끝: `dfine_best/`(save_pretrained) 를 Drive 와 내 PC 로 → 로컬에서 `tools/detect_coverage.py --detector-kind dfine`
 
@@ -40,7 +40,7 @@ SETUP_HEAD = base.SETUP_HEAD.replace("EPOCHS = 6      # STEP 42 와 같게. 재�
     .replace("IMG = 384", "IMG = 640          # D-FINE 기본 입력") \
     .replace("CODE = Path('/content/detect_code')", "CODE = Path('/content/dfine_code')") \
     .replace("CKPT = Path('/content/drive/MyDrive/dogskin_detect_step50')", "CKPT = Path('/content/drive/MyDrive/dogskin_dfine_step51')")
-SETUP_HEAD += "MODEL_ID = 'ustc-community/dfine-large-obj2coco-e25'\nSWEEP = False       # True 면 서브셋 증강 비교만 하고 끝냅니다\nAUG = 'base'        # base | color | scale_wide\n"
+SETUP_HEAD += "MODEL_ID = 'ustc-community/dfine-large-obj2coco-e25'\nSWEEP = True        # 서브셋 2만 장·2 epoch 로 증강 3조합 비교 → 이긴 것으로 본 학습까지 한 번에\nAUG = 'base'        # SWEEP=False 일 때만 씀: base | color | scale_wide\n"
 assert SETUP_HEAD != base.SETUP_HEAD
 SETUP_TAIL = base.SETUP_TAIL.replace("'timm==1.0.29', 'kagglehub'", "'transformers>=4.52', 'kagglehub'")
 assert SETUP_TAIL != base.SETUP_TAIL
@@ -192,11 +192,21 @@ def train(model, d, epochs, cfg, tag, resume=True):
     return history
 
 if SWEEP:
+    # ── 마구 실험 (멘토 피드백): 서브셋 2만 장 · 2 epoch · 조합 3개 → 중심 오차 최소를 본 학습에 씁니다.
+    #    조합마다 Drive 에 결과를 남겨 세션이 끊겨도 끝난 조합은 건너뜁니다.
+    sweep_path = CKPT / 'sweep_result.json'
+    sweep = json.loads(sweep_path.read_text()) if sweep_path.exists() else {}
     sub = dtr.sample(20000, random_state=3)
     for name, cfg in AUGS.items():
-        h = train(make_model(), sub, 2, cfg, f'sweep_{name}', resume=False)
-        print(f'■ 증강 {name}: 중심 오차 {h[-1]["off_median"]:.4f} · 둘 다 {h[-1]["both"]:.1%}')
-    raise SystemExit('SWEEP 끝 — 이긴 증강을 AUG 에 넣고 SWEEP=False 로 다시 돌리세요')
+        if name in sweep:
+            print(f'■ 증강 {name}: (Drive) 중심 오차 {sweep[name]["off_median"]:.4f}'); continue
+        h = train(make_model(), sub, 2, cfg, f'sweep_{name}')
+        sweep[name] = {'off_median': h[-1]['off_median'], 'both': h[-1]['both'], 'in_pos': h[-1]['in_pos']}
+        sweep_path.write_text(json.dumps(sweep, indent=1))
+        print(f'■ 증강 {name}: 중심 오차 {h[-1]["off_median"]:.4f} · 둘 다 {h[-1]["both"]:.1%}', flush=True)
+        torch.cuda.empty_cache()
+    AUG = min(sweep, key=lambda k: sweep[k]['off_median'])
+    print(f'\n■ ★ 이긴 증강: {AUG}  {sweep}\n   (서브셋 2 epoch 기준이라 잡음이 큽니다 — 본 학습 판정과 별개로 기록만)', flush=True)
 
 model = make_model()
 history = train(model, dtr, EPOCHS, AUGS[AUG], 'dfine')
