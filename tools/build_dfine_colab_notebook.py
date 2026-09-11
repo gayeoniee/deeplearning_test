@@ -179,17 +179,30 @@ def evaluate(model, d, n=None):
     return band_report(np.stack(P), np.concatenate(T))
 
 def train(model, d, epochs, cfg, tag, resume=True):
-    from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
+    from torch.optim.swa_utils import AveragedModel
     opt = make_opt(model)
-    ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.9999), use_buffers=True)   # 공식 EMA 0.9999
+    # 공식 EMA 0.9999 — 단 **워밍업** 있음 (decay = 0.9999·(1−exp(−step/2000))). 워밍업 없이 쓰면 첫 epoch 이 끝나도
+    # EMA 의 절반이 초기(무작위 헤드) 가중치라 평가가 엉망으로 나옵니다 (2026-09-12 실제로 크기비 3.7배).
+    ema_step = [0]
+    def ema_avg(avg, new, num_averaged):
+        ema_step[0] += 1
+        d = 0.9999 * (1 - math.exp(-ema_step[0] / 2000))
+        return avg * d + new * (1 - d)
+    ema = AveragedModel(model, avg_fn=ema_avg, use_buffers=True)
     steps = epochs * (len(d)//BATCH_SIZE)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.1 + 0.9*(1+math.cos(math.pi*min(s, steps)/steps))/2)
     last, history, start, best = CKPT / f'{tag}_last.pt', [], 0, None
     if resume and last.exists():
         s = torch.load(last, map_location=dev, weights_only=False)
         model.load_state_dict(s['model']); opt.load_state_dict(s['opt']); sched.load_state_dict(s['sched'])
-        ema.load_state_dict(s['ema'])
-        history, start, best = s['history'], s['epoch'], s['best']
+        if s.get('ema_step'):                                # 워밍업 EMA 로 저장된 것만 이어받고, 옛 EMA 는 학습 가중치로 다시 시작
+            ema.load_state_dict(s['ema']); ema_step[0] = s['ema_step']
+        else:
+            ema = AveragedModel(model, avg_fn=ema_avg, use_buffers=True); best = None
+            print('⚠️ 옛 EMA 는 버리고 지금 학습 가중치에서 EMA 를 다시 시작합니다')
+        history, start = s['history'], s['epoch']
+        if best is not None:
+            best = s['best']
         assert s['epochs'] == epochs and s['rows'] == len(d), '재개 설정이 다릅니다'
         print(f'재개: epoch {start} 부터', [(h['epoch'], round(h['off_median'], 4)) for h in history])
     else:
@@ -221,7 +234,7 @@ def train(model, d, epochs, cfg, tag, resume=True):
         if best is None or rep['off_median'] < best:          # 사전등록 부관문이 중심 오차 — 그걸로 best
             best = rep['off_median']
             ema.module.save_pretrained(CKPT / f'{tag}_best'); proc.save_pretrained(CKPT / f'{tag}_best')
-        torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'ema': ema.state_dict(), 'history': history,
+        torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'ema': ema.state_dict(), 'ema_step': ema_step[0], 'history': history,
                     'epoch': ep+1, 'epochs': epochs, 'rows': len(d), 'best': best}, last)
         (CKPT / f'{tag}_history.json').write_text(json.dumps(history, indent=1))
     return history
