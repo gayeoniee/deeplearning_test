@@ -107,6 +107,7 @@ def test_protocol_drift_allows_versions_but_not_data_or_src():
                    runtime_code_sha256={'src/config.py': 'a', 'tools/kaggle_safe_crop.py': 'r2'})
     drift = pilot.protocol_drift(saved, current)
     assert set(drift) == {'torch_version', 'timm_version', 'tools/kaggle_safe_crop.py'}
+    assert drift['torch_version'] == ['2.6.0+cu124', '2.8.0+cu126']   # 저장값이 null 로 찍히던 버그
     assert pilot.protocol_drift(saved, saved) == {}
     import pytest
     with pytest.raises(ValueError):

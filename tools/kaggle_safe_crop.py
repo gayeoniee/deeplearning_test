@@ -265,9 +265,9 @@ def protocol_drift(saved, current):
     saved_code, current_code = dict(saved.pop('runtime_code_sha256', {})), dict(current.pop('runtime_code_sha256', {}))
     drift = {}
     for key in INFORMATIONAL_PROTOCOL_KEYS:
-        if saved.pop(key, None) != current.get(key):
-            drift[key] = [json.loads(json.dumps(saved.get(key))), current.get(key)]
-        current.pop(key, None)
+        before, after = saved.pop(key, None), current.pop(key, None)
+        if before != after:
+            drift[key] = [before, after]
     runner = 'tools/kaggle_safe_crop.py'
     if saved_code.pop(runner, None) != current_code.pop(runner, None):
         drift[runner] = 'runner changed between sessions'
