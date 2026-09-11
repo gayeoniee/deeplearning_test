@@ -493,6 +493,20 @@ check("groups 합이 1 이다", abs(sum(g["prob"] for g in _s["groups"]) - 1) < 
 check("★ groups 는 6종을 **더한** 것 (자른 게 아니라)",
       len(_s["distribution"]) == 6 and len(_s["groups"]) == 4)
 
+# ★ 병원에서 쓰는 이름은 **네 줄 전부**에 붙습니다 (2026-09-11).
+#   예전에는 `group`(주장) 에만 있어서, **확신이 낮아 group 이 null 인 날**
+#   보호자가 병원에 들고 갈 말이 하나도 없었습니다 — 하필 그때가 막대만
+#   남는 때입니다. 위 두 줄이 이미 그 상황(group is None)을 만들어 뒀습니다.
+check("★ 확신이 낮아도 네 줄 모두에 병원 이름이 온다",
+      _s["group"] is None and all(g.get("labels") for g in _s["groups"]),
+      detail=str([g.get("labels") for g in _s["groups"]]))
+check("labels 는 묶음마다 다르다 (한 값을 돌려쓰지 않는다)",
+      len({g["labels"] for g in _s["groups"]}) == 4)
+# ⚠️ 이것이 top1 부활이 아님을 못 박습니다 — 네 줄에 **같은 방식으로** 붙고
+#    확률 순서와 무관하게 묶음마다 자기 이름을 답니다.
+check("labels 가 '1등' 에만 붙지 않는다",
+      all(set(g) >= {"name", "labels", "prob", "percent"} for g in _s["groups"]))
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

@@ -207,7 +207,7 @@ def lesion_group_dist(probs: list[tuple[str, float]] | None) -> list[dict]:
 
     ⚠️ 묶음표는 `MORPH_GROUP_KEEP_A6` **한 곳**에서만 읽습니다.
     """
-    from src.config import MORPH_GROUP_KEEP_A6
+    from src.config import GROUP_LABELS, MORPH_GROUP_KEEP_A6
 
     if not probs:
         return []
@@ -217,7 +217,15 @@ def lesion_group_dist(probs: list[tuple[str, float]] | None) -> list[dict]:
         if g is None:
             return []                       # 모르는 코드가 섞이면 안 그립니다
         tot[g] = tot.get(g, 0.0) + float(p)
-    return [{"name": k, "prob": round(v, 4), "percent": round(v * 100, 1)}
+    # ★ `labels` 를 **네 줄 모두에** 싣습니다 (2026-09-11).
+    #   예전에는 병원에서 쓰는 이름이 `group`(주장) 에만 있었습니다. 그러면
+    #   **확신이 낮아 `group` 이 null 인 날** 보호자가 병원에 들고 갈 말이
+    #   하나도 없습니다 — 하필 그때가 막대만 남는 때입니다.
+    #   ⚠️ 이것은 **top1 이 아닙니다.** 네 줄 전부에 같은 방식으로 붙는
+    #      *용어 풀이*이고, 하나를 골라 단정하는 것이 아닙니다. 앱은 이것을
+    #      카드 본문이 아니라 **"자세히 보기" 안에** 둡니다.
+    return [{"name": k, "labels": GROUP_LABELS.get(k, ""),
+             "prob": round(v, 4), "percent": round(v * 100, 1)}
             for k, v in sorted(tot.items(), key=lambda kv: -kv[1])]
 
 
