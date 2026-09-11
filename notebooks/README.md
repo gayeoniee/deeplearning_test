@@ -53,6 +53,7 @@ holdout 은 학습에도 모델 선택에도 안 쓴 마지막 시험지입니�
 | **`17_VL01_photometric_확장평가`** | `dogskin-vl01-photo` (Private) | **학습 없음** (추론만) | — | ★ **대기** — STEP 47. VL01 6,183장 확대 확인. 패키지 1.97GiB 준비됨 |
 | **`18_2단계_병변보존_crop_파일럿`** | `safe-crop-pilot` (기존, 재업로드 없음) | **2단계** ×2 (EfficientNetV2-S · A7 제외 · `fixed` vs `safe`) | ≤ 54분 (`HOURS = 0.9`) · epoch 경계 재개 | ★ **대기** — STEP 49. 사전등록 `STEP49_2단계_병변보존_crop_사전등록.md`. `tools/build_stage2_notebook.py` 로 만드세요 |
 | **`18b_…_colab`** | 캐글 Dataset 둘을 **캐글 API 로 받아옴** (재업로드 없음) | 18 과 동일 | ≤ 1시간 | 18 의 코랩판 — 캐글 할당량이 없을 때. `tools/build_stage2_colab_notebook.py` |
+| **`19_병변_검출기_전체데이터_colab`** | 캐글 비공개 Dataset 3조각 `dogskin-detect-full-{0,1,2}` (`tools/make_detect_dataset_full.py`) | 검출기 (effnetv2_s 회귀, STEP 42 와 같은 모델) · 157k 장 | A100 ~30분 / L4 ~1.5h | ★ **대기** — STEP 50. 사전등록 `STEP50_…사전등록.md`. 판정은 로컬 `tools/detect_coverage.py` |
 
 ⚠️ **`03f` · `03g` · `03h` · `14` · `15` 는 채택되지 않았거나 미완입니다**
 (03f 축 닫힘, 03g 헛알림 +1.8%p, 03h 는 재개 조건이 발동 안 함 — STEP 23,
