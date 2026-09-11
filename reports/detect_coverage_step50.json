@@ -1,0 +1,98 @@
+{
+ "n": 3065,
+ "n_lesion": 2479,
+ "conditions": {
+  "label": {
+   "coverage": 0.7706362153344208,
+   "n_said": 2362,
+   "group_acc_lesion": 0.8697055264219443,
+   "stage1_recall": 0.8684953610326744,
+   "stage1_false_alarm": 0.3395904436860068
+  },
+  "user": {
+   "coverage": 0.2969004893964111,
+   "n_said": 910,
+   "group_acc_lesion": 0.7858007260992336,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "center": {
+   "coverage": 0.23882544861337685,
+   "n_said": 732,
+   "group_acc_lesion": 0.754336425978217,
+   "stage1_recall": 0.6325131101250504,
+   "stage1_false_alarm": 0.3310580204778157
+  },
+  "fixed": {
+   "coverage": 0.3853181076672104,
+   "n_said": 1181,
+   "group_acc_lesion": 0.8128277531262605,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "detect": {
+   "coverage": 0.467536704730832,
+   "n_said": 1433,
+   "group_acc_lesion": 0.8075837031060912,
+   "stage1_recall": 0.8475191609519968,
+   "stage1_false_alarm": 0.5204778156996587
+  },
+  "detect_fixed": {
+   "coverage": 0.4234910277324633,
+   "n_said": 1298,
+   "group_acc_lesion": 0.7970956030657523,
+   "stage1_recall": 0.8475191609519968,
+   "stage1_false_alarm": 0.5204778156996587
+  }
+ },
+ "gain": 0.17063621533442086,
+ "span": 0.4737357259380097,
+ "verdict": "채택 후보",
+ "band_lesion": {
+  "n": 2479,
+  "ratio_median": 1.0231384246245676,
+  "off_median": 0.1028245096193583,
+  "in_size": 0.790641387656313,
+  "in_pos": 0.4901169826542961,
+  "both": 0.3973376361436063,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7051230334812424,
+   "in_pos": 0.13110125050423557,
+   "both": 0.07583703106091166,
+   "off_median": 0.2358223236827755,
+   "size_frac": 0.215
+  }
+ },
+ "band_all": {
+  "n": 3065,
+  "ratio_median": 1.018250744920942,
+  "off_median": 0.12942581509104578,
+  "in_size": 0.7983686786296901,
+  "in_pos": 0.42153344208809135,
+  "both": 0.3432300163132137,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7615008156606852,
+   "in_pos": 0.11941272430668842,
+   "both": 0.07471451876019576,
+   "off_median": 0.24025370963850612,
+   "size_frac": 0.215
+  }
+ },
+ "arms": [
+  "stage2_convnextv2_base_m2.5_384_n121k_moderate"
+ ],
+ "stage1": "stage1_effnetv2_s_f320_384_n233k_moderate_photometric",
+ "threshold_raw": 0.1466064453125,
+ "detector": "/Users/gayeon/deeplearning_test/data/work/detect_step50/detect_best.pt",
+ "seed": 31
+}
