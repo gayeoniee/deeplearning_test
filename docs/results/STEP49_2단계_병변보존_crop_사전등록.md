@@ -135,4 +135,5 @@ uv run python tools/build_stage2_notebook.py        # 노트북 18 생성 (소�
 
 ## 실측 ③ — 완주 (5 epoch)
 
-*(다음 주 재개 후 여기에. 3 epoch ZIP 은 `data/work/stage2_pilot_result/` 에 있습니다.)*
+*(재개 후 여기에. 3 epoch ZIP 은 `data/work/stage2_pilot_result/` 에 있습니다.
+캐글 할당량이 없으면 노트북 `18b`(코랩판)로 — 캐글 API 로 두 Dataset 을 받아오므로 재업로드 없음.)*
