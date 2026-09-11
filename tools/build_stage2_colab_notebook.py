@@ -51,9 +51,12 @@ assert SETUP_HEAD != base.SETUP_HEAD
 
 FETCH = """PILOT_DATASET = 'gayoniee/safe-crop-pilot'   # 캐글 Dataset 슬러그 (계정/이름)
 RESUME_DATASET = ''                              # 예: 'gayoniee/stage2-crop-pilot-resume'. 비우면 처음부터
-import os, shutil, json, zipfile
+import os, shutil, json, zipfile, subprocess, sys
 from pathlib import Path
+# 캐글 새 API 토큰은 kagglehub >= 0.4.1 부터 — 코랩 기본 버전이 낡으면 "validated" 뒤에 403 이 납니다.
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'kagglehub>=0.4.1'], check=True)
 import kagglehub
+print('kagglehub', kagglehub.__version__)
 # 로그인 창이 뜨면 캐글 사용자명과 토큰(캐글 → Settings → API → Create New Token 에서 보이는 문자열)을 붙여 넣으세요.
 # 코랩 Secrets 의 낡은 KAGGLE_* 값이 조용히 쓰여 403 이 났던 적이 있어, 환경변수를 지우고 **항상** 창을 띄웁니다.
 for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY', 'KAGGLE_API_TOKEN']:
