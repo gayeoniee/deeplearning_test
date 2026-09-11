@@ -203,10 +203,11 @@ def main() -> None:
     lesion = y != "A7"
     print(f"\n■ 표본 {len(y):,}장 · {(time.perf_counter()-t0)/60:.1f}분")
 
-    def coverage(cond):
+    def coverage(cond, cond2=None):
+        """`cond2` 를 주면 1단계는 `cond`, 2단계는 `cond2` 의 크롭 — 배선 "검출기는 2단계에만" 을 잽니다."""
         p1 = torch.cat(res[cond]["p1"]).numpy()[:len(y)]
         n_arm = len(net2)
-        P2 = np.mean([torch.cat(res[cond]["p2"][k::n_arm]).numpy()[:len(y)] for k in range(n_arm)], axis=0)
+        P2 = np.mean([torch.cat(res[cond2 or cond]["p2"][k::n_arm]).numpy()[:len(y)] for k in range(n_arm)], axis=0)
         P = np.zeros((len(y), 4))
         for j, c in enumerate(CLASSES):
             P[:, G4.index(MORPH_GROUP_KEEP_A6[c])] += P2[:, j]
@@ -222,14 +223,23 @@ def main() -> None:
         return {"coverage": k/len(y), "n_said": k, "group_acc_lesion": acc, "stage1_recall": recall1, "stage1_false_alarm": fp1}
 
     out = {c: coverage(c) for c in CONDS}
+    # ★ 배선 후보 — 1단계는 지금처럼 사용자 중심, 검출기는 이상 판정 뒤 2단계 크롭에만. 1단계 지표는 user 와 같습니다.
+    out["user1_detect2"] = coverage("user", "detect")
+    out["user1_detect_fixed2"] = coverage("user", "detect_fixed")
+    # 원 확률을 남깁니다 — 다음엔 다시 안 돌리고 조합만 바꿔 잴 수 있게.
+    np.savez_compressed(a.out.with_suffix(".npz"), y=y,
+                        **{f"p1_{c}": torch.cat(res[c]["p1"]).numpy()[:len(y)] for c in CONDS},
+                        **{f"p2_{c}": np.stack([torch.cat(res[c]["p2"][k::len(net2)]).numpy()[:len(y)] for k in range(len(net2))]) for c in CONDS})
     band = band_report(np.asarray(det_pred), np.asarray(det_true))
     band_les = band_report(np.asarray(det_pred)[lesion], np.asarray(det_true)[lesion])
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)")
     print(f"    {'조건':14}{'커버리지':>10}{'장수':>8}{'계열정확도(병변)':>16}{'1단계 recall':>14}{'헛알림':>8}")
-    for c in CONDS:
+    for c in list(CONDS) + ["user1_detect2", "user1_detect_fixed2"]:
         o = out[c]
-        print(f"    {c:14}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
+        print(f"    {c:20}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
     gain = out["detect"]["coverage"] - out["user"]["coverage"]
+    gain2 = out["user1_detect2"]["coverage"] - out["user"]["coverage"]
+    print(f"\n■ ★ 배선 '검출기는 2단계에만' (1단계는 사용자 중심 그대로): user1_detect2 − user = {gain2:+.1%}p")
     span = out["label"]["coverage"] - out["user"]["coverage"]
     print(f"\n■ ★ 관문: detect − user = {gain:+.1%}p  (문턱 +{DETECT_MIN_COVERAGE_GAIN:.0%})  "
           f"· 메울 수 있던 폭 {span:.1%}p 중 {gain/span if span > 0 else 0:.0%} 회복")
@@ -241,7 +251,7 @@ def main() -> None:
     print("\n⚠️ 릴리스 팔 로컬 구성 기준 — 3팔(STEP 39)과 절대값 비교 금지. 결론은 같은 실행 안의 차이입니다.")
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps({"n": int(len(y)), "n_lesion": int(lesion.sum()), "conditions": out, "gain": gain, "span": span,
-                                 "verdict": verdict, "band_lesion": band_les, "band_all": band,
+                                 "verdict": verdict, "gain_stage2_only": gain2, "band_lesion": band_les, "band_all": band,
                                  "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
                                  "detector": str(a.detector), "seed": a.seed}, ensure_ascii=False, indent=1))
     print(f"원본: {a.out}")
