@@ -3107,3 +3107,18 @@ STEP 41 의 *"포화는 우연한 안전장치"* 가 검출기에도 적용.
 *히트맵/폴리곤 검출기* 와 *STEP 49 `safe` 2단계 + 검출기 크롭* 이고, 둘 다 새 사전등록 대상입니다.
 오늘 쓴 돈: 코랩 유닛 ~10 (≈$1).
 
+### STEP 51 — 진짜 object detection · 사전등록 (2026-09-11 밤)
+
+멘토 코멘트: *"object detection 해본 적 없지? bbox 로 1차 검출·검증, 2차 분류. 병변별 6개도 됨. 증강은 분석으로
+고르는 것과 마구 실험을 같이."* 맞습니다 — STEP 42·50 은 회귀 헤드였지 검출기가 아니었고, 그래서 위치가 0.107 에서
+평평했습니다. 모델은 조사해서 골랐습니다: **D-FINE-L**(위치 정밀도 특화, Apache, HF 정식 지원, 로컬에서 파인튜닝·CPU
+0.54s 확인) 1순위, RF-DETR(DINOv2, 도메인 전이 1위) 2순위, Co-DETR 는 200M+/CPU 불가/코랩 비현실, YOLO 는 AGPL 제외.
+"6개 따로" 는 6배 추론·네모 충돌 규칙 문제라 6클래스 하나가 표준이고, 그것도 **1클래스가 커버리지를 올린 뒤**.
+
+만든 것: `tools/detect_multibox_labels.py`(원본 안 열고 창 안 모든 네모 복원, 2개 이상 0.6%) · 노트북 `20`
+(HF D-FINE 파인튜닝, 배율 지터·좌우반전·색, `SWEEP` 서브셋 증강 비교, Drive 재개, CPU 스모크 통과) ·
+`detect_coverage.py --detector-kind dfine`. 관문은 STEP 50 의 교훈대로 **처음부터 배포 3팔**, 부관문 중심 오차 ≤ 0.05.
+
+출처: Roboflow best-models 2026(https://blog.roboflow.com/best-object-detection-models/) · RF-DETR(https://github.com/roboflow/rf-detr) ·
+D-FINE HF 문서(https://huggingface.co/docs/transformers/model_doc/d_fine) · RT-DETRv4(https://github.com/RT-DETRs/RT-DETRv4)
+

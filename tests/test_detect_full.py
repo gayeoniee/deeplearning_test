@@ -47,3 +47,30 @@ def test_colab_notebook_19_compiles_and_bundles_current_src():
     assert 'fold != 0' in ''.join(nb['cells'][2]['source'])                          # fold 0 = 검증
     fetch_cell = ''.join(nb['cells'][2]['source'])
     assert 'is_holdout' not in fetch_cell + train_cell                                # holdout 은 데이터에 없음
+
+
+def test_multibox_labels_keep_inside_boxes_and_clip():
+    from tools.detect_multibox_labels import boxes_in_window
+    boxes = json.dumps([[100, 100, 200, 200], [100, 100, 200, 200], [900, 900, 1000, 1000], [480, 480, 560, 560]])
+    out = boxes_in_window(boxes, wx=0, wy=0, side=500)
+    assert [0.2, 0.2, 0.4, 0.4] in [[round(v, 3) for v in b] for b in out]      # 안에 있는 것 (중복은 하나로)
+    assert not any(b[0] > 0.9 for b in out)                                      # 밖에 있는 것은 제외
+    assert all(0 <= v <= 1 for b in out for v in b)                              # 경계로 자름
+    assert len(out) == 1                                                         # 걸친 것(480~560, 창 안 4%) 은 80% 미만이라 제외
+
+
+def test_colab_notebook_20_compiles_bundles_src_and_targets_dfine():
+    nb = json.loads(Path('notebooks/20_병변_검출_DFINE_colab.ipynb').read_text())
+    for c in nb['cells']:
+        if c['cell_type'] == 'code':
+            compile(''.join(c['source']), '<nb>', 'exec')
+    source = ''.join(nb['cells'][1]['source'])
+    assign = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == 'FILES' for t in n.targets))
+    for name, content in ast.literal_eval(assign.value).items():
+        assert content == Path(name).read_text(), f'{name} 스냅샷이 현재 소스와 다릅니다 — 생성기를 다시 돌리세요'
+    assert "MODEL_ID = 'ustc-community/dfine-large-obj2coco-e25'" in source
+    fetch, train = ''.join(nb['cells'][2]['source']), ''.join(nb['cells'][3]['source'])
+    assert 'boxes_multi.parquet' in fetch and 'fold != 0' in fetch
+    assert 'num_labels=1' in train and "rep['off_median'] < best" in train        # 1클래스 · best 는 중심 오차
+    assert 'is_holdout' not in fetch + train

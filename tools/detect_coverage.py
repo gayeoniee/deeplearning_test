@@ -48,7 +48,8 @@ def largest_box(boxes_json):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--detector", type=Path, required=True, help="코랩이 낸 detect_best.pt")
+    ap.add_argument("--detector", type=Path, required=True, help="detect_best.pt (boxhead) 또는 save_pretrained 폴더 (dfine)")
+    ap.add_argument("--detector-kind", choices=["boxhead", "dfine"], default="boxhead")
     ap.add_argument("--n", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=31)
     ap.add_argument("--batch", type=int, default=24)
@@ -95,9 +96,28 @@ def main() -> None:
 
     net1 = load(s1, 2)
     net2 = [(load(d, len(CLASSES)), crop_tag_from_exp(d.name) or "m2.5") for d in s2s]
-    det = BoxHead(pretrained=False, img_size=384)
-    det.load_state_dict(torch.load(a.detector, map_location="cpu", weights_only=False)["model"])
-    det = det.to(dev).eval()
+    if a.detector_kind == "boxhead":
+        det = BoxHead(pretrained=False, img_size=384)
+        det.load_state_dict(torch.load(a.detector, map_location="cpu", weights_only=False)["model"])
+        det = det.to(dev).eval()
+
+        def detect(im):
+            with torch.no_grad():
+                return to_xyxy(det(tf_det(im).unsqueeze(0).to(dev))).float().cpu()[0].numpy()
+    else:
+        # STEP 51 — 진짜 object detection. 점수 최고 네모 하나를 씁니다 (같은 잣대: top-1 vs 가장 큰 정답).
+        from transformers import AutoImageProcessor, DFineForObjectDetection
+        det_dev = "cpu"                     # MPS 는 deformable attention 이 느리거나 미지원일 수 있어 CPU 로 (0.5s/장)
+        proc = AutoImageProcessor.from_pretrained(a.detector)
+        det = DFineForObjectDetection.from_pretrained(a.detector).to(det_dev).eval()
+
+        def detect(im):
+            with torch.no_grad():
+                out = det(**proc(images=im, return_tensors="pt").to(det_dev))
+            r = proc.post_process_object_detection(out, threshold=0.0, target_sizes=[(1, 1)])[0]
+            if not len(r["scores"]):
+                return np.array([0.4, 0.4, 0.6, 0.6])
+            return r["boxes"][int(r["scores"].argmax())].float().numpy()
     print(f"■ 1단계 {s1.name} (raw 문턱 {t1:.4f}) · 2단계 {len(net2)}팔 · 검출기 {a.detector}")
 
     zips = {}
@@ -163,8 +183,7 @@ def main() -> None:
         if got is None:
             continue
         im, lb, W = got
-        with torch.no_grad():
-            d = to_xyxy(det(tf_det(im).unsqueeze(0).to(dev))).float().cpu()[0].numpy() * W
+        d = detect(im) * W
         det_pred.append(d / W)
         det_true.append(np.array(lb) / W)
         ucx = (lb[0]+lb[2])/2 + rng.uniform(-center_off, center_off)*W
@@ -253,7 +272,7 @@ def main() -> None:
     a.out.write_text(json.dumps({"n": int(len(y)), "n_lesion": int(lesion.sum()), "conditions": out, "gain": gain, "span": span,
                                  "verdict": verdict, "gain_stage2_only": gain2, "band_lesion": band_les, "band_all": band,
                                  "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
-                                 "detector": str(a.detector), "seed": a.seed}, ensure_ascii=False, indent=1))
+                                 "detector": str(a.detector), "detector_kind": a.detector_kind, "seed": a.seed}, ensure_ascii=False, indent=1))
     print(f"원본: {a.out}")
 
 
