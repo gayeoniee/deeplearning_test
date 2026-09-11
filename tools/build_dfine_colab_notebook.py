@@ -27,7 +27,7 @@ STEP 42·50 의 "검출기" 는 좌표 4개 회귀였고 중심 오차가 0.107 
 D-FINE (분포 정제 회귀, Apache-2.0, Objects365→COCO 사전학습) 를 병변 1클래스로 파인튜닝합니다.
 
 - 데이터: STEP 50 과 같은 창 149,800장 + **창 안 모든 네모**(`boxes_multi.parquet`) · fold 0 = 검증
-- 증강(분석으로 고른 것): 좌우반전 · 배율 지터 0.7~1.3 · 밝기/대비 0.2. 모자이크·상하반전·블러 없음
+- 증강: **D-FINE 공식 레시피**(photometric p.5 · zoom-out · IoU-crop · hflip · 다중 스케일 · 마지막 epoch 끔 · EMA)를 우리 근거로 거른 `dfine` 이 기본. 색조(hue)는 제외(붉은기가 단서), 모자이크는 공식에도 없음
 - 기본으로 **서브셋 2만 장·2 epoch 로 증강 조합 3개를 먼저 비교하고(마구 실험) 이긴 것으로 본 학습까지 한 번에** 갑니다. 조합별 결과는 Drive 에 남아 끊겨도 이어갑니다
 - 매 epoch: fold 0 표본 6,000장에 top-1 네모 vs 가장 큰 정답 → 밴드·**중심 오차 중앙값** (best 기준) · 마지막에 fold 0 전체
 - 끝: `dfine_best/`(save_pretrained) 를 Drive 와 내 PC 로 → 로컬에서 `tools/detect_coverage.py --detector-kind dfine`
@@ -40,7 +40,7 @@ SETUP_HEAD = base.SETUP_HEAD.replace("EPOCHS = 6      # STEP 42 와 같게. 재�
     .replace("IMG = 384", "IMG = 640          # D-FINE 기본 입력") \
     .replace("CODE = Path('/content/detect_code')", "CODE = Path('/content/dfine_code')") \
     .replace("CKPT = Path('/content/drive/MyDrive/dogskin_detect_step50')", "CKPT = Path('/content/drive/MyDrive/dogskin_dfine_step51')")
-SETUP_HEAD += "MODEL_ID = 'ustc-community/dfine-large-obj2coco-e25'\nSWEEP = True        # 서브셋 2만 장·2 epoch 로 증강 3조합 비교 → 이긴 것으로 본 학습까지 한 번에\nAUG = 'base'        # SWEEP=False 일 때만 씀: base | color | scale_wide\n"
+SETUP_HEAD += "MODEL_ID = 'ustc-community/dfine-large-obj2coco-e25'\nSWEEP = True        # 서브셋 2만 장·2 epoch 로 증강 3조합 비교 → 이긴 것으로 본 학습까지 한 번에\nAUG = 'dfine'       # SWEEP=False 일 때만 씀: dfine | dfine+geo | dfine+photo\n"
 assert SETUP_HEAD != base.SETUP_HEAD
 SETUP_TAIL = base.SETUP_TAIL.replace("'timm==1.0.29', 'kagglehub'", "'transformers>=4.52', 'kagglehub'")
 assert SETUP_TAIL != base.SETUP_TAIL
@@ -65,40 +65,63 @@ proc = AutoImageProcessor.from_pretrained(MODEL_ID)
 proc.size = {'height': IMG, 'width': IMG}
 MEAN = tuple(int(255*m) for m in proc.image_mean)
 
-AUGS = {'base':       dict(zoom=(0.7, 1.3), color=0.2),
-        'color':      dict(zoom=(0.7, 1.3), color=0.4),
-        'scale_wide': dict(zoom=(0.5, 1.5), color=0.2)}
+# ── 증강: D-FINE 공식 레시피(RandomPhotometricDistort p.5 · RandomZoomOut · RandomIoUCrop p.8 · hflip · 다중 스케일 ·
+#    마지막 구간 강한 증강 끄기)를 우리 근거로 거른 것. 상세·근거는 STEP51 사전등록 표.
+AUGS = {
+    # 공식 레시피 정렬판: 밝기/대비/채도(색조 제외 — 붉은기가 병변 단서, STEP 30) · 줌 0.5~2.0(앱 병변 5.6~59.6% 를 덮음) · 좌우반전 · 다중 스케일
+    'dfine':       dict(zoom=(0.5, 2.0), color=0.3, hue=0.0, vflip=0.0, rot90=0.0, jpeg=0.0, blur=0.0),
+    # + 기하: 상하반전·90° 회전 — 피부 사진엔 위아래가 없다는 가설 (프로젝트 config 는 vflip 0, 검출에선 한 번 시험)
+    'dfine+geo':   dict(zoom=(0.5, 2.0), color=0.3, hue=0.0, vflip=0.5, rot90=0.5, jpeg=0.0, blur=0.0),
+    # + 화질: 약한 JPEG·블러 — 휴대폰 사진 (STEP 6 에서 1단계엔 화질 증강이 도움, 2단계엔 해로움 — 검출에선 미측정)
+    'dfine+photo': dict(zoom=(0.5, 2.0), color=0.3, hue=0.0, vflip=0.0, rot90=0.0, jpeg=0.5, blur=0.3),
+}
+SCALES = [512, 544, 576, 608, 640, 672, 704, 736, 768]   # 다중 스케일 학습 (D-FINE collate base_size ± ) · 마지막 epoch 는 640 고정
+
+def _clip_boxes(boxes, fn):
+    '''네모를 fn 으로 옮기고 화면 밖은 자릅니다. 50% 미만 남으면 버립니다. 하나도 안 남으면 None.'''
+    kept = []
+    for b in boxes:
+        x1, y1, x2, y2 = fn(b)
+        cx1, cy1, cx2, cy2 = max(0, x1), max(0, y1), min(1, x2), min(1, y2)
+        if cx2 > cx1 and cy2 > cy1 and (cx2-cx1)*(cy2-cy1) >= 0.5*(x2-x1)*(y2-y1):
+            kept.append([cx1, cy1, cx2, cy2])
+    return kept or None
 
 def augment(im, boxes, cfg, rng):
-    \"\"\"좌우반전 · 배율 지터(잘라내거나 여백 채움) · 밝기/대비. 네모는 같이 움직이고 50% 미만 남으면 버립니다.\"\"\"
+    '''반환 (im, boxes). 네모가 다 잘려 나가면 원본을 돌려줍니다 (버리지 않음).'''
+    import io as _io
+    from PIL import ImageFilter
     W = im.size[0]
+    orig = (im, [list(b) for b in boxes])
     boxes = [list(b) for b in boxes]
     if rng.random() < 0.5:
-        im = im.transpose(Image.FLIP_LEFT_RIGHT)
-        boxes = [[1-b[2], b[1], 1-b[0], b[3]] for b in boxes]
+        im = im.transpose(Image.FLIP_LEFT_RIGHT); boxes = [[1-b[2], b[1], 1-b[0], b[3]] for b in boxes]
+    if rng.random() < cfg['vflip']:
+        im = im.transpose(Image.FLIP_TOP_BOTTOM); boxes = [[b[0], 1-b[3], b[2], 1-b[1]] for b in boxes]
+    if rng.random() < cfg['rot90']:                       # 시계 반대 90° : (x, y) → (y, 1-x)
+        im = im.transpose(Image.ROTATE_90); boxes = [[b[1], 1-b[2], b[3], 1-b[0]] for b in boxes]
     z = rng.uniform(*cfg['zoom'])
-    if z < 1.0:                                   # 확대: 창 안을 잘라냄
-        s = z
-        ox, oy = rng.uniform(0, 1-s), rng.uniform(0, 1-s)
-        im = im.crop((int(ox*W), int(oy*W), int((ox+s)*W), int((oy+s)*W))).resize((W, W))
-        kept = []
-        for b in boxes:
-            x1, y1, x2, y2 = (b[0]-ox)/s, (b[1]-oy)/s, (b[2]-ox)/s, (b[3]-oy)/s
-            cx1, cy1, cx2, cy2 = max(0, x1), max(0, y1), min(1, x2), min(1, y2)
-            if cx2 > cx1 and cy2 > cy1 and (cx2-cx1)*(cy2-cy1) >= 0.5*(x2-x1)*(y2-y1):
-                kept.append([cx1, cy1, cx2, cy2])
-        if not kept:
-            return im, None
-        boxes = kept
-    elif z > 1.0:                                 # 축소: 여백을 평균색으로 채움
+    if z < 1.0:                                           # 확대 = RandomIoUCrop 역할: 창 안을 잘라냄
+        s = z; ox, oy = rng.uniform(0, 1-s), rng.uniform(0, 1-s)
+        kept = _clip_boxes(boxes, lambda b: ((b[0]-ox)/s, (b[1]-oy)/s, (b[2]-ox)/s, (b[3]-oy)/s))
+        if kept is None:
+            return orig
+        im = im.crop((int(ox*W), int(oy*W), int((ox+s)*W), int((oy+s)*W))).resize((W, W)); boxes = kept
+    elif z > 1.0:                                         # 축소 = RandomZoomOut: 여백을 평균색으로
         canvas = Image.new('RGB', (int(W*z), int(W*z)), MEAN)
         ox, oy = rng.randint(0, canvas.size[0]-W), rng.randint(0, canvas.size[1]-W)
-        canvas.paste(im, (ox, oy))
-        im = canvas.resize((W, W))
+        canvas.paste(im, (ox, oy)); im = canvas.resize((W, W))
         boxes = [[(b[0]*W+ox)/(W*z), (b[1]*W+oy)/(W*z), (b[2]*W+ox)/(W*z), (b[3]*W+oy)/(W*z)] for b in boxes]
-    if cfg['color']:
-        im = ImageEnhance.Brightness(im).enhance(rng.uniform(1-cfg['color'], 1+cfg['color']))
-        im = ImageEnhance.Contrast(im).enhance(rng.uniform(1-cfg['color'], 1+cfg['color']))
+    if cfg['color'] and rng.random() < 0.5:               # RandomPhotometricDistort p=0.5 (색조는 제외)
+        c = cfg['color']
+        im = ImageEnhance.Brightness(im).enhance(rng.uniform(1-c, 1+c))
+        im = ImageEnhance.Contrast(im).enhance(rng.uniform(1-c, 1+c))
+        im = ImageEnhance.Color(im).enhance(rng.uniform(1-c, 1+c))
+    if cfg['blur'] and rng.random() < cfg['blur']:
+        im = im.filter(ImageFilter.GaussianBlur(rng.uniform(0.3, 1.0)))
+    if cfg['jpeg'] and rng.random() < cfg['jpeg']:
+        buf = _io.BytesIO(); im.save(buf, format='JPEG', quality=rng.randint(50, 95)); buf.seek(0)
+        im = Image.open(buf).convert('RGB')
     return im, boxes
 
 class DS(Dataset):
@@ -110,11 +133,11 @@ class DS(Dataset):
         with Image.open(index[r.image]) as im:
             im = im.convert('RGB')
         boxes = r.boxes
-        if self.train:
-            out = augment(im, boxes, self.cfg, random.Random(self.seed*1000003 + i))
-            if out[1] is None:
-                out = (im, boxes)
-            im, boxes = out
+        if self.train and self.cfg is not None:
+            im, boxes = augment(im, boxes, self.cfg, random.Random(self.seed*1000003 + i))
+        elif self.train:                                     # 마지막 epoch: 좌우반전만 (D-FINE 의 stop_epoch)
+            if random.Random(self.seed*1000003 + i).random() < 0.5:
+                im = im.transpose(Image.FLIP_LEFT_RIGHT); boxes = [[1-b[2], b[1], 1-b[0], b[3]] for b in boxes]
         px = proc(images=im, return_tensors='pt')['pixel_values'][0]
         b = torch.tensor(boxes, dtype=torch.float32)
         cxcywh = torch.stack([(b[:,0]+b[:,2])/2, (b[:,1]+b[:,3])/2, b[:,2]-b[:,0], b[:,3]-b[:,1]], 1)
@@ -124,6 +147,11 @@ class DS(Dataset):
 def collate(batch):
     return torch.stack([b[0] for b in batch]), [b[1] for b in batch], torch.stack([b[2] for b in batch])
 
+def multiscale(px, rng):
+    '''배치마다 입력 크기를 바꿉니다 — 네모는 0~1 정규화라 그대로. (D-FINE collate 의 base_size_repeat)'''
+    size = rng.choice(SCALES)
+    return px if size == IMG else torch.nn.functional.interpolate(px, size=(size, size), mode='bilinear', align_corners=False)
+
 dev = 'cuda'
 def make_model():
     return DFineForObjectDetection.from_pretrained(MODEL_ID, num_labels=1, ignore_mismatched_sizes=True).to(dev)
@@ -131,11 +159,11 @@ def make_model():
 def make_opt(model):
     bb = [p for n, p in model.named_parameters() if 'backbone' in n and p.requires_grad]
     rest = [p for n, p in model.named_parameters() if 'backbone' not in n and p.requires_grad]
-    return torch.optim.AdamW([{'params': bb, 'lr': LR*0.1}, {'params': rest, 'lr': LR}], weight_decay=1e-4)
+    return torch.optim.AdamW([{'params': bb, 'lr': LR*0.05}, {'params': rest, 'lr': LR}], weight_decay=1.25e-4)   # 공식: 백본 0.05×
 
 @torch.no_grad()
 def evaluate(model, d, n=None):
-    \"\"\"top-1 네모 vs 가장 큰 정답 — STEP 42·50 과 같은 잣대.\"\"\"
+    '''top-1 네모 vs 가장 큰 정답 — STEP 42·50 과 같은 잣대.'''
     model.eval()
     sub = d if n is None else d.sample(n, random_state=7)
     dl = DataLoader(DS(sub, False), batch_size=BATCH_SIZE*2, shuffle=False, num_workers=WORKERS, collate_fn=collate)
@@ -151,13 +179,16 @@ def evaluate(model, d, n=None):
     return band_report(np.stack(P), np.concatenate(T))
 
 def train(model, d, epochs, cfg, tag, resume=True):
+    from torch.optim.swa_utils import AveragedModel, get_ema_multi_avg_fn
     opt = make_opt(model)
+    ema = AveragedModel(model, multi_avg_fn=get_ema_multi_avg_fn(0.9999), use_buffers=True)   # 공식 EMA 0.9999
     steps = epochs * (len(d)//BATCH_SIZE)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 0.1 + 0.9*(1+math.cos(math.pi*min(s, steps)/steps))/2)
     last, history, start, best = CKPT / f'{tag}_last.pt', [], 0, None
     if resume and last.exists():
         s = torch.load(last, map_location=dev, weights_only=False)
         model.load_state_dict(s['model']); opt.load_state_dict(s['opt']); sched.load_state_dict(s['sched'])
+        ema.load_state_dict(s['ema'])
         history, start, best = s['history'], s['epoch'], s['best']
         assert s['epochs'] == epochs and s['rows'] == len(d), '재개 설정이 다릅니다'
         print(f'재개: epoch {start} 부터', [(h['epoch'], round(h['off_median'], 4)) for h in history])
@@ -166,27 +197,31 @@ def train(model, d, epochs, cfg, tag, resume=True):
     t0 = time.perf_counter()
     for ep in range(start, epochs):
         model.train(); tot = k = 0
-        dl = DataLoader(DS(d, True, cfg, seed=ep), batch_size=BATCH_SIZE, shuffle=True, num_workers=WORKERS,
+        last_epoch = ep == epochs-1                          # 공식 stop_epoch: 마지막 구간은 강한 증강·다중 스케일 끔
+        rng = random.Random(1000+ep)
+        dl = DataLoader(DS(d, True, None if last_epoch else cfg, seed=ep), batch_size=BATCH_SIZE, shuffle=True, num_workers=WORKERS,
                         pin_memory=True, drop_last=True, collate_fn=collate, persistent_workers=True)
         for px, labels, _ in dl:
+            if not last_epoch:
+                px = multiscale(px, rng)
             labels = [{kk: v.to(dev) for kk, v in l.items()} for l in labels]
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 loss = model(pixel_values=px.to(dev, non_blocking=True), labels=labels).loss
             opt.zero_grad(set_to_none=True); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 0.1)
-            opt.step(); sched.step()
+            opt.step(); sched.step(); ema.update_parameters(model)
             tot += float(loss.detach()); k += 1
             if k % 500 == 0:
                 print(f'  {tag} ep{ep+1} {k}/{len(dl)} loss {tot/k:.3f} {(time.perf_counter()-t0)/60:.1f}분', flush=True)
-        rep = evaluate(model, dva, n=6000)
+        rep = evaluate(ema.module, dva, n=6000)              # 평가·저장은 EMA 가중치
         rec = {'epoch': ep+1, 'loss': tot/max(k, 1), 'both': rep['both'], 'in_size': rep['in_size'], 'in_pos': rep['in_pos'],
                'ratio_median': rep['ratio_median'], 'off_median': rep['off_median'], 'baseline_both': rep['baseline']['both'],
                'minutes': (time.perf_counter()-t0)/60}
         history.append(rec); print(json.dumps(rec), flush=True)
         if best is None or rep['off_median'] < best:          # 사전등록 부관문이 중심 오차 — 그걸로 best
             best = rep['off_median']
-            model.save_pretrained(CKPT / f'{tag}_best'); proc.save_pretrained(CKPT / f'{tag}_best')
-        torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'history': history,
+            ema.module.save_pretrained(CKPT / f'{tag}_best'); proc.save_pretrained(CKPT / f'{tag}_best')
+        torch.save({'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(), 'ema': ema.state_dict(), 'history': history,
                     'epoch': ep+1, 'epochs': epochs, 'rows': len(d), 'best': best}, last)
         (CKPT / f'{tag}_history.json').write_text(json.dumps(history, indent=1))
     return history
