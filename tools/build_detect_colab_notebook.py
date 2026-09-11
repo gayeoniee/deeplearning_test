@@ -48,7 +48,7 @@ for name, source in FILES.items():
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source)
 sys.path.insert(0, str(CODE))
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'timm==1.0.29', 'kagglehub>=0.4.1'], check=True)
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-U', 'timm==1.0.29', 'kagglehub'], check=True)  # 새 캐글 토큰은 최신 kagglehub 필요 — 구버전은 validated 뒤 403
 import torch
 assert torch.cuda.is_available(), 'GPU 런타임을 고르세요'
 print(torch.__version__, torch.cuda.get_device_name(0))
