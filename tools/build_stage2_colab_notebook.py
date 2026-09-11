@@ -24,10 +24,11 @@ INTRO = """# 18b · 노트북 18 의 코랩판 — 캐글 할당량이 없을 �
 소스·실행기·판정은 [노트북 18](18_2단계_병변보존_crop_파일럿.ipynb) 과 같습니다 — 사전등록은
 [`STEP49`](../docs/results/STEP49_2단계_병변보존_crop_사전등록.md).
 
-## 준비물 — 캐글 API 토큰
+## 준비물 — 캐글 토큰 (파일 아님)
 
-캐글 → Settings → API → **Create New Token** → `kaggle.json` 을 받아 두세요.
-첫 셀이 업로드 창을 띄웁니다 (코랩 Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY` 를 넣어두면 업로드 없이 넘어갑니다).
+캐글 → Settings → API → **Create New Token** 에서 보이는 **문자열**을 복사해 두세요.
+세 번째 셀이 로그인 창을 띄우면 캐글 사용자명과 그 문자열을 붙여 넣습니다
+(코랩 Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY` 를 넣어두면 창 없이 넘어갑니다).
 토큰은 노트북에 **적지 않습니다.**
 
 ## 무엇을 받나
@@ -50,31 +51,23 @@ assert SETUP_HEAD != base.SETUP_HEAD
 
 FETCH = """PILOT_DATASET = 'gayoniee/safe-crop-pilot'   # 캐글 Dataset 슬러그 (계정/이름)
 RESUME_DATASET = ''                              # 예: 'gayoniee/stage2-crop-pilot-resume'. 비우면 처음부터
-import os, shutil, subprocess, sys, json, zipfile
+import os, shutil, json, zipfile
 from pathlib import Path
+import kagglehub
+# 로그인 창이 뜨면 캐글 사용자명과 토큰(캐글 → Settings → API → Create New Token 에서 보이는 문자열)을 붙여 넣으세요.
+# 코랩 Secrets 에 KAGGLE_USERNAME / KAGGLE_KEY 가 있으면 창 없이 넘어갑니다. 토큰을 노트북에 적지 마세요.
 try:
-    from google.colab import userdata, files
+    from google.colab import userdata
     os.environ['KAGGLE_USERNAME'] = userdata.get('KAGGLE_USERNAME')
     os.environ['KAGGLE_KEY'] = userdata.get('KAGGLE_KEY')
 except Exception:
-    from google.colab import files
-    print('kaggle.json 을 올리세요 (캐글 → Settings → API → Create New Token)')
-    uploaded = files.upload()
-    assert 'kaggle.json' in uploaded, 'kaggle.json 이 필요합니다'
-    Path('/root/.kaggle').mkdir(exist_ok=True)
-    Path('/root/.kaggle/kaggle.json').write_bytes(uploaded['kaggle.json'])
-    os.chmod('/root/.kaggle/kaggle.json', 0o600)
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'kaggle'], check=True)
-DATA_ROOT = Path('/content/pilot_data')
-if not list(DATA_ROOT.rglob('pilot_manifest.parquet')):
-    DATA_ROOT.mkdir(exist_ok=True)
-    subprocess.run(['kaggle', 'datasets', 'download', '-d', PILOT_DATASET, '-p', str(DATA_ROOT), '--unzip'], check=True)
+    kagglehub.login()
+DATA_ROOT = Path(kagglehub.dataset_download(PILOT_DATASET))
 candidates = list(DATA_ROOT.rglob('pilot_manifest.parquet'))
 assert len(candidates) == 1, candidates
 DATA = candidates[0].parent
 if RESUME_DATASET and not OUT.exists():
-    RES = Path('/content/resume_in'); RES.mkdir(exist_ok=True)
-    subprocess.run(['kaggle', 'datasets', 'download', '-d', RESUME_DATASET, '-p', str(RES), '--unzip'], check=True)
+    RES = Path(kagglehub.dataset_download(RESUME_DATASET))
     zips = list(RES.rglob('stage2_crop_pilot_resume*.zip'))
     if zips:
         with zipfile.ZipFile(zips[0]) as z:
