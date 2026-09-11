@@ -59,9 +59,13 @@ import kagglehub
 print('kagglehub', kagglehub.__version__)
 # 로그인 창이 뜨면 캐글 사용자명과 토큰(캐글 → Settings → API → Create New Token 에서 보이는 문자열)을 붙여 넣으세요.
 # 코랩 Secrets 의 낡은 KAGGLE_* 값이 조용히 쓰여 403 이 났던 적이 있어, 환경변수를 지우고 **항상** 창을 띄웁니다.
-for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY', 'KAGGLE_API_TOKEN']:
+for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY']:
     os.environ.pop(key, None)
-kagglehub.login()
+from getpass import getpass
+# 로그인 창(사용자명+토큰)은 옛 방식으로 저장돼 새 토큰에서 GetDataset 403 이 났습니다.
+# 로컬에서 검증된 방식 그대로 — 토큰을 환경변수로만 (숨김 입력, 노트북에 남지 않음).
+os.environ['KAGGLE_API_TOKEN'] = getpass('캐글 토큰 (Settings → API → Generate New Token): ').strip()
+assert os.environ['KAGGLE_API_TOKEN'], '토큰이 비었습니다'
 DATA_ROOT = Path(kagglehub.dataset_download(PILOT_DATASET))
 candidates = list(DATA_ROOT.rglob('pilot_manifest.parquet'))
 assert len(candidates) == 1, candidates

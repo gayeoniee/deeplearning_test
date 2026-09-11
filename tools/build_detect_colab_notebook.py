@@ -16,7 +16,7 @@ BUNDLED = ["src/__init__.py", "src/config.py", "src/models.py", "src/detect.py",
 
 INTRO = """# 19 · 병변 검출기 — 전체 원본 157k 장 (STEP 50, 코랩)
 
-**런타임 → A100 (없으면 L4)** → 두 번째 셀에서 Drive 허용 → 세 번째 셀 로그인(캐글 사용자명 + 토큰) → Run All.
+**런타임 → A100 (없으면 L4)** → 두 번째 셀에서 Drive 허용 → 세 번째 셀에 캐글 **토큰만** 붙여넣기(숨김 입력) → Run All.
 사전등록: [`STEP50`](../docs/results/STEP50_병변_검출기_전체데이터_사전등록.md) — 문턱은 여기서 안 바꿉니다.
 
 STEP 42 와 **같은 모델·같은 손실**(`src/detect.py`)에 데이터만 7.2배·세 청크. 입력 변환은
@@ -56,9 +56,13 @@ print(torch.__version__, torch.cuda.get_device_name(0))
 
 FETCH = """DETECT_DATASETS = ['gayoniee/dogskin-detect-full-0', 'gayoniee/dogskin-detect-full-1', 'gayoniee/dogskin-detect-full-2']
 import pandas as pd, kagglehub
-for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY', 'KAGGLE_API_TOKEN']:
+for key in ['KAGGLE_USERNAME', 'KAGGLE_KEY']:
     os.environ.pop(key, None)
-kagglehub.login()
+from getpass import getpass
+# 로그인 창(사용자명+토큰)은 옛 방식으로 저장돼 새 토큰에서 GetDataset 403 이 났습니다.
+# 로컬에서 검증된 방식 그대로 — 토큰을 환경변수로만 (숨김 입력, 노트북에 남지 않음).
+os.environ['KAGGLE_API_TOKEN'] = getpass('캐글 토큰 (Settings → API → Generate New Token): ').strip()
+assert os.environ['KAGGLE_API_TOKEN'], '토큰이 비었습니다'
 roots = [Path(kagglehub.dataset_download(slug)) for slug in DETECT_DATASETS]
 frames = []
 for root in roots:
