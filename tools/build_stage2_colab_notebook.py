@@ -76,8 +76,9 @@ if RESUME_DATASET and not OUT.exists():
             z.extractall(OUT)
     else:
         found = [p.parent for p in RES.rglob('protocol.json') if json.loads(p.read_text()).get('profile') == 'stage2']
-        assert len(found) == 1, f'재개 폴더를 못 찾았습니다: {found}'
-        shutil.copytree(found[0], OUT)
+        assert found, '재개 폴더를 못 찾았습니다'
+        # 출력 폴더와 풀린 ZIP 이 같이 올라와 둘일 수 있습니다 — 끝난 epoch 가 가장 많은 쪽.
+        shutil.copytree(max(found, key=lambda d: len(list(d.glob('*_epoch*_val.npz')))), OUT)
 if OUT.exists():
     done = sorted(p.name for p in OUT.glob('*_epoch*_val.npz'))
     print('재개:', OUT, '— 끝난 epoch 파일', done)

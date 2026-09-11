@@ -136,8 +136,8 @@ if not OUT.exists():
             assert json.loads(z.read('protocol.json')).get('profile') == 'stage2'
             z.extractall(OUT)
     elif extracted:
-        assert len(extracted) == 1, f'재개 폴더 하나만 연결하세요: {extracted}'
-        shutil.copytree(extracted[0], OUT)
+        # 출력 폴더와 풀린 ZIP 이 같이 올라와 둘일 수 있습니다 — 끝난 epoch 가 가장 많은 쪽.
+        shutil.copytree(max(extracted, key=lambda d: len(list(d.glob('*_epoch*_val.npz')))), OUT)
 if OUT.exists():
     done = sorted(p.name for p in OUT.glob('*_epoch*_val.npz'))
     print('재개:', OUT, '— 끝난 epoch 파일', done)
