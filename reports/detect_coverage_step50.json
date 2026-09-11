@@ -43,11 +43,26 @@
    "group_acc_lesion": 0.7970956030657523,
    "stage1_recall": 0.8475191609519968,
    "stage1_false_alarm": 0.5204778156996587
+  },
+  "user1_detect2": {
+   "coverage": 0.3800978792822186,
+   "n_said": 1165,
+   "group_acc_lesion": 0.8075837031060912,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_detect_fixed2": {
+   "coverage": 0.34159869494290374,
+   "n_said": 1047,
+   "group_acc_lesion": 0.7970956030657523,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
   }
  },
  "gain": 0.17063621533442086,
  "span": 0.4737357259380097,
  "verdict": "채택 후보",
+ "gain_stage2_only": 0.0831973898858075,
  "band_lesion": {
   "n": 2479,
   "ratio_median": 1.0231384246245676,
