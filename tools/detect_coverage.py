@@ -37,6 +37,7 @@ from src.config import MORPH_GROUP_KEEP_A6 as _M4  # noqa: E402
 G4 = list(dict.fromkeys(_M4[c] for c in ("A1", "A2", "A5", "A6")))
 CONDS = ("label", "user", "center", "fixed", "detect", "detect_fixed", "uwdetect")
 USER_WINDOW = 640      # 사용자 중심 주변 이 크기 창 안에서만 검출 (1080 사진 기준) — 탐색 조건, 사전등록 밖
+MULTI_WINDOWS = (1080, 800, 640)   # STEP 54: 사용자 중심 창 여럿을 2단계에 넣고 평균 (1080 = 사진 전체). 재학습 0
 RELEASE = Path("/Users/gayeon/deeplearning_test/data/work/release_reference/dogskin_06/release")
 MANIFEST = Path("/Users/gayeon/deeplearning_test/data/work/safe_crop_v1/manifest.parquet")
 
@@ -165,8 +166,9 @@ def main() -> None:
     def square(cx, cy, side):
         return [cx-side/2, cy-side/2, cx+side/2, cy+side/2]
 
-    res = {c: {"p1": [], "p2": []} for c in CONDS}
-    buf = {(c, k): [] for c in CONDS for k in range(1+len(net2))}
+    MW = [f"mw{w}" for w in MULTI_WINDOWS]
+    res = {c: {"p1": [], "p2": []} for c in list(CONDS) + MW}
+    buf = {(c, k): [] for c in list(CONDS) + MW for k in range(1+len(net2))}
     truth, det_pred, det_true, det_scores, uw_pred = [], [], [], [], []
     t0 = time.perf_counter()
 
@@ -218,6 +220,15 @@ def main() -> None:
                 break
             for k, w in enumerate(windows):
                 pending[(c, k)] = tf(im.crop(tuple(int(v) for v in w)))
+        if pending is not None:
+            # ★ 다중 창: 사용자 중심 주변 창을 잘라 **그 창을 사진으로 보고** 팔마다 자기 크롭(bbox 없음 → 중앙)을 적용
+            for w in MULTI_WINDOWS:
+                wx0 = int(min(max(ucx - w/2, 0), W - w)); wy0 = int(min(max(ucy - w/2, 0), W - w))
+                sub = im.crop((wx0, wy0, wx0 + w, wy0 + w))
+                pending[(f"mw{w}", 0)] = pending[("user", 0)]                     # 1단계는 사용자 조건 그대로 (2단계만 바꿈)
+                for k, (_, tag) in enumerate(net2, start=1):
+                    win = crop.crop_window({"bbox": None, "img_w": w, "img_h": w}, tag=tag, cfg=cfg)
+                    pending[(f"mw{w}", k)] = tf(sub.crop(tuple(int(v) for v in win)))
         if pending is None:               # 조건 하나라도 창을 못 만들면 그 사진은 전 조건에서 뺍니다
             det_pred.pop(); det_true.pop(); det_scores.pop(); uw_pred.pop()
             continue
@@ -240,7 +251,8 @@ def main() -> None:
         `p1_override` 는 1단계 점수를 통째로 바꿉니다 (STEP 52: 검출기 최고 점수)."""
         p1 = torch.cat(res[cond]["p1"]).numpy()[:len(y)] if p1_override is None else np.asarray(p1_override)[:len(y)]
         n_arm = len(net2)
-        P2 = np.mean([torch.cat(res[cond2 or cond]["p2"][k::n_arm]).numpy()[:len(y)] for k in range(n_arm)], axis=0)
+        conds2 = [cond2 or cond] if not isinstance(cond2, (list, tuple)) else list(cond2)
+        P2 = np.mean([torch.cat(res[c2]["p2"][k::n_arm]).numpy()[:len(y)] for c2 in conds2 for k in range(n_arm)], axis=0)
         P = np.zeros((len(y), 4))
         for j, c in enumerate(CLASSES):
             P[:, G4.index(MORPH_GROUP_KEEP_A6[c])] += P2[:, j]
@@ -260,6 +272,9 @@ def main() -> None:
     out["user1_detect2"] = coverage("user", "detect")
     out["user1_detect_fixed2"] = coverage("user", "detect_fixed")
     out["user1_uwdetect2"] = coverage("user", "uwdetect")           # 사용자 창 안 검출 → 2단계만
+    for w in MULTI_WINDOWS:                                          # 창 하나씩
+        out[f"user1_mw{w}"] = coverage("user", f"mw{w}")
+    out["user1_multiwin"] = coverage("user", MW)                     # ★ STEP 54: 창 셋 평균 (3팔 × 3창 = 9 확률 평균)
     band_uw = band_report(np.asarray(uw_pred)[lesion], np.asarray(det_true)[lesion])
     stage1 = None
     if a.detector_stage1 and not np.isnan(det_scores).all():
@@ -282,16 +297,18 @@ def main() -> None:
     np.savez_compressed(a.out.with_suffix(".npz"), y=y,
                         det_score=np.asarray(det_scores)[:len(y)],
                         **{f"p1_{c}": torch.cat(res[c]["p1"]).numpy()[:len(y)] for c in CONDS},
-                        **{f"p2_{c}": np.stack([torch.cat(res[c]["p2"][k::len(net2)]).numpy()[:len(y)] for k in range(len(net2))]) for c in CONDS})
+                        **{f"p2_{c}": np.stack([torch.cat(res[c]["p2"][k::len(net2)]).numpy()[:len(y)] for k in range(len(net2))]) for c in list(CONDS) + MW})
     band = band_report(np.asarray(det_pred), np.asarray(det_true))
     band_les = band_report(np.asarray(det_pred)[lesion], np.asarray(det_true)[lesion])
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)")
     print(f"    {'조건':14}{'커버리지':>10}{'장수':>8}{'계열정확도(병변)':>16}{'1단계 recall':>14}{'헛알림':>8}")
-    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", "det1_user2", "det1_detect2"] if k in out]:
+    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", *[f"user1_mw{w}" for w in MULTI_WINDOWS], "user1_multiwin", "det1_user2", "det1_detect2"] if k in out]:
         o = out[c]
         print(f"    {c:20}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
     gain = out["detect"]["coverage"] - out["user"]["coverage"]
     gain2 = out["user1_detect2"]["coverage"] - out["user"]["coverage"]
+    gain_mw = out["user1_multiwin"]["coverage"] - out["user"]["coverage"]
+    print(f"\n■ ★ STEP 54 다중 창(사용자 중심 {MULTI_WINDOWS}, 2단계 확률 평균, 재학습 0): user1_multiwin − user = {gain_mw:+.1%}p  (관문 +5%p)")
     print(f"\n■ ★ 배선 '검출기는 2단계에만' (1단계는 사용자 중심 그대로): user1_detect2 − user = {gain2:+.1%}p")
     span = out["label"]["coverage"] - out["user"]["coverage"]
     print(f"\n■ ★ 관문: detect − user = {gain:+.1%}p  (문턱 +{DETECT_MIN_COVERAGE_GAIN:.0%})  "
@@ -312,7 +329,7 @@ def main() -> None:
     print("\n⚠️ 릴리스 팔 로컬 구성 기준 — 3팔(STEP 39)과 절대값 비교 금지. 결론은 같은 실행 안의 차이입니다.")
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps({"n": int(len(y)), "n_lesion": int(lesion.sum()), "conditions": out, "gain": gain, "span": span,
-                                 "verdict": verdict, "gain_stage2_only": gain2, "band_lesion": band_les, "band_user_window": band_uw, "stage1_candidates": stage1, "band_all": band,
+                                 "verdict": verdict, "gain_stage2_only": gain2, "gain_multiwin": gain_mw, "multi_windows": list(MULTI_WINDOWS), "band_lesion": band_les, "band_user_window": band_uw, "stage1_candidates": stage1, "band_all": band,
                                  "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
                                  "detector": str(a.detector), "detector_kind": a.detector_kind, "seed": a.seed}, ensure_ascii=False, indent=1))
     print(f"원본: {a.out}")
