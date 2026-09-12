@@ -389,6 +389,12 @@ class CFG:
     clahe_p: float = 0.0              # 국소 대비 보정 — 질감을 살리는 방향
     shift_limit: float = 0.0          # 평행이동 비율 (위치 교란 20.6% 대응)
 
+    # --- STEP 53: 저장된 m2.5 크롭 **안에서** 병변 보존 창 흔들기 (학습 전용) ---
+    # (하한, 상한) = 창 변 / 크롭 변. 예: (0.42, 1.0). None 이면 끔.
+    # 창은 늘 중앙 40% 병변 상자를 담습니다 (`safe_window.sample_window_in_crop`).
+    # ⚠️ 검증 변환은 절대 안 흔듭니다 — build_loaders 가 학습 Dataset 에만 답니다.
+    train_window_side: tuple[float, float] | None = None
+
     # --- 불균형 대응 ---
     balance_strategy: str = "class_weight"
     # "none" | "class_weight" | "weighted_sampler" | "hair_weighted"
@@ -451,6 +457,8 @@ class CFG:
             data["rrc_scale"] = tuple(data["rrc_scale"])
         if isinstance(data.get("affine_scale"), list):
             data["affine_scale"] = tuple(data["affine_scale"])
+        if isinstance(data.get("train_window_side"), list):
+            data["train_window_side"] = tuple(data["train_window_side"])
         known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in data.items() if k in known})
 

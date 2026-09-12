@@ -166,6 +166,24 @@ def transforms_for_model(cfg: CFG, model, train: bool):
 # ──────────────────────────────────────────────────────────────
 # Dataset
 # ──────────────────────────────────────────────────────────────
+class SafeWindow:
+    """학습 전용 (STEP 53): m2.5 크롭 안에서 **병변(중앙 40% 상자)을 보존하는 창**을 무작위로 잘라 줍니다.
+
+    DataLoader 워커로 넘어가야 하므로 lambda 가 아니라 클래스입니다 (spawn 환경에서 lambda 는 못 넘깁니다).
+    """
+
+    def __init__(self, side_range):
+        self.side_range = tuple(side_range)
+
+    def __call__(self, img):
+        from src.safe_window import sample_window_in_crop
+
+        return img.crop(sample_window_in_crop(img.width, img.height, side_range=self.side_range))
+
+    def __repr__(self):
+        return f"SafeWindow{self.side_range}"
+
+
 class SkinDataset(Dataset):
     """매니페스트 DataFrame 하나로 동작하는 Dataset.
 
@@ -181,8 +199,11 @@ class SkinDataset(Dataset):
         classes: list[str] | None = None,
         return_index: bool = False,
         draft_size: int | None = None,
+        window=None,
     ):
         self.classes = classes or CLASSES
+        # STEP 53: PIL 이미지를 받아 창을 잘라 돌려주는 callable. **학습 Dataset 에만** 답니다.
+        self.window = window
         # JPEG 은 1/2, 1/4, 1/8 크기로 **디코딩 단계에서** 줄일 수 있습니다(DCT 스케일링).
         # 512px 크롭을 224 로 쓸 거면 512 전체를 푸는 건 낭비입니다.
         # draft_size 를 주면 그 크기 이상이 되는 가장 작은 배율로 풉니다.
@@ -215,6 +236,8 @@ class SkinDataset(Dataset):
                 img = im.convert("RGB")
         except Exception:
             img = Image.new("RGB", (256, 256), (128, 128, 128))
+        if self.window is not None:
+            img = self.window(img)
         x = self.transform(img) if self.transform else torch.from_numpy(
             np.array(img).transpose(2, 0, 1)
         ).float() / 255
@@ -350,7 +373,9 @@ def build_loaders(
     tf_tr = transforms_for_model(cfg, model, True) if model else build_transforms(cfg, True)
     tf_va = transforms_for_model(cfg, model, False) if model else build_transforms(cfg, False)
 
-    ds_tr = SkinDataset(train_df, tf_tr, path_col, classes=classes)
+    # STEP 53 — 학습 크롭 안에서 병변 보존 창 흔들기. 검증(ds_va)에는 절대 안 답니다.
+    win = SafeWindow(cfg.train_window_side) if getattr(cfg, "train_window_side", None) else None
+    ds_tr = SkinDataset(train_df, tf_tr, path_col, classes=classes, window=win)
     # 검증은 어차피 Resize(img_size*1.14) 로 줄이므로 그 크기로 디코딩합니다.
     # full 크롭(512px)에서 매 에폭 검증이 2~3배 빨라지고, 결과는 사실상 같습니다.
     ds_va = SkinDataset(val_df, tf_va, path_col, classes=classes,
@@ -379,7 +404,7 @@ def build_loaders(
     dl_va = DataLoader(ds_va, batch_size=bs * 2, shuffle=False, **common)
 
     print(f"[data] train {len(ds_tr):,} / val {len(ds_va):,}  batch={bs}  "
-          f"balance={cfg.balance_strategy}")
+          f"balance={cfg.balance_strategy}" + (f"  train_window={win}" if win else ""))
     print(f"[data] 클래스별 학습 수: {dict(zip(ds_tr.classes, class_counts(ds_tr).tolist()))}")
     return dl_tr, dl_va, ds_tr, ds_va
 

@@ -59,6 +59,7 @@ def train_and_measure(
     lr: float | None = None,
     backbone_lr_mult: float | None = None,
     warmup_epochs: int | None = None,
+    train_window: tuple[float, float] | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
     """한 설정으로 학습하고 **점수와 견고성을 함께** 돌려줍니다.
@@ -122,6 +123,13 @@ def train_and_measure(
             over["warmup_epochs"] = warmup_epochs
         cfg = CFG.from_dict({**cfg.to_dict(), **over})
 
+    # ── STEP 53: 학습 크롭 안 병변 보존 창 (주었을 때만) ──────────
+    # ★ 이름에 붙입니다 — 안 붙이면 배포 팔(`..._moderate`)과 같은 폴더를 써서
+    #    train.fit 이 "이미 끝난 학습" 으로 건너뜁니다 (학습률 축과 같은 함정).
+    if train_window is not None:
+        cfg = CFG.from_dict({**cfg.to_dict(), "train_window_side": tuple(train_window),
+                             "exp_name": cfg.exp_name + f"_safe{train_window[0]:g}"})
+
     tr, va = split.get_fold(view, fold)
 
     # ── 빠른 스윕용 부분 학습 ────────────────────────────────────
@@ -178,6 +186,7 @@ def train_and_measure(
         "lr": cfg.lr, "backbone_lr_mult": cfg.backbone_lr_mult,
         "backbone_lr": cfg.lr * cfg.backbone_lr_mult,
         "warmup_epochs": cfg.warmup_epochs,
+        "train_window": list(train_window) if train_window else None,
         "best_epoch": res.best_epoch, "n_epochs": len(res.history),
         # 마지막 에폭이 최고면 아직 덜 학습된 것입니다 (에폭을 더 줘야 합니다)
         "converged": res.best_epoch < len(res.history) - 2,

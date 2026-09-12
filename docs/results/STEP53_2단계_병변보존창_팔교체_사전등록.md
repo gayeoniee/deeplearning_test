@@ -1,6 +1,6 @@
-# STEP 53 — 2단계 병변 보존 창, 배포 팔 하나를 갈아 끼우는 확대 실험 · **사전등록 초안** (2026-09-12)
+# STEP 53 — 2단계 병변 보존 창, 배포 팔 하나를 갈아 끼우는 확대 실험 · 사전등록 (2026-09-13 확정, 결과 전)
 
-> 초안입니다 — STEP 52 결과를 본 뒤 확정합니다. 캐글 무료(주 30h 중 STEP 52 가 12h). 과금 0 목표.
+> 2026-09-13 새벽 확정 — STEP 52 가 기각된 뒤(같은 표본 37.5% vs 34.0%), 남은 마지막 사전등록 갈래입니다. 캐글 무료 T4(주 30h 중 STEP 52 가 7.3h). 과금 0.
 
 ## 질문
 
@@ -25,7 +25,7 @@ STEP 49 파일럿(작은 모델·1만 장)에서 본 *"창을 흔들어 배우�
 | 학습 | effnetv2_s · 384 · `moderate` · photometric 없음(2단계는 STEP 6 대로) · 5 epoch(best 4/7 이었음) · T4 fp16 · epoch 경계 재개 |
 | 판정 | `tools/detect_coverage.py --release <safe 팔로 바꾼 3팔>` — 같은 표본(fold 0 2,500+586) · **`user` 조건**(사진 전체 포화)과 `label` 조건 둘 다 |
 
-## 관문 (초안 — STEP 52 뒤 확정)
+## 관문 — 돌리기 전에 못 박음 (2026-09-13)
 
 | | 값 |
 |---|---|
@@ -39,5 +39,15 @@ STEP 49 파일럿(작은 모델·1만 장)에서 본 *"창을 흔들어 배우�
 ## 준비된 것 / 남은 것
 
 - ✅ `src/safe_window.py` + 검사 3개
-- ⬜ `SkinDataset` 에 학습 전용 창 옵션(`cfg.stage2_safe_window`) — 검증 변환은 결정론 유지(증강 규칙)
-- ⬜ 노트북 `22` (캐글, `dogskin-m25` + 매니페스트, 재개) · 시간 실측 전엔 epoch 수 확정 안 함
+- ✅ `CFG.train_window_side` + `data.SafeWindow` — **학습 Dataset 에만** 답니다 (검증은 결정론 유지, `tests/test_safe_window.py` 5개)
+- ✅ `experiments.train_and_measure(train_window=...)` — 실험 이름에 `_safe0.42` 를 붙여 배포 팔 폴더와 안 겹침
+- ✅ 노트북 `22` (`tools/build_stage2_safe_arm_notebook.py`, 환경 셀은 09 에서 · `NB_BRANCH=main`) · 로컬 CPU 스모크 통과
+- epoch 은 노트북 09 와 같은 **10** (조기 종료 patience 5, 배포 팔은 best 4). 09 실측으로 팔 하나 약 4.5h — 한 세션 안
+
+## 실행 기록
+
+- 2026-09-13 새벽: 캐글 API 로 커널 push (`gayoniee/step53-stage2-safe-arm`, T4, 비공개) — 결과는 아래 "실측" 에.
+
+## 실측
+
+*(결과 나오면 여기에.)*
