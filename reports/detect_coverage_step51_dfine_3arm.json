@@ -1,0 +1,116 @@
+{
+ "n": 3065,
+ "n_lesion": 2479,
+ "conditions": {
+  "label": {
+   "coverage": 0.5876019575856444,
+   "n_said": 1801,
+   "group_acc_lesion": 0.8200887454618798,
+   "stage1_recall": 0.8684953610326744,
+   "stage1_false_alarm": 0.3395904436860068
+  },
+  "user": {
+   "coverage": 0.3164763458401305,
+   "n_said": 970,
+   "group_acc_lesion": 0.7765227914481646,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "center": {
+   "coverage": 0.19412724306688417,
+   "n_said": 595,
+   "group_acc_lesion": 0.7075433642597821,
+   "stage1_recall": 0.6325131101250504,
+   "stage1_false_alarm": 0.3310580204778157
+  },
+  "fixed": {
+   "coverage": 0.3109298531810767,
+   "n_said": 953,
+   "group_acc_lesion": 0.7607906413876563,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "detect": {
+   "coverage": 0.22544861337683525,
+   "n_said": 691,
+   "group_acc_lesion": 0.7402178297700686,
+   "stage1_recall": 0.8870512303348125,
+   "stage1_false_alarm": 0.6143344709897611
+  },
+  "detect_fixed": {
+   "coverage": 0.2433931484502447,
+   "n_said": 746,
+   "group_acc_lesion": 0.7329568374344494,
+   "stage1_recall": 0.8870512303348125,
+   "stage1_false_alarm": 0.6143344709897611
+  },
+  "user1_detect2": {
+   "coverage": 0.26296900489396413,
+   "n_said": 806,
+   "group_acc_lesion": 0.7402178297700686,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_detect_fixed2": {
+   "coverage": 0.21859706362153344,
+   "n_said": 670,
+   "group_acc_lesion": 0.7329568374344494,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  }
+ },
+ "gain": -0.09102773246329526,
+ "span": 0.27112561174551386,
+ "verdict": "기각",
+ "gain_stage2_only": -0.05350734094616638,
+ "band_lesion": {
+  "n": 2479,
+  "ratio_median": 1.1067587172913693,
+  "off_median": 0.1243465465272035,
+  "in_size": 0.6288826139572409,
+  "in_pos": 0.45139169019766034,
+  "both": 0.3372327551432029,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7051230334812424,
+   "in_pos": 0.13110125050423557,
+   "both": 0.07583703106091166,
+   "off_median": 0.2358223236827755,
+   "size_frac": 0.215
+  }
+ },
+ "band_all": {
+  "n": 3065,
+  "ratio_median": 1.1106072140057452,
+  "off_median": 0.16574984371302193,
+  "in_size": 0.633605220228385,
+  "in_pos": 0.38042414355628057,
+  "both": 0.2822185970636215,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7615008156606852,
+   "in_pos": 0.11941272430668842,
+   "both": 0.07471451876019576,
+   "off_median": 0.24025370963850612,
+   "size_frac": 0.215
+  }
+ },
+ "arms": [
+  "stage2_convnextv2_base_m2.5_384_n121k_moderate",
+  "stage2_effnetv2_s_f320_384_moderate",
+  "stage2_effnetv2_s_m2.5_384_moderate"
+ ],
+ "stage1": "stage1_effnetv2_s_f320_384_n233k_moderate_photometric",
+ "threshold_raw": 0.1466064453125,
+ "detector": "/Users/gayeon/deeplearning_test/data/work/dfine_step51/dfine_best",
+ "detector_kind": "dfine",
+ "seed": 31
+}
