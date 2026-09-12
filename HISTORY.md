@@ -3122,3 +3122,10 @@ STEP 41 의 *"포화는 우연한 안전장치"* 가 검출기에도 적용.
 출처: Roboflow best-models 2026(https://blog.roboflow.com/best-object-detection-models/) · RF-DETR(https://github.com/roboflow/rf-detr) ·
 D-FINE HF 문서(https://huggingface.co/docs/transformers/model_doc/d_fine) · RT-DETRv4(https://github.com/RT-DETRs/RT-DETRv4)
 
+#### 정정 (2026-09-12) — "정상엔 bbox 가 없다" 는 틀린 말이었습니다
+
+매니페스트 확인: A7 181,958장 **전부 라벨 네모 있음** (긴 변 화면 대비 중앙값 13%, 병변 17%). STEP 50 의 검출 데이터셋에서
+A7 을 뺀 건 **제 선택**(STEP 42 관례)이었는데 그걸 데이터 사실처럼 말했습니다. 영향: 검출기 헛알림 증가의 **설명**이
+바뀝니다(정상 사진으로 안 가르쳐서) — 판정·숫자·1단계 학습(정상·병변 모두 라벨 중심 320 창, holdout 0.9304)은 그대로.
+1단계 재학습 근거 없음.
+
