@@ -35,7 +35,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from src.config import MORPH_GROUP_KEEP_A6 as _M4  # noqa: E402
 G4 = list(dict.fromkeys(_M4[c] for c in ("A1", "A2", "A5", "A6")))
-CONDS = ("label", "user", "center", "fixed", "detect", "detect_fixed")
+CONDS = ("label", "user", "center", "fixed", "detect", "detect_fixed", "uwdetect")
+USER_WINDOW = 640      # 사용자 중심 주변 이 크기 창 안에서만 검출 (1080 사진 기준) — 탐색 조건, 사전등록 밖
 RELEASE = Path("/Users/gayeon/deeplearning_test/data/work/release_reference/dogskin_06/release")
 MANIFEST = Path("/Users/gayeon/deeplearning_test/data/work/safe_crop_v1/manifest.parquet")
 
@@ -50,6 +51,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--detector", type=Path, required=True, help="detect_best.pt (boxhead) 또는 save_pretrained 폴더 (dfine)")
     ap.add_argument("--detector-kind", choices=["boxhead", "dfine"], default="boxhead")
+    ap.add_argument("--detector-stage1", action="store_true", help="검출기 최고 점수를 1단계 점수로도 잽니다 (STEP 52, dfine 만)")
     ap.add_argument("--n", type=int, default=2500)
     ap.add_argument("--seed", type=int, default=31)
     ap.add_argument("--batch", type=int, default=24)
@@ -103,7 +105,7 @@ def main() -> None:
 
         def detect(im):
             with torch.no_grad():
-                return to_xyxy(det(tf_det(im).unsqueeze(0).to(dev))).float().cpu()[0].numpy()
+                return to_xyxy(det(tf_det(im).unsqueeze(0).to(dev))).float().cpu()[0].numpy(), float("nan")
     else:
         # STEP 51 — 진짜 object detection. 점수 최고 네모 하나를 씁니다 (같은 잣대: top-1 vs 가장 큰 정답).
         from transformers import AutoImageProcessor, DFineForObjectDetection
@@ -112,12 +114,14 @@ def main() -> None:
         det = DFineForObjectDetection.from_pretrained(a.detector).to(det_dev).eval()
 
         def detect(im):
+            """(top-1 네모 0~1, 최고 쿼리 점수). 점수는 STEP 52 의 1단계 후보 점수."""
             with torch.no_grad():
                 out = det(**proc(images=im, return_tensors="pt").to(det_dev))
+            score = float(out.logits.float().sigmoid().amax())
             r = proc.post_process_object_detection(out, threshold=0.0, target_sizes=[(1, 1)])[0]
             if not len(r["scores"]):
-                return np.array([0.4, 0.4, 0.6, 0.6])
-            return r["boxes"][int(r["scores"].argmax())].float().numpy()
+                return np.array([0.4, 0.4, 0.6, 0.6]), score
+            return r["boxes"][int(r["scores"].argmax())].float().numpy(), score
     print(f"■ 1단계 {s1.name} (raw 문턱 {t1:.4f}) · 2단계 {len(net2)}팔 · 검출기 {a.detector}")
 
     zips = {}
@@ -163,7 +167,7 @@ def main() -> None:
 
     res = {c: {"p1": [], "p2": []} for c in CONDS}
     buf = {(c, k): [] for c in CONDS for k in range(1+len(net2))}
-    truth, det_pred, det_true, det_pending = [], [], [], []
+    truth, det_pred, det_true, det_scores, uw_pred = [], [], [], [], []
     t0 = time.perf_counter()
 
     def flush():
@@ -183,18 +187,27 @@ def main() -> None:
         if got is None:
             continue
         im, lb, W = got
-        d = detect(im) * W
+        d, dscore = detect(im)
+        d = d * W
         det_pred.append(d / W)
         det_true.append(np.array(lb) / W)
+        det_scores.append(dscore)
         ucx = (lb[0]+lb[2])/2 + rng.uniform(-center_off, center_off)*W
         ucy = (lb[1]+lb[3])/2 + rng.uniform(-center_off, center_off)*W
+        # ★ 사용자 창 안 검출: 사용자 중심 주변 USER_WINDOW 창만 검출기에 주고 좌표를 되돌립니다 (탐색 조건)
+        uw = USER_WINDOW
+        ux0 = int(min(max(ucx - uw/2, 0), W - uw)); uy0 = int(min(max(ucy - uw/2, 0), W - uw))
+        dw, _ = detect(im.crop((ux0, uy0, ux0+uw, uy0+uw)))
+        dw = np.array([ux0 + dw[0]*uw, uy0 + dw[1]*uw, ux0 + dw[2]*uw, uy0 + dw[3]*uw])
+        uw_pred.append(dw / W)
         fs = FIXEDSCALE_LESION_FRAC * W
         boxes = {"label": lb,
                  "user": square(ucx, ucy, rng.uniform(box_lo, box_hi)*W),
                  "center": square(W/2, W/2, fs),
                  "fixed": square(ucx, ucy, fs),
                  "detect": list(d),
-                 "detect_fixed": square((d[0]+d[2])/2, (d[1]+d[3])/2, fs)}
+                 "detect_fixed": square((d[0]+d[2])/2, (d[1]+d[3])/2, fs),
+                 "uwdetect": list(dw)}
         pending = {}
         for c in CONDS:
             row = {"bbox": [float(v) for v in boxes[c]], "img_w": W, "img_h": W}
@@ -206,7 +219,7 @@ def main() -> None:
             for k, w in enumerate(windows):
                 pending[(c, k)] = tf(im.crop(tuple(int(v) for v in w)))
         if pending is None:               # 조건 하나라도 창을 못 만들면 그 사진은 전 조건에서 뺍니다
-            det_pred.pop(); det_true.pop()
+            det_pred.pop(); det_true.pop(); det_scores.pop(); uw_pred.pop()
             continue
         for key, x in pending.items():
             buf[key].append(x)
@@ -222,9 +235,10 @@ def main() -> None:
     lesion = y != "A7"
     print(f"\n■ 표본 {len(y):,}장 · {(time.perf_counter()-t0)/60:.1f}분")
 
-    def coverage(cond, cond2=None):
-        """`cond2` 를 주면 1단계는 `cond`, 2단계는 `cond2` 의 크롭 — 배선 "검출기는 2단계에만" 을 잽니다."""
-        p1 = torch.cat(res[cond]["p1"]).numpy()[:len(y)]
+    def coverage(cond, cond2=None, p1_override=None):
+        """`cond2` 를 주면 1단계는 `cond`, 2단계는 `cond2` 의 크롭 — 배선 "검출기는 2단계에만" 을 잽니다.
+        `p1_override` 는 1단계 점수를 통째로 바꿉니다 (STEP 52: 검출기 최고 점수)."""
+        p1 = torch.cat(res[cond]["p1"]).numpy()[:len(y)] if p1_override is None else np.asarray(p1_override)[:len(y)]
         n_arm = len(net2)
         P2 = np.mean([torch.cat(res[cond2 or cond]["p2"][k::n_arm]).numpy()[:len(y)] for k in range(n_arm)], axis=0)
         P = np.zeros((len(y), 4))
@@ -245,15 +259,35 @@ def main() -> None:
     # ★ 배선 후보 — 1단계는 지금처럼 사용자 중심, 검출기는 이상 판정 뒤 2단계 크롭에만. 1단계 지표는 user 와 같습니다.
     out["user1_detect2"] = coverage("user", "detect")
     out["user1_detect_fixed2"] = coverage("user", "detect_fixed")
+    out["user1_uwdetect2"] = coverage("user", "uwdetect")           # 사용자 창 안 검출 → 2단계만
+    band_uw = band_report(np.asarray(uw_pred)[lesion], np.asarray(det_true)[lesion])
+    stage1 = None
+    if a.detector_stage1 and not np.isnan(det_scores).all():
+        # ★ STEP 52 — 검출기 최고 점수를 1단계 점수로: 현 1단계(사용자 중심 f320)와 같은 표본에서 AUROC · 헛알림@recall · recall@헛알림
+        from sklearn.metrics import roc_auc_score
+        def s1(scores):
+            S = np.asarray(scores); order = np.argsort(-S); ys = lesion[order]
+            tp, fp = np.cumsum(ys), np.cumsum(~ys); rec, fpr = tp/lesion.sum(), fp/(~lesion).sum()
+            ref_rec = out["user"]["stage1_recall"]; ref_fa = out["user"]["stage1_false_alarm"]
+            return {"auroc": float(roc_auc_score(lesion, S)),
+                    "fa_at_user_recall": float(fpr[np.searchsorted(rec, ref_rec)]) if (rec >= ref_rec).any() else 1.0,
+                    "recall_at_user_fa": float(rec[np.searchsorted(fpr, ref_fa, side="right")-1]) if (fpr <= ref_fa).any() else 0.0}
+        stage1 = {"user_f320": s1(torch.cat(res["user"]["p1"]).numpy()[:len(y)]),
+                  "center_f320": s1(torch.cat(res["center"]["p1"]).numpy()[:len(y)]),
+                  "label_f320": s1(torch.cat(res["label"]["p1"]).numpy()[:len(y)]),
+                  "detector_score": s1(det_scores)}
+        out["det1_user2"] = coverage("user", "user", p1_override=det_scores)          # 검출기 점수를 1단계로, 2단계는 지금대로
+        out["det1_detect2"] = coverage("user", "detect", p1_override=det_scores)      # 검출기가 1단계 점수 + 2단계 크롭 둘 다
     # 원 확률을 남깁니다 — 다음엔 다시 안 돌리고 조합만 바꿔 잴 수 있게.
     np.savez_compressed(a.out.with_suffix(".npz"), y=y,
+                        det_score=np.asarray(det_scores)[:len(y)],
                         **{f"p1_{c}": torch.cat(res[c]["p1"]).numpy()[:len(y)] for c in CONDS},
                         **{f"p2_{c}": np.stack([torch.cat(res[c]["p2"][k::len(net2)]).numpy()[:len(y)] for k in range(len(net2))]) for c in CONDS})
     band = band_report(np.asarray(det_pred), np.asarray(det_true))
     band_les = band_report(np.asarray(det_pred)[lesion], np.asarray(det_true)[lesion])
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)")
     print(f"    {'조건':14}{'커버리지':>10}{'장수':>8}{'계열정확도(병변)':>16}{'1단계 recall':>14}{'헛알림':>8}")
-    for c in list(CONDS) + ["user1_detect2", "user1_detect_fixed2"]:
+    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", "det1_user2", "det1_detect2"] if k in out]:
         o = out[c]
         print(f"    {c:20}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
     gain = out["detect"]["coverage"] - out["user"]["coverage"]
@@ -267,10 +301,18 @@ def main() -> None:
     print(f"    → **{verdict}**  (사전등록 STEP50 의 세 문장 중 하나)")
     print(f"\n■ 밴드 (병변만 n={int(lesion.sum()):,}) 둘 다 {band_les['both']:.1%} · 배율 {band_les['in_size']:.1%} · 위치 {band_les['in_pos']:.1%} "
           f"· 중심 오차 중앙값 {band_les['off_median']:.3f} · 하한선 둘 다 {band_les['baseline']['both']:.1%}")
+    print(f"■ 사용자 창({USER_WINDOW}) 안 검출: 둘 다 {band_uw['both']:.1%} · 위치 {band_uw['in_pos']:.1%} · 중심 오차 중앙값 {band_uw['off_median']:.3f}")
+    if stage1:
+        print("\n■ ★ 1단계 후보 (STEP 52) — 같은 표본, 같은 가혹 조건")
+        print(f"    {'점수':16}{'AUROC':>8}{'헛알림@사용자recall':>20}{'recall@사용자헛알림':>20}")
+        for k, v in stage1.items():
+            print(f"    {k:16}{v['auroc']:>8.4f}{v['fa_at_user_recall']:>20.1%}{v['recall_at_user_fa']:>20.1%}")
+        d1 = stage1["detector_score"]["fa_at_user_recall"] - stage1["user_f320"]["fa_at_user_recall"]
+        print(f"    → 검출기 점수의 헛알림 − 현 1단계 = {d1:+.1%}p  (관문 ≤ −5%p) · AUROC 차 {stage1['detector_score']['auroc']-stage1['user_f320']['auroc']:+.4f}")
     print("\n⚠️ 릴리스 팔 로컬 구성 기준 — 3팔(STEP 39)과 절대값 비교 금지. 결론은 같은 실행 안의 차이입니다.")
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(json.dumps({"n": int(len(y)), "n_lesion": int(lesion.sum()), "conditions": out, "gain": gain, "span": span,
-                                 "verdict": verdict, "gain_stage2_only": gain2, "band_lesion": band_les, "band_all": band,
+                                 "verdict": verdict, "gain_stage2_only": gain2, "band_lesion": band_les, "band_user_window": band_uw, "stage1_candidates": stage1, "band_all": band,
                                  "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
                                  "detector": str(a.detector), "detector_kind": a.detector_kind, "seed": a.seed}, ensure_ascii=False, indent=1))
     print(f"원본: {a.out}")

@@ -115,10 +115,17 @@ def main():
     ap.add_argument('--shards', type=int, default=3)
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--limit', type=int, default=None)
+    ap.add_argument('--normals', type=int, default=0, help='정상(A7) 창을 이만큼 추가 — 정답 네모 없는 음성 (STEP 52). 병변은 안 담음')
     a = ap.parse_args()
 
     m = pd.read_parquet(a.manifest)
-    m = m[(m.label != 'A7') & (~m.is_holdout) & (m.fold >= 0)].copy()
+    if a.normals:
+        # ★ 정상(A7)도 라벨 네모가 100% 있습니다 — 병변과 같은 창 규칙을 쓰고, 검출 정답만 비웁니다.
+        m = m[(m.label == 'A7') & (~m.is_holdout) & (m.fold >= 0)].copy()
+        if a.normals > 0:
+            m = m.sample(a.normals, random_state=52).copy()   # -1 이면 전부
+    else:
+        m = m[(m.label != 'A7') & (~m.is_holdout) & (m.fold >= 0)].copy()
     m = m.sort_values('sha256').reset_index(drop=True)          # 결정론적 순서
     if a.limit:
         m = m.sample(a.limit, random_state=0).reset_index(drop=True)

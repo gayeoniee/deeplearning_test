@@ -74,3 +74,20 @@ def test_colab_notebook_20_compiles_bundles_src_and_targets_dfine():
     assert 'boxes_multi.parquet' in fetch and 'fold != 0' in fetch
     assert 'num_labels=1' in train and "rep['off_median'] < best" in train        # 1클래스 · best 는 중심 오차
     assert 'is_holdout' not in fetch + train
+
+
+def test_kaggle_notebook_21_compiles_and_trains_with_normals_as_empty_targets():
+    nb = json.loads(Path('notebooks/21_검출기_1단계후보_kaggle.ipynb').read_text())
+    for c in nb['cells']:
+        if c['cell_type'] == 'code':
+            compile(''.join(c['source']), '<nb>', 'exec')
+    source = ''.join(nb['cells'][1]['source'])
+    assign = next(n for n in ast.parse(source).body if isinstance(n, ast.Assign)
+                  and any(isinstance(t, ast.Name) and t.id == 'FILES' for t in n.targets))
+    for name, content in ast.literal_eval(assign.value).items():
+        assert content == Path(name).read_text(), f'{name} 스냅샷이 현재 소스와 다릅니다'
+    fetch, train = ''.join(nb['cells'][2]['source']), ''.join(nb['cells'][3]['source'])
+    assert "normals['boxes'] = [[] for _ in range(len(normals))]" in fetch          # 정상 = 정답 네모 0개
+    assert 'torch.zeros(0, 4)' in train and 'GradScaler' in train and 'deadline' in train   # 빈 정답 · fp16 · 시간 예산
+    assert "rep['auroc'] > best" in train                                             # 1단계 후보 — best 는 AUROC
+    assert 'is_holdout' not in fetch + train
