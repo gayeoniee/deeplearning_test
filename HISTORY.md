@@ -3169,3 +3169,11 @@ A7 을 뺀 건 **제 선택**(STEP 42 관례)이었는데 그걸 데이터 사�
 배선 −11.6%p, 중심 오차 0.161) · `detect_coverage.py` 의 내부 함수 이름이 1단계 폴더 변수를 가려 JSON 저장에서 죽음 → 고침(로그가 기록).
 사전등록의 3 epoch 조건(오르고 있을 때)이 안 맞아 재개 안 함. 과금 0.
 
+### STEP 53 시작 — 2단계 팔 하나를 병변 보존 창으로 재학습 (2026-09-13 새벽, 캐글 T4)
+
+STEP 52 기각 뒤 남은 마지막 사전등록 갈래. STEP 49 파일럿의 `safe`(위치 강건성 +25%p, clean −0.02)를 **배포 팔 교체**로 확인합니다.
+만든 것: `CFG.train_window_side` + `data.SafeWindow`(학습 Dataset 에만, 검증 결정론 유지) · `experiments.train_and_measure(train_window=)`
+(이름에 `_safe0.42` 를 붙여 배포 팔 폴더와 안 겹침) · 노트북 22(환경 셀은 09 에서, `NB_BRANCH=main`) · 검사 5개 · 로컬 CPU 스모크(학습→best.pt) 통과.
+캐글 API 로 커널 push(`step53-stage2-safe-arm`, T4, 비공개, 입력 `dogskin-m25-step16`·`dogskin-manifest-365k`·`release`). 사람 손 0.
+관문은 돌리기 전에 못 박음: 3팔 `user` 커버리지 +5%p · `label` −2%p 이내 · 긴급도 하향 ≤ 5%.
+
