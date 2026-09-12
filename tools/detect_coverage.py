@@ -280,17 +280,17 @@ def main() -> None:
     if a.detector_stage1 and not np.isnan(det_scores).all():
         # ★ STEP 52 — 검출기 최고 점수를 1단계 점수로: 현 1단계(사용자 중심 f320)와 같은 표본에서 AUROC · 헛알림@recall · recall@헛알림
         from sklearn.metrics import roc_auc_score
-        def s1(scores):
+        def s1_metrics(scores):  # ⚠️ 이름을 s1 으로 두면 위의 1단계 폴더 Path 를 가려 JSON 저장에서 죽습니다 (2026-09-13 실제로 당함)
             S = np.asarray(scores); order = np.argsort(-S); ys = lesion[order]
             tp, fp = np.cumsum(ys), np.cumsum(~ys); rec, fpr = tp/lesion.sum(), fp/(~lesion).sum()
             ref_rec = out["user"]["stage1_recall"]; ref_fa = out["user"]["stage1_false_alarm"]
             return {"auroc": float(roc_auc_score(lesion, S)),
                     "fa_at_user_recall": float(fpr[np.searchsorted(rec, ref_rec)]) if (rec >= ref_rec).any() else 1.0,
                     "recall_at_user_fa": float(rec[np.searchsorted(fpr, ref_fa, side="right")-1]) if (fpr <= ref_fa).any() else 0.0}
-        stage1 = {"user_f320": s1(torch.cat(res["user"]["p1"]).numpy()[:len(y)]),
-                  "center_f320": s1(torch.cat(res["center"]["p1"]).numpy()[:len(y)]),
-                  "label_f320": s1(torch.cat(res["label"]["p1"]).numpy()[:len(y)]),
-                  "detector_score": s1(det_scores)}
+        stage1 = {"user_f320": s1_metrics(torch.cat(res["user"]["p1"]).numpy()[:len(y)]),
+                  "center_f320": s1_metrics(torch.cat(res["center"]["p1"]).numpy()[:len(y)]),
+                  "label_f320": s1_metrics(torch.cat(res["label"]["p1"]).numpy()[:len(y)]),
+                  "detector_score": s1_metrics(det_scores)}
         out["det1_user2"] = coverage("user", "user", p1_override=det_scores)          # 검출기 점수를 1단계로, 2단계는 지금대로
         out["det1_detect2"] = coverage("user", "detect", p1_override=det_scores)      # 검출기가 1단계 점수 + 2단계 크롭 둘 다
     # 원 확률을 남깁니다 — 다음엔 다시 안 돌리고 조합만 바꿔 잴 수 있게.

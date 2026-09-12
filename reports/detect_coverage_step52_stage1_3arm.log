@@ -1,0 +1,53 @@
+[측정] 사람 네모 긴 변 49.7%~70.0% · 중심 이탈 중앙값 0.161  (n=40)
+■ fold 0 · 병변 2,500 + 정상 586 · 청크 {'TL02': 1371, 'TL01': 901, 'VL01': 228}
+■ 1단계 stage1_effnetv2_s_f320_384_n233k_moderate_photometric (raw 문턱 0.1466) · 2단계 3팔 · 검출기 /Users/gayeon/deeplearning_test/data/work/dfine_step52/dfine_best
+
+■ 표본 3,065장 · 199.5분
+
+■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)
+    조건                  커버리지      장수       계열정확도(병변)    1단계 recall     헛알림
+    label                    58.8%   1,801           82.0%         86.8%   34.0%
+    user                     31.6%     970           77.7%         72.9%   34.3%
+    center                   19.4%     595           70.8%         63.3%   33.1%
+    fixed                    31.1%     953           76.1%         72.9%   34.3%
+    detect                   25.1%     770           75.4%         81.8%   45.7%
+    detect_fixed             24.5%     751           72.5%         81.8%   45.7%
+    uwdetect                 21.7%     666           70.7%         84.7%   48.1%
+    user1_detect2            20.1%     615           75.4%         72.9%   34.3%
+    user1_detect_fixed2      19.0%     583           72.5%         72.9%   34.3%
+    user1_uwdetect2          17.0%     521           70.7%         72.9%   34.3%
+    user1_mw1080             22.1%     678           74.6%         72.9%   34.3%
+    user1_mw800              30.5%     935           76.5%         72.9%   34.3%
+    user1_mw640              31.9%     977           76.1%         72.9%   34.3%
+    user1_multiwin           34.1%   1,046           79.0%         72.9%   34.3%
+    det1_user2               20.9%     641           77.7%          0.6%    0.5%
+    det1_detect2             10.8%     332           75.4%          0.6%    0.5%
+
+■ ★ STEP 54 다중 창(사용자 중심 (1080, 800, 640), 2단계 확률 평균, 재학습 0): user1_multiwin − user = +2.5%p  (관문 +5%p)
+
+■ ★ 배선 '검출기는 2단계에만' (1단계는 사용자 중심 그대로): user1_detect2 − user = -11.6%p
+
+■ ★ 관문: detect − user = -6.5%p  (문턱 +5%)  · 메울 수 있던 폭 27.1%p 중 -24% 회복
+    하한선(center) 대비 +5.7%p
+    → **기각**  (사전등록 STEP50 의 세 문장 중 하나)
+
+■ 밴드 (병변만 n=2,479) 둘 다 22.9% · 배율 49.7% · 위치 35.4% · 중심 오차 중앙값 0.161 · 하한선 둘 다 7.6%
+■ 사용자 창(640) 안 검출: 둘 다 23.8% · 위치 46.0% · 중심 오차 중앙값 0.109
+
+■ ★ 1단계 후보 (STEP 52) — 같은 표본, 같은 가혹 조건
+    점수                 AUROC       헛알림@사용자recall       recall@사용자헛알림
+    user_f320         0.7525               34.0%               73.0%
+    center_f320       0.6972               42.7%               64.4%
+    label_f320        0.8473               18.8%               87.5%
+    detector_score    0.7323               37.5%               69.9%
+    → 검출기 점수의 헛알림 − 현 1단계 = +3.6%p  (관문 ≤ −5%p) · AUROC 차 -0.0202
+
+⚠️ 릴리스 팔 로컬 구성 기준 — 3팔(STEP 39)과 절대값 비교 금지. 결론은 같은 실행 안의 차이입니다.
+Traceback (most recent call last):
+  File "/Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/tools/detect_coverage.py", line 339, in <module>
+    main()
+    ~~~~^^
+  File "/Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/tools/detect_coverage.py", line 333, in main
+    "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
+                                             ^^^^^^^
+AttributeError: 'function' object has no attribute 'name'
