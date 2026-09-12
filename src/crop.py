@@ -414,6 +414,9 @@ def crop_window(row, tag: str | None = None, cfg: CFG | None = None):
         return None
 
     t = tag or row.get("crop_tag") or ""
+    if t == "whole":
+        # ★ 사진 **전체**, 정사각으로 안 자름 — 검출기 1단계(STEP 52)용. `full` 은 중앙 정사각이라 다릅니다.
+        return (0, 0, W, H)
     return _window(bbox, W, H, margin=margin_of_tag(t),
                    fixed_px=fixed_of_tag(t), min_px=cfg.crop_min_px)
 
