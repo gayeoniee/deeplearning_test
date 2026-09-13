@@ -1,0 +1,31 @@
+[측정] 사람 네모 긴 변 49.7%~70.0% · 중심 이탈 중앙값 0.161  (n=40)
+■ holdout 61,281행 중 5,000장 · 정상 49.0%
+■ 1단계 stage1_effnetv2_s_f320_384_n233k_moderate_photometric · 배포 raw 문턱 0.1466 · mps
+   500/5,000  7.2분
+   1,000/5,000  14.7분
+   1,500/5,000  22.4분
+   2,000/5,000  30.7분
+   2,500/5,000  39.0분
+   3,000/5,000  47.2분
+   3,500/5,000  55.3분
+   4,000/5,000  63.4분
+   4,500/5,000  71.6분
+   5,000/5,000  79.8분
+
+■ 표본 5,000장 (병변 2,549) · 79.8분
+
+■ ★ STEP 56 · holdout · 문턱 val 에서 가져옴
+    점수                           AUROC       문턱   recall      헛알림
+    label_single                0.9113   0.0816    96.2%    51.7%
+    label_single@deployed_raw   0.9113   0.1466    93.4%    36.8%
+    label_mw_mean               0.7814   0.1421    96.6%    71.2%
+    label_mw_top3               0.7973   0.2901    96.4%    71.7%
+    label_mw_cmax               0.8961   0.1769    96.8%    66.2%
+    user_single                 0.7322   0.0816    85.4%    56.2%
+    user_mw_mean                0.7478   0.1421    95.3%    69.2%
+    user_mw_top3                0.7655   0.2901    95.1%    69.4%
+    user_mw_cmax                0.7509   0.1769    93.6%    65.1%
+    [mean] 라벨 중심 AUROC 차 -0.1298 · 위치 민감도 감소 +9.5%p · 사용자 중심 recall +9.9%p / 헛알림 +12.9%p
+    [top3] 라벨 중심 AUROC 차 -0.1139 · 위치 민감도 감소 +9.5%p · 사용자 중심 recall +9.7%p / 헛알림 +13.2%p
+    [cmax] 라벨 중심 AUROC 차 -0.0152 · 위치 민감도 감소 +7.6%p · 사용자 중심 recall +8.2%p / 헛알림 +8.9%p
+원본: /Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/reports/stage1_multiwindow_holdout.json

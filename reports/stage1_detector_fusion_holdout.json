@@ -1,0 +1,69 @@
+{
+ "split": "holdout",
+ "n": 5000,
+ "n_lesion": 2549,
+ "thresholds": {
+  "label_single": 0.08158968389034271,
+  "label_det": 0.02057916671037674,
+  "label_fuse_mean": 0.06078373268246651,
+  "label_fuse_rank": 0.3125
+ },
+ "results": {
+  "label_single": {
+   "auroc": 0.9112691131425047,
+   "threshold": 0.08158968389034271,
+   "recall": 0.9619458611220086,
+   "false_alarm": 0.5173398612811098
+  },
+  "label_det": {
+   "auroc": 0.6645929100123102,
+   "threshold": 0.02057916671037674,
+   "recall": 0.9580227540211848,
+   "false_alarm": 0.8506731946144431
+  },
+  "label_fuse_mean": {
+   "auroc": 0.908492526488976,
+   "threshold": 0.06078373268246651,
+   "recall": 0.9666535896429973,
+   "false_alarm": 0.5675234598123216
+  },
+  "label_fuse_rank": {
+   "auroc": 0.8504710369535561,
+   "threshold": 0.3125,
+   "recall": 0.9387995292271479,
+   "false_alarm": 0.554875560995512
+  },
+  "user_single": {
+   "auroc": 0.7322430584933508,
+   "threshold": 0.08158968389034271,
+   "recall": 0.854452726559435,
+   "false_alarm": 0.5622195022439821
+  },
+  "user_det": {
+   "auroc": 0.661700038686862,
+   "threshold": 0.02057916671037674,
+   "recall": 0.9576304433111024,
+   "false_alarm": 0.8502651978784169
+  },
+  "user_fuse_mean": {
+   "auroc": 0.7431680554401778,
+   "threshold": 0.06078373268246651,
+   "recall": 0.8979992153785799,
+   "false_alarm": 0.602203182374541
+  },
+  "user_fuse_rank": {
+   "auroc": 0.7450682254094734,
+   "threshold": 0.3125,
+   "recall": 0.9050608081600627,
+   "false_alarm": 0.6340269277845777
+  },
+  "user_recall_gain_ci95": {
+   "gain": 0.04354648881914476,
+   "lo": 0.03413103177716752,
+   "hi": 0.05413887799136916
+  }
+ },
+ "detector": "/Users/gayeon/deeplearning_test/data/work/dfine_step52/dfine_best",
+ "single_npz": "/Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/reports/stage1_multiwindow_holdout.npz",
+ "seed": 7
+}
