@@ -1,0 +1,43 @@
+exit=0
+   2,000/3,086  84.0분
+   2,400/3,086  101.1분
+   2,800/3,086  118.3분
+
+■ 표본 3,065장 · 130.7분
+
+■ ★ STEP 55 — 1단계 다중 창 (같은 표본 · 재학습 0). 기준 user: recall 73.1% / 헛알림 33.8% (raw 문턱)
+    점수                       AUROC     헛알림@user recall     recall@user 헛알림    raw문턱 recall       raw문턱 헛알림
+    user                    0.7535               33.8%               73.1%           73.1%           33.8%
+    label                   0.8477               18.9%               86.8%           86.8%           34.1%
+    center                  0.6972               43.0%               63.7%           63.3%           33.1%
+    user_g3s160_max         0.7872               29.0%               78.4%           95.1%           64.8%
+    user_g3s160_mean        0.7828               28.3%               79.6%           89.6%           47.6%
+    user_g3s160_top3mean    0.7952               27.8%               80.1%           93.7%           59.0%
+    user_g3s320_max         0.7426               36.3%               68.8%           95.2%           69.3%
+    user_g3s320_mean        0.7420               35.7%               69.9%           87.2%           48.6%
+    user_g3s320_top3mean    0.7476               34.5%               71.8%           93.3%           64.0%
+    label_g3s160_max        0.8036               25.9%               79.7%           96.6%           65.2%
+    label_g3s160_mean       0.7932               29.2%               79.7%           90.7%           49.0%
+    label_g3s160_top3mean   0.8029               28.7%               80.3%           95.2%           61.3%
+    grid5_max               0.7525               34.3%               72.5%           99.2%           83.8%
+    grid5_mean              0.7426               34.0%               72.8%           86.6%           51.2%
+    grid5_top3mean          0.7598               33.6%               73.6%           98.6%           79.2%
+
+    관문: 헛알림@user recall ≤ 28.8% 이고 AUROC ≥ 0.7535
+    user_g3s160_max        헛알림 -4.8%p · AUROC +0.0336 → 구분 불가
+    user_g3s160_mean       헛알림 -5.5%p · AUROC +0.0293 → 후보
+    user_g3s160_top3mean   헛알림 -6.0%p · AUROC +0.0416 → 후보
+    user_g3s320_max        헛알림 +2.6%p · AUROC -0.0110 → 기각
+    user_g3s320_mean       헛알림 +1.9%p · AUROC -0.0115 → 기각
+    user_g3s320_top3mean   헛알림 +0.7%p · AUROC -0.0059 → 기각
+    label_g3s160_max       헛알림 -7.8%p · AUROC +0.0501 → 후보
+    label_g3s160_mean      헛알림 -4.6%p · AUROC +0.0397 → 구분 불가
+    label_g3s160_top3mean  헛알림 -5.1%p · AUROC +0.0494 → 후보
+    grid5_max              헛알림 +0.5%p · AUROC -0.0010 → 기각
+    grid5_mean             헛알림 +0.2%p · AUROC -0.0109 → 기각
+    grid5_top3mean         헛알림 -0.2%p · AUROC +0.0063 → 구분 불가
+
+    위치 민감도 (라벨 중심 − 사용자 중심 recall, raw 문턱): 창 하나 +13.7%p → 3×3 max +1.5%p
+원본: /Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/reports/stage1_multiwindow_step55.json
+
+[exited with code 0]
