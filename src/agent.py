@@ -135,6 +135,23 @@ def check_guide(box) -> dict:
     return r
 
 
+def stage1_window_centers(bbox, w: int, h: int, grid: int = 3, stride: int = 160,
+                          win: int = 320) -> list[tuple[float, float]]:
+    """STEP 55/56 — 1단계 다중 창의 중심들. 가이드 네모 중심(없으면 화면 중앙) 주변 grid×grid, 간격 stride px.
+
+    창이 사진 밖으로 못 나가게 중심을 [win/2, 변−win/2] 로 죕니다. `tools/stage1_multiwindow.py` 와 같은 규칙 —
+    검사(`tests/test_agent.py`)가 둘을 대조합니다. grid=1 이면 지금 배포(창 하나)와 같습니다.
+    """
+    if bbox is not None:
+        cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
+    else:
+        cx, cy = w / 2, h / 2
+    off = [(i - (grid - 1) / 2) * stride for i in range(grid)]
+    lo_x, hi_x = win / 2, max(win / 2, w - win / 2)
+    lo_y, hi_y = win / 2, max(win / 2, h - win / 2)
+    return [(min(max(cx + dx, lo_x), hi_x), min(max(cy + dy, lo_y), hi_y)) for dy in off for dx in off]
+
+
 def crop_for(im, bbox, tag: str):
     """학습이 쓰는 `crop.crop_window()` 로 잘라냅니다 — 재구현하지 않습니다.
 
@@ -421,6 +438,8 @@ class ScreeningAgent:
         """
         # stage2 가 None 이면 **1단계만** 돕니다 (정상/이상까지).
         self.s1, self.s2, self.thr = stage1, stage2, float(threshold)
+        # STEP 56: 1단계 다중 창 설정 (`stage1_threshold.json` 의 "multiwindow"). None 이면 창 하나(예전 그대로).
+        self.mw: dict | None = None
         self.tag1, self.tag2 = stage1_tag, stage2_tag
         # 첫 팔이 릴리스입니다. `s2`·`tag2` 는 그대로 두어 기존 호출부가 안 깨집니다.
         self.arms2: list[tuple[Any, str]] = (
@@ -488,11 +507,12 @@ class ScreeningAgent:
                 f"{ck} 안에서 'stage2_…/best.pt' 를 못 찾았습니다. "
                 "1단계만 돌리려면 stage1_only=True (CLI 는 --stage1-only).")
 
-        thr = None
+        thr, mw = None, None
         for c in (root / "stage1_threshold.json", ck.parent / "stage1_threshold.json",
                   *sorted(root.glob("**/stage1_threshold.json"))):
             if c.exists():
-                thr = json.loads(c.read_text(encoding="utf-8"))["threshold"]
+                _j = json.loads(c.read_text(encoding="utf-8"))
+                thr, mw = _j["threshold"], _j.get("multiwindow")      # STEP 56: 있으면 1단계 다중 창
                 break
         if len(stage2_all) > 1:
             print(f"[agent] 2단계 앙상블 {len(stage2_all)}팔: "
@@ -504,7 +524,45 @@ class ScreeningAgent:
         #   로그가 아니라 값으로 남겨야 배포 뒤에도 확인됩니다.
         ag.release_dir = str(root)
         ag.arm_names = [p.parent.name for p in stage2_all]
+        if mw:                                   # 없으면 창 하나 (예전 그대로)
+            ag.set_multiwindow(mw)
+            print(f"[agent] 1단계 다중 창 {ag.mw['grid']}×{ag.mw['grid']} · 간격 {ag.mw['stride']}px · {ag.mw['agg']} · 문턱 {ag.thr:.4f}")
         return ag
+
+    def set_multiwindow(self, mw: dict | None) -> None:
+        """1단계를 다중 창으로 바꿉니다 (STEP 56). `{"grid":3,"stride":160,"agg":"mean","threshold":…}`.
+
+        문턱은 **평균 점수용**으로 val 에서 새로 뽑은 값이어야 합니다 — 창 하나 문턱(0.1466)을 그대로 쓰면
+        평균 점수가 낮게 깔려 recall 이 조용히 무너집니다. 그래서 threshold 가 없으면 켜지 않고 에러를 냅니다.
+        """
+        if not mw:
+            self.mw = None
+            return
+        need = {"grid", "stride", "agg", "threshold"}
+        if not need <= set(mw):
+            raise ValueError(f"multiwindow 설정에 {sorted(need - set(mw))} 가 없습니다: {mw}")
+        if mw["agg"] not in ("mean", "top3"):
+            raise ValueError(f"agg 는 mean|top3: {mw['agg']}")
+        self.mw = {"grid": int(mw["grid"]), "stride": int(mw["stride"]), "agg": str(mw["agg"]),
+                   "threshold": float(mw["threshold"])}
+        self.thr = self.mw["threshold"]
+
+    def _stage1_abnormal(self, im, bbox, td: Path) -> float:
+        """1단계 이상 확률. 다중 창이면 창마다 자르고 확률을 합칩니다 (STEP 56)."""
+        if not self.mw:
+            p1 = td / "s1.jpg"
+            crop_for(im, bbox, self.tag1).save(p1, quality=95)
+            return float(dict(self.s1.predict(str(p1)).topk).get(self._ab, 0.0))
+        centers = stage1_window_centers(bbox, *im.size, grid=self.mw["grid"], stride=self.mw["stride"])
+        paths = []
+        for j, (cx, cy) in enumerate(centers):
+            pj = td / f"s1_{j}.jpg"
+            crop_for(im, [cx - 1, cy - 1, cx + 1, cy + 1], self.tag1).save(pj, quality=95)   # f320 은 중심만 씁니다
+            paths.append(str(pj))
+        ps = sorted(float(dict(pr.topk).get(self._ab, 0.0)) for pr in self.s1.predict_batch(paths))
+        if self.mw["agg"] == "top3":
+            ps = ps[-3:]
+        return float(sum(ps) / len(ps))
 
     def describe(self) -> dict:
         """★ **지금 무엇을 물고 있나** — 헬스체크가 쓰는, 추론 없는 요약.
@@ -526,6 +584,7 @@ class ScreeningAgent:
             "stage2_crops": [t for _, t in self.arms2],
             "stage2_experiments": list(getattr(self, "arm_names", [])),
             "threshold": float(self.thr),
+            "stage1_windows": (self.mw["grid"] ** 2) if self.mw else 1,
             "release_dir": str(getattr(self, "release_dir", "") or "") or None,
         }
 
@@ -616,10 +675,8 @@ class ScreeningAgent:
         bbox = box_to_px(box, *im.size) if box is not None else None
 
         with tempfile.TemporaryDirectory() as td:
-            p1 = Path(td) / "s1.jpg"
-            crop_for(im, bbox, self.tag1).save(p1, quality=95)
-            pr1 = self.s1.predict(str(p1))
-            abnormal = dict(pr1.topk).get(self._ab, 0.0)
+            abnormal = self._stage1_abnormal(im, bbox, Path(td))
+            meta["stage1_windows"] = (self.mw["grid"] ** 2) if self.mw else 1
 
             if abnormal < self.thr:
                 pred = Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)],
@@ -761,7 +818,7 @@ class MockAgent:
         return {"stage1_crop": self.tag1, "stage2_crop": self.tag2,
                 "stage2_arms": 1, "stage2_crops": [self.tag2],
                 "stage2_experiments": [], "threshold": float(self.thr),
-                "release_dir": None}
+                "stage1_windows": 1, "release_dir": None}
 
     def screen(self, image: "str | Path | Any", box=None) -> dict:
         from src.message import Prediction, band, compose_screening_message

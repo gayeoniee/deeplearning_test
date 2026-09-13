@@ -242,7 +242,7 @@ check("깎기 전 원본을 stage2 로 넘김",
 check("두 단계가 다른 크롭 태그를 씀",
       "self.tag1" in src_screen and "self.tag2" in src_screen)
 check("밴드 밖이면 모델을 돌리기 전에 돌려보냄",
-      src_screen.index("check_guide") < src_screen.index("self.s1.predict"))
+      src_screen.index("check_guide") < src_screen.index("self._stage1_abnormal"))
 check("학습 픽셀 공간으로 먼저 맞춤", "to_train_space" in src_screen)
 
 # ── 8. 네모 오차 → 이미 잰 교란으로 환산 (tools/box_error.py) ──
@@ -506,6 +506,37 @@ check("labels 는 묶음마다 다르다 (한 값을 돌려쓰지 않는다)",
 #    확률 순서와 무관하게 묶음마다 자기 이름을 답니다.
 check("labels 가 '1등' 에만 붙지 않는다",
       all(set(g) >= {"name", "labels", "prob", "percent"} for g in _s["groups"]))
+
+print()
+print("[STEP 56] 1단계 다중 창 배선")
+# 창 중심 규칙이 판정 도구(tools/stage1_multiwindow.py)와 같은가 — 배선과 측정이 갈라지면 아무도 모릅니다.
+import importlib as _il56
+_mwtool = _il56.import_module("tools.stage1_multiwindow")
+_c_agent = agent.stage1_window_centers([500, 400, 700, 600], 1920, 1080, grid=3, stride=160)
+_c_tool = _mwtool.grid_centers(600, 500, 3, 160, 1080)   # 도구는 정사각 W 하나만 받으므로 y 는 1080 안
+check("창 9개", len(_c_agent) == 9)
+check("중심 규칙이 판정 도구와 같다 (x)", [round(c[0]) for c in _c_agent] == [round(c[0]) for c in _c_tool])
+check("중심 규칙이 판정 도구와 같다 (y)", [round(c[1]) for c in _c_agent] == [round(c[1]) for c in _c_tool])
+check("사진 밖으로 안 나간다", all(160 <= x <= 1920-160 and 160 <= y <= 1080-160
+                                for x, y in agent.stage1_window_centers([0, 0, 10, 10], 1920, 1080)))
+check("grid=1 이면 창 하나 = 네모 중심", agent.stage1_window_centers([500, 400, 700, 600], 1920, 1080, grid=1) == [(600.0, 500.0)])
+_m56 = agent.MockAgent()
+check("mock describe 에 stage1_windows=1", _m56.describe().get("stage1_windows") == 1)
+_srcd = inspect.getsource(agent.ScreeningAgent.describe)
+check("ScreeningAgent.describe 도 stage1_windows 를 낸다", '"stage1_windows"' in _srcd)
+class _FakeAg(agent.ScreeningAgent):
+    def __init__(self):
+        self.thr = 0.1466; self.mw = None
+_f = _FakeAg()
+try:
+    _f.set_multiwindow({"grid": 3, "stride": 160, "agg": "mean"})
+    check("문턱 없는 multiwindow 설정은 거부한다", False)
+except ValueError:
+    check("문턱 없는 multiwindow 설정은 거부한다", True)
+_f.set_multiwindow({"grid": 3, "stride": 160, "agg": "mean", "threshold": 0.0931})
+check("multiwindow 를 켜면 문턱이 평균용으로 바뀐다", _f.mw["grid"] == 3 and abs(_f.thr - 0.0931) < 1e-9)
+_f.set_multiwindow(None)
+check("끄면 창 하나로 돌아간다", _f.mw is None)
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
