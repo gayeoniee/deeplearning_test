@@ -526,7 +526,7 @@ _srcd = inspect.getsource(agent.ScreeningAgent.describe)
 check("ScreeningAgent.describe 도 stage1_windows 를 낸다", '"stage1_windows"' in _srcd)
 class _FakeAg(agent.ScreeningAgent):
     def __init__(self):
-        self.thr = 0.1466; self.mw = None
+        self.thr = 0.1466; self.mw = None; self.fusion = None
 _f = _FakeAg()
 try:
     _f.set_multiwindow({"grid": 3, "stride": 160, "agg": "mean"})
@@ -554,7 +554,7 @@ class _E56:
         return self.predict_batch([path])[0]
 class _FakeAg2(agent.ScreeningAgent):
     def __init__(self):
-        self.s1 = _E56(); self._ab = "이상"; self.tag1 = "f320"; self.thr = 0.1; self.mw = None
+        self.s1 = _E56(); self._ab = "이상"; self.tag1 = "f320"; self.thr = 0.1; self.mw = None; self.fusion = None
 _g = _FakeAg2(); _g.set_multiwindow({"grid": 3, "stride": 160, "agg": "mean", "threshold": 0.1})
 import tempfile as _tf56, math as _m56
 from PIL import Image as _Im56
@@ -569,6 +569,25 @@ with _tf56.TemporaryDirectory() as _td:
     _v2 = _g._stage1_abnormal(_im, [900, 500, 1000, 600], Path(_td))
 _raw = [1/(1+_m56.exp(-d)) for d in [-2.0, 0.0, 1.5]*3]
 check("cmax = max(중심 창, 평균) (중심 = 5번째 창)", abs(_v2 - max(_raw[4], sum(_raw)/9)) < 1e-6, f"{_v2:.6f}")
+
+print()
+print("[STEP 59] 1단계 창 + 검출기 융합 배선")
+class _Det59:
+    def score_and_box(self, im):
+        return 0.30, None
+_h = _FakeAg2(); _h.set_fusion({"detector": "x", "weight": 0.5, "threshold": 0.0608, "_detector": _Det59()})
+check("융합을 켜면 문턱이 융합용으로 바뀐다", abs(_h.thr - 0.0608) < 1e-9 and _h.fusion["weight"] == 0.5)
+with _tf56.TemporaryDirectory() as _td:
+    _v3 = _h._stage1_abnormal(_im, [900, 500, 1000, 600], Path(_td))
+_praw = 1/(1+_m56.exp(2.0))          # _E56 의 첫 창은 raw logit 차 −2.0
+check("융합 점수 = 0.5·창 raw + 0.5·검출기", abs(_v3 - (0.5*_praw + 0.5*0.30)) < 1e-6, f"{_v3:.6f}")
+try:
+    _h.set_fusion({"detector": "x", "weight": 0.5})
+    check("문턱 없는 fusion 설정은 거부한다", False)
+except ValueError:
+    check("문턱 없는 fusion 설정은 거부한다", True)
+check("mock describe 에 stage1_fusion=False", agent.MockAgent().describe().get("stage1_fusion") is False)
+check("ScreeningAgent.describe 도 stage1_fusion 을 낸다", '"stage1_fusion"' in inspect.getsource(agent.ScreeningAgent.describe))
 
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")

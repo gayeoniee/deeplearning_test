@@ -440,6 +440,8 @@ class ScreeningAgent:
         self.s1, self.s2, self.thr = stage1, stage2, float(threshold)
         # STEP 56: 1단계 다중 창 설정 (`stage1_threshold.json` 의 "multiwindow"). None 이면 창 하나(예전 그대로).
         self.mw: dict | None = None
+        # STEP 58/59: 1단계 점수 = (창 하나 raw p + 검출기 최고 점수) × 가중 평균. None 이면 창 하나(예전 그대로).
+        self.fusion: dict | None = None
         self.tag1, self.tag2 = stage1_tag, stage2_tag
         # 첫 팔이 릴리스입니다. `s2`·`tag2` 는 그대로 두어 기존 호출부가 안 깨집니다.
         self.arms2: list[tuple[Any, str]] = (
@@ -507,12 +509,13 @@ class ScreeningAgent:
                 f"{ck} 안에서 'stage2_…/best.pt' 를 못 찾았습니다. "
                 "1단계만 돌리려면 stage1_only=True (CLI 는 --stage1-only).")
 
-        thr, mw = None, None
+        thr, mw, fu = None, None, None
         for c in (root / "stage1_threshold.json", ck.parent / "stage1_threshold.json",
                   *sorted(root.glob("**/stage1_threshold.json"))):
             if c.exists():
                 _j = json.loads(c.read_text(encoding="utf-8"))
                 thr, mw = _j["threshold"], _j.get("multiwindow")      # STEP 56: 있으면 1단계 다중 창
+                fu = _j.get("fusion")                                   # STEP 59: 있으면 창 + 검출기 융합
                 break
         if len(stage2_all) > 1:
             print(f"[agent] 2단계 앙상블 {len(stage2_all)}팔: "
@@ -524,10 +527,35 @@ class ScreeningAgent:
         #   로그가 아니라 값으로 남겨야 배포 뒤에도 확인됩니다.
         ag.release_dir = str(root)
         ag.arm_names = [p.parent.name for p in stage2_all]
+        if fu:                                   # 없으면 창 하나 (예전 그대로)
+            ag.set_fusion(fu, root)
+            print(f"[agent] 1단계 융합: 창 {1-ag.fusion['weight']:.1f} + 검출기 {ag.fusion['weight']:.1f} ({Path(ag.fusion['detector_path']).name}) · 문턱 {ag.thr:.4f}")
         if mw:                                   # 없으면 창 하나 (예전 그대로)
             ag.set_multiwindow(mw)
             print(f"[agent] 1단계 다중 창 {ag.mw['grid']}×{ag.mw['grid']} · 간격 {ag.mw['stride']}px · {ag.mw['agg']} · 문턱 {ag.thr:.4f}")
         return ag
+
+    def set_fusion(self, fu: dict | None, root: "str | Path | None" = None) -> None:
+        """1단계를 창 + 검출기 융합으로 바꿉니다 (STEP 59). `{"detector": "<릴리스 안 경로>", "weight": 0.5, "threshold": …, "window": 1080}`.
+
+        문턱은 **융합 점수용**(val 라벨 중심 recall 0.95)이어야 합니다 — 창 하나 문턱을 대면 recall 이 어긋납니다. 없으면 켜지 않고 에러.
+        검출기는 STEP 52 D-FINE(정상을 네모 0개로 같이 배운 것). 입력은 가이드 네모 중심 주변 `window` 정사각(짧은 변 전체).
+        """
+        if not fu:
+            self.fusion = None
+            return
+        need = {"detector", "weight", "threshold"}
+        if not need <= set(fu):
+            raise ValueError(f"fusion 설정에 {sorted(need - set(fu))} 가 없습니다: {fu}")
+        from src.detect_stage1 import DetectorStage1
+
+        dpath = Path(fu["detector"])
+        if not dpath.is_absolute() and root is not None:
+            dpath = Path(root) / dpath
+        det = fu.get("_detector") or DetectorStage1.load(dpath, device="cpu")
+        self.fusion = {"detector": det, "detector_path": str(dpath), "weight": float(fu["weight"]),
+                       "threshold": float(fu["threshold"]), "window": int(fu.get("window", 1080))}
+        self.thr = self.fusion["threshold"]
 
     def set_multiwindow(self, mw: dict | None) -> None:
         """1단계를 다중 창으로 바꿉니다 (STEP 56). `{"grid":3,"stride":160,"agg":"mean","threshold":…}`.
@@ -548,7 +576,20 @@ class ScreeningAgent:
         self.thr = self.mw["threshold"]
 
     def _stage1_abnormal(self, im, bbox, td: Path) -> float:
-        """1단계 이상 확률. 다중 창이면 창마다 자르고 확률을 합칩니다 (STEP 56)."""
+        """1단계 이상 확률. 융합(STEP 59)이면 창 하나 raw p 와 검출기 점수의 가중 평균, 다중 창(STEP 56)이면 창마다 자르고 합칩니다."""
+        if self.fusion:
+            import math
+            p1 = td / "s1.jpg"
+            crop_for(im, bbox, self.tag1).save(p1, quality=95)
+            pc = min(max(float(dict(self.s1.predict(str(p1)).topk).get(self._ab, 0.0)), 1e-6), 1 - 1e-6)
+            T = float(getattr(self.s1, "T", 1.0) or 1.0)
+            p_raw = 1 / (1 + math.exp(-T * math.log(pc / (1 - pc))))          # 보정 전 확률 (판정 도구·문턱과 같은 잣대)
+            w, h = im.size; side = min(w, h, self.fusion["window"])
+            cx, cy = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2) if bbox is not None else (w / 2, h / 2)
+            x0 = int(min(max(cx - side / 2, 0), w - side)); y0 = int(min(max(cy - side / 2, 0), h - side))
+            d_score, _ = self.fusion["detector"].score_and_box(im.crop((x0, y0, x0 + side, y0 + side)))
+            wd = self.fusion["weight"]
+            return float((1 - wd) * p_raw + wd * d_score)
         if not self.mw:
             p1 = td / "s1.jpg"
             crop_for(im, bbox, self.tag1).save(p1, quality=95)
@@ -599,6 +640,7 @@ class ScreeningAgent:
             "stage2_experiments": list(getattr(self, "arm_names", [])),
             "threshold": float(self.thr),
             "stage1_windows": (self.mw["grid"] ** 2) if self.mw else 1,
+            "stage1_fusion": bool(self.fusion),
             "release_dir": str(getattr(self, "release_dir", "") or "") or None,
         }
 
@@ -670,7 +712,7 @@ class ScreeningAgent:
         except Exception as exc:
             return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
 
-        cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0) and not self.mw   # 다중 창 점수는 raw 평균 (보정 전)
+        cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0) and not self.mw and not self.fusion   # 다중 창·융합 점수는 raw (보정 전)
         meta = base_meta(mock=False, tag1=self.tag1, tag2=self.tag2,
                          temperature=getattr(self.s1, "T", 1.0), box=box)
 
@@ -691,6 +733,7 @@ class ScreeningAgent:
         with tempfile.TemporaryDirectory() as td:
             abnormal = self._stage1_abnormal(im, bbox, Path(td))
             meta["stage1_windows"] = (self.mw["grid"] ** 2) if self.mw else 1
+            meta["stage1_fusion"] = bool(self.fusion)
 
             if abnormal < self.thr:
                 pred = Prediction(topk=[(NORMAL_LABEL, 1 - abnormal)],
@@ -832,7 +875,7 @@ class MockAgent:
         return {"stage1_crop": self.tag1, "stage2_crop": self.tag2,
                 "stage2_arms": 1, "stage2_crops": [self.tag2],
                 "stage2_experiments": [], "threshold": float(self.thr),
-                "stage1_windows": 1, "release_dir": None}
+                "stage1_windows": 1, "stage1_fusion": False, "release_dir": None}
 
     def screen(self, image: "str | Path | Any", box=None) -> dict:
         from src.message import Prediction, band, compose_screening_message
