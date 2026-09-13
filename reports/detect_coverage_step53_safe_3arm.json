@@ -1,0 +1,185 @@
+{
+ "n": 3065,
+ "n_lesion": 2479,
+ "conditions": {
+  "label": {
+   "coverage": 0.5223491027732463,
+   "n_said": 1601,
+   "group_acc_lesion": 0.7979023799919323,
+   "stage1_recall": 0.8684953610326744,
+   "stage1_false_alarm": 0.3395904436860068
+  },
+  "user": {
+   "coverage": 0.30864600326264274,
+   "n_said": 946,
+   "group_acc_lesion": 0.7567567567567568,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "center": {
+   "coverage": 0.19771615008156607,
+   "n_said": 606,
+   "group_acc_lesion": 0.6982654296087132,
+   "stage1_recall": 0.6325131101250504,
+   "stage1_false_alarm": 0.3310580204778157
+  },
+  "fixed": {
+   "coverage": 0.29265905383360524,
+   "n_said": 897,
+   "group_acc_lesion": 0.7571601452198468,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "detect": {
+   "coverage": 0.3412724306688418,
+   "n_said": 1046,
+   "group_acc_lesion": 0.7466720451795079,
+   "stage1_recall": 0.8475191609519968,
+   "stage1_false_alarm": 0.5204778156996587
+  },
+  "detect_fixed": {
+   "coverage": 0.2642740619902121,
+   "n_said": 810,
+   "group_acc_lesion": 0.7317466720451795,
+   "stage1_recall": 0.8475191609519968,
+   "stage1_false_alarm": 0.5204778156996587
+  },
+  "uwdetect": {
+   "coverage": 0.19804241435562805,
+   "n_said": 607,
+   "group_acc_lesion": 0.6728519564340459,
+   "stage1_recall": 0.8777732956837434,
+   "stage1_false_alarm": 0.5290102389078498
+  },
+  "user1_detect2": {
+   "coverage": 0.2616639477977161,
+   "n_said": 802,
+   "group_acc_lesion": 0.7466720451795079,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_detect_fixed2": {
+   "coverage": 0.21239804241435561,
+   "n_said": 651,
+   "group_acc_lesion": 0.7317466720451795,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_uwdetect2": {
+   "coverage": 0.15269168026101143,
+   "n_said": 468,
+   "group_acc_lesion": 0.6728519564340459,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_mw1080": {
+   "coverage": 0.2763458401305057,
+   "n_said": 847,
+   "group_acc_lesion": 0.7406212182331585,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_mw800": {
+   "coverage": 0.32137030995106036,
+   "n_said": 985,
+   "group_acc_lesion": 0.7587736990722065,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_mw640": {
+   "coverage": 0.300163132137031,
+   "n_said": 920,
+   "group_acc_lesion": 0.7567567567567568,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  },
+  "user1_multiwin": {
+   "coverage": 0.3461663947797716,
+   "n_said": 1061,
+   "group_acc_lesion": 0.7821702299314239,
+   "stage1_recall": 0.7289229528035498,
+   "stage1_false_alarm": 0.3430034129692833
+  }
+ },
+ "gain": 0.03262642740619903,
+ "span": 0.21370309951060357,
+ "verdict": "구분 불가",
+ "gain_stage2_only": -0.04698205546492662,
+ "gain_multiwin": 0.03752039151712888,
+ "multi_windows": [
+  1080,
+  800,
+  640
+ ],
+ "band_lesion": {
+  "n": 2479,
+  "ratio_median": 1.0231384246245676,
+  "off_median": 0.1028245096193583,
+  "in_size": 0.790641387656313,
+  "in_pos": 0.4901169826542961,
+  "both": 0.3973376361436063,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7051230334812424,
+   "in_pos": 0.13110125050423557,
+   "both": 0.07583703106091166,
+   "off_median": 0.2358223236827755,
+   "size_frac": 0.215
+  }
+ },
+ "band_user_window": {
+  "n": 2479,
+  "ratio_median": 0.5009740591049195,
+  "off_median": 0.07514474052912246,
+  "in_size": 0.14037918515530456,
+  "in_pos": 0.6111335215812828,
+  "both": 0.09963695038321904,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7051230334812424,
+   "in_pos": 0.13110125050423557,
+   "both": 0.07583703106091166,
+   "off_median": 0.2358223236827755,
+   "size_frac": 0.215
+  }
+ },
+ "stage1_candidates": null,
+ "band_all": {
+  "n": 3065,
+  "ratio_median": 1.018250744920942,
+  "off_median": 0.12942581509104578,
+  "in_size": 0.7983686786296901,
+  "in_pos": 0.42153344208809135,
+  "both": 0.3432300163132137,
+  "band": [
+   0.7142857142857143,
+   1.6666666666666667
+  ],
+  "center_max": 0.1,
+  "baseline": {
+   "in_size": 0.7615008156606852,
+   "in_pos": 0.11941272430668842,
+   "both": 0.07471451876019576,
+   "off_median": 0.24025370963850612,
+   "size_frac": 0.215
+  }
+ },
+ "arms": [
+  "stage2_convnextv2_base_m2.5_384_n121k_moderate",
+  "stage2_effnetv2_s_f320_384_moderate",
+  "stage2_effnetv2_s_m2.5_384_moderate_safe0.42"
+ ],
+ "stage1": "stage1_effnetv2_s_f320_384_n233k_moderate_photometric",
+ "threshold_raw": 0.1466064453125,
+ "detector": "/Users/gayeon/deeplearning_test/data/work/detect_step50/detect_best.pt",
+ "detector_kind": "boxhead",
+ "seed": 31
+}
