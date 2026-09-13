@@ -538,6 +538,32 @@ check("multiwindow 를 켜면 문턱이 평균용으로 바뀐다", _f.mw["grid"
 _f.set_multiwindow(None)
 check("끄면 창 하나로 돌아간다", _f.mw is None)
 
+# raw 역변환: 보정 확률 → raw 확률이 정확한가 (창 평균은 raw 로 냅니다)
+class _E56:
+    T = 0.9225
+    classes = ["A7", "이상"]
+    def predict_batch(self, paths):
+        import math, types
+        out = []
+        for i, _ in enumerate(paths):
+            d = [-2.0, 0.0, 1.5][i % 3]                 # raw logit 차
+            pc = 1 / (1 + math.exp(-d / self.T))         # Engine 이 주는 보정 확률
+            out.append(types.SimpleNamespace(topk=[("이상", pc), ("A7", 1 - pc)]))
+        return out
+    def predict(self, path):
+        return self.predict_batch([path])[0]
+class _FakeAg2(agent.ScreeningAgent):
+    def __init__(self):
+        self.s1 = _E56(); self._ab = "이상"; self.tag1 = "f320"; self.thr = 0.1; self.mw = None
+_g = _FakeAg2(); _g.set_multiwindow({"grid": 3, "stride": 160, "agg": "mean", "threshold": 0.1})
+import tempfile as _tf56, math as _m56
+from PIL import Image as _Im56
+with _tf56.TemporaryDirectory() as _td:
+    _im = _Im56.new("RGB", (1920, 1080), (120, 120, 120))
+    _v = _g._stage1_abnormal(_im, [900, 500, 1000, 600], Path(_td))
+_expect = sum(1/(1+_m56.exp(-d)) for d in [-2.0, 0.0, 1.5]*3) / 9
+check("다중 창 점수는 raw 확률의 평균 (보정 역변환 정확)", abs(_v - _expect) < 1e-6, f"{_v:.6f} vs {_expect:.6f}")
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)

@@ -559,7 +559,18 @@ class ScreeningAgent:
             pj = td / f"s1_{j}.jpg"
             crop_for(im, [cx - 1, cy - 1, cx + 1, cy + 1], self.tag1).save(pj, quality=95)   # f320 은 중심만 씁니다
             paths.append(str(pj))
-        ps = sorted(float(dict(pr.topk).get(self._ab, 0.0)) for pr in self.s1.predict_batch(paths))
+        # ⚠️ 판정 도구(tools/stage1_multiwindow*.py)와 문턱은 **온도 보정 전(raw)** 확률로 평균을 냅니다.
+        #    Engine 은 보정된 확률(softmax(logit/T))을 주므로 창마다 raw 로 되돌린 뒤 평균합니다 —
+        #    2클래스에서 p_cal = sigmoid(d/T) 이므로 d = T·logit(p_cal), p_raw = sigmoid(d) (정확한 역변환).
+        #    보정된 확률의 평균에 raw 문턱을 대면 recall 이 조용히 어긋납니다.
+        import math
+        T = float(getattr(self.s1, "T", 1.0) or 1.0)
+        ps = []
+        for pr in self.s1.predict_batch(paths):
+            pc = min(max(float(dict(pr.topk).get(self._ab, 0.0)), 1e-6), 1 - 1e-6)
+            d = T * math.log(pc / (1 - pc))
+            ps.append(1 / (1 + math.exp(-d)))
+        ps.sort()
         if self.mw["agg"] == "top3":
             ps = ps[-3:]
         return float(sum(ps) / len(ps))
@@ -656,7 +667,7 @@ class ScreeningAgent:
         except Exception as exc:
             return contract("retake", meta={"error": f"이미지를 열 수 없습니다: {exc}"})
 
-        cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0)
+        cal1 = getattr(self.s1, "T", 1.0) not in (None, 1.0) and not self.mw   # 다중 창 점수는 raw 평균 (보정 전)
         meta = base_meta(mock=False, tag1=self.tag1, tag2=self.tag2,
                          temperature=getattr(self.s1, "T", 1.0), box=box)
 
