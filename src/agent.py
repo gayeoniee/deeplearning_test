@@ -541,8 +541,8 @@ class ScreeningAgent:
         need = {"grid", "stride", "agg", "threshold"}
         if not need <= set(mw):
             raise ValueError(f"multiwindow 설정에 {sorted(need - set(mw))} 가 없습니다: {mw}")
-        if mw["agg"] not in ("mean", "top3"):
-            raise ValueError(f"agg 는 mean|top3: {mw['agg']}")
+        if mw["agg"] not in ("mean", "top3", "cmax"):
+            raise ValueError(f"agg 는 mean|top3|cmax: {mw['agg']}")
         self.mw = {"grid": int(mw["grid"]), "stride": int(mw["stride"]), "agg": str(mw["agg"]),
                    "threshold": float(mw["threshold"])}
         self.thr = self.mw["threshold"]
@@ -570,6 +570,9 @@ class ScreeningAgent:
             pc = min(max(float(dict(pr.topk).get(self._ab, 0.0)), 1e-6), 1 - 1e-6)
             d = T * math.log(pc / (1 - pc))
             ps.append(1 / (1 + math.exp(-d)))
+        if self.mw["agg"] == "cmax":                 # max(중심 창, 9창 평균) — 중심이 정확할 때의 증거를 희석하지 않음
+            center = ps[len(ps) // 2]
+            return float(max(center, sum(ps) / len(ps)))
         ps.sort()
         if self.mw["agg"] == "top3":
             ps = ps[-3:]

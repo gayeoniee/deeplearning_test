@@ -288,6 +288,9 @@ def main() -> None:
         # ★ STEP 56 — 1단계 점수 = 사용자 중심 3×3 창 평균 (STEP 55 후보). 2단계는 지금대로(user) / 창 셋 평균(multiwin)
         P1MW = torch.cat(res["s1mw"]["p1"]).numpy().reshape(-1, S1MW_N*S1MW_N)[:len(y)]
         p1mw_mean, p1mw_top3 = P1MW.mean(1), np.sort(P1MW, 1)[:, -3:].mean(1)
+        p1mw_cmax = np.maximum(P1MW[:, (S1MW_N*S1MW_N)//2], p1mw_mean)          # max(중심 창, 평균)
+        out["s1mw_cmax_user2"] = coverage("user", "user", p1_override=p1mw_cmax)
+        out["s1mw_cmax_label2"] = coverage("label", "label", p1_override=p1mw_cmax)   # 참고: 라벨 네모 2단계 (1단계 창은 사용자 중심 기준)
         out["s1mw_mean_user2"] = coverage("user", "user", p1_override=p1mw_mean)
         out["s1mw_top3_user2"] = coverage("user", "user", p1_override=p1mw_top3)
         out["s1mw_mean_multiwin2"] = coverage("user", MW, p1_override=p1mw_mean)
@@ -319,7 +322,7 @@ def main() -> None:
     band_les = band_report(np.asarray(det_pred)[lesion], np.asarray(det_true)[lesion])
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)")
     print(f"    {'조건':14}{'커버리지':>10}{'장수':>8}{'계열정확도(병변)':>16}{'1단계 recall':>14}{'헛알림':>8}")
-    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", *[f"user1_mw{w}" for w in MULTI_WINDOWS], "user1_multiwin", "s1mw_mean_user2", "s1mw_top3_user2", "s1mw_mean_multiwin2", "s1mw_mean_label2", "det1_user2", "det1_detect2"] if k in out]:
+    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", *[f"user1_mw{w}" for w in MULTI_WINDOWS], "user1_multiwin", "s1mw_cmax_user2", "s1mw_mean_user2", "s1mw_top3_user2", "s1mw_mean_multiwin2", "s1mw_mean_label2", "s1mw_cmax_label2", "det1_user2", "det1_detect2"] if k in out]:
         o = out[c]
         print(f"    {c:20}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
     gain = out["detect"]["coverage"] - out["user"]["coverage"]
@@ -330,6 +333,7 @@ def main() -> None:
     if a.stage1_multiwin:
         g = out["s1mw_mean_user2"]["coverage"] - out["user"]["coverage"]
         print(f"\n■ ★ STEP 56 — 1단계 3×3 평균 (raw 문턱 그대로): s1mw_mean_user2 − user = {g:+.1%}p  (관문: ≥ −2%p, 1단계 recall/헛알림은 문턱 재산정 전이라 참고만)")
+        print(f"    ★ cmax=max(중심,평균): user {out['s1mw_cmax_user2']['coverage'] - out['user']['coverage']:+.1%}p · label {out['s1mw_cmax_label2']['coverage'] - out['label']['coverage']:+.1%}p")
         print(f"    top3: {out['s1mw_top3_user2']['coverage'] - out['user']['coverage']:+.1%}p · +창 셋 평균 2단계: {out['s1mw_mean_multiwin2']['coverage'] - out['user']['coverage']:+.1%}p · 라벨 네모 2단계: {out['s1mw_mean_label2']['coverage'] - out['label']['coverage']:+.1%}p (vs label)")
     span = out["label"]["coverage"] - out["user"]["coverage"]
     print(f"\n■ ★ 관문: detect − user = {gain:+.1%}p  (문턱 +{DETECT_MIN_COVERAGE_GAIN:.0%})  "

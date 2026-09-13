@@ -136,13 +136,15 @@ def main() -> None:
     flush()
     y = np.asarray(truth); les = y != "A7"
     print(f"\n■ 표본 {len(y):,}장 (병변 {int(les.sum()):,}) · {(time.perf_counter()-t0)/60:.1f}분")
-    S = {}
+    S, RAW = {}, {}
     for c in ("label_single", "label_mw", "user_single", "user_mw"):
         arr = np.array([[per[i][c][j] for j in sorted(per[i][c])] for i in range(len(y))])
+        RAW[c] = arr                                   # 창별 raw 확률 — 합치기 방식 탐색용으로 npz 에 그대로 남깁니다
         if c.endswith("_single"):
             S[c] = arr[:, 0]
         else:
             S[c + "_mean"], S[c + "_top3"] = arr.mean(1), np.sort(arr, 1)[:, -3:].mean(1)
+            S[c + "_cmax"] = np.maximum(arr[:, arr.shape[1] // 2], arr.mean(1))   # max(중심 창, 평균) — 중심이 정확하면 그 증거를 안 희석
 
     def thr_at_recall(v, target=0.95):
         pos = np.sort(v[les])[::-1]
@@ -160,7 +162,7 @@ def main() -> None:
         thr = json.loads(a.thr.read_text())["thresholds"]
     res = {}
     for k, v in S.items():
-        base = "label_single" if k == "label_single" else ("label_mw_mean" if k.endswith("_mean") else ("label_mw_top3" if k.endswith("_top3") else "label_single"))
+        base = "label_single" if k == "label_single" else ("label_mw_mean" if k.endswith("_mean") else ("label_mw_top3" if k.endswith("_top3") else ("label_mw_cmax" if k.endswith("_cmax") else "label_single")))
         res[k] = report(v, thr[base])
         if k == "label_single":
             res["label_single@deployed_raw"] = report(v, t_raw)
@@ -168,13 +170,16 @@ def main() -> None:
     print(f"    {'점수':26}{'AUROC':>8}{'문턱':>9}{'recall':>9}{'헛알림':>9}")
     for k, v in res.items():
         print(f"    {k:26}{v['auroc']:>8.4f}{v['threshold']:>9.4f}{v['recall']:>9.1%}{v['false_alarm']:>9.1%}")
-    d_auroc = res["label_mw_mean"]["auroc"] - res["label_single"]["auroc"]
-    d_sens = (res["label_single"]["recall"] - res["user_single"]["recall"]) - (res["label_mw_mean"]["recall"] - res["user_mw_mean"]["recall"])
-    print(f"\n    라벨 중심 AUROC 차(mw_mean − single) {d_auroc:+.4f} · 위치 민감도 감소(single − mw_mean, recall 차이) {d_sens:+.1%}p")
+    for agg in ("mean", "top3", "cmax"):
+        d_auroc = res[f"label_mw_{agg}"]["auroc"] - res["label_single"]["auroc"]
+        d_sens = (res["label_single"]["recall"] - res["user_single"]["recall"]) - (res[f"label_mw_{agg}"]["recall"] - res[f"user_mw_{agg}"]["recall"])
+        d_fa = res[f"user_mw_{agg}"]["false_alarm"] - res["user_single"]["false_alarm"]
+        d_rec = res[f"user_mw_{agg}"]["recall"] - res["user_single"]["recall"]
+        print(f"    [{agg:4}] 라벨 중심 AUROC 차 {d_auroc:+.4f} · 위치 민감도 감소 {d_sens:+.1%}p · 사용자 중심 recall {d_rec:+.1%}p / 헛알림 {d_fa:+.1%}p")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps({"split": a.split, "n": int(len(y)), "n_lesion": int(les.sum()), "thresholds": thr, "results": res,
                                     "stage1": s1.name, "seed": a.seed}, ensure_ascii=False, indent=1))
-    np.savez_compressed(out_path.with_suffix(".npz"), y=y, **S)
+    np.savez_compressed(out_path.with_suffix(".npz"), y=y, **S, **{k + "_win": v for k, v in RAW.items()})
     print(f"원본: {out_path}")
 
 

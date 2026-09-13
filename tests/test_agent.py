@@ -564,6 +564,12 @@ with _tf56.TemporaryDirectory() as _td:
 _expect = sum(1/(1+_m56.exp(-d)) for d in [-2.0, 0.0, 1.5]*3) / 9
 check("다중 창 점수는 raw 확률의 평균 (보정 역변환 정확)", abs(_v - _expect) < 1e-6, f"{_v:.6f} vs {_expect:.6f}")
 
+_g.set_multiwindow({"grid": 3, "stride": 160, "agg": "cmax", "threshold": 0.1})
+with _tf56.TemporaryDirectory() as _td:
+    _v2 = _g._stage1_abnormal(_im, [900, 500, 1000, 600], Path(_td))
+_raw = [1/(1+_m56.exp(-d)) for d in [-2.0, 0.0, 1.5]*3]
+check("cmax = max(중심 창, 평균) (중심 = 5번째 창)", abs(_v2 - max(_raw[4], sum(_raw)/9)) < 1e-6, f"{_v2:.6f}")
+
 print("\n" + "=" * 60)
 print(f" 통과 {ok} / {ok + fail}")
 sys.exit(1 if fail else 0)
