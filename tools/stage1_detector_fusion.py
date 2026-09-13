@@ -142,7 +142,16 @@ def main() -> None:
     print(f"\n■ ★ STEP 58 · {a.split} · 창 하나 + 검출기 융합 (문턱 = val 라벨 중심 recall 0.95)")
     print(f"    {'점수':20}{'AUROC':>8}{'문턱':>9}{'recall':>9}{'헛알림':>9}")
     for k, v in res.items():
-        print(f"    {k:20}{v['auroc']:>8.4f}{v['threshold']:>9.4f}{v['recall']:>9.1%}{v['false_alarm']:>9.1%}")
+        if "auroc" in v:
+            print(f"    {k:20}{v['auroc']:>8.4f}{v['threshold']:>9.4f}{v['recall']:>9.1%}{v['false_alarm']:>9.1%}")
+    # STEP 59 관문 B: 사용자 흉내 recall 차이의 짝지은 부트스트랩 95% CI (같은 병변 사진을 다시 뽑음)
+    rng_b = np.random.default_rng(0); idx = np.flatnonzero(les)
+    t_s, t_f = thr["label_single"], thr["label_fuse_mean"]
+    hit_s, hit_f = (S["user_single"][idx] >= t_s).astype(float), (S["user_fuse_mean"][idx] >= t_f).astype(float)
+    diffs = [(hit_f[b] - hit_s[b]).mean() for b in (rng_b.integers(0, len(idx), len(idx)) for _ in range(1000))]
+    ci = (float(np.percentile(diffs, 2.5)), float(np.percentile(diffs, 97.5)))
+    res["user_recall_gain_ci95"] = {"gain": float((hit_f - hit_s).mean()), "lo": ci[0], "hi": ci[1]}
+    print(f"    사용자 recall 차(fuse_mean − single) {res['user_recall_gain_ci95']['gain']:+.1%}p · 95% CI [{ci[0]:+.1%}, {ci[1]:+.1%}]  (STEP 59 관문: ≥ +2%p 이고 하한 > 0)")
     for agg in ("fuse_mean", "fuse_rank"):
         dA = res[f"label_{agg}"]["auroc"] - res["label_single"]["auroc"]; dFA_l = res[f"label_{agg}"]["false_alarm"] - res["label_single"]["false_alarm"]
         dR = res[f"user_{agg}"]["recall"] - res["user_single"]["recall"]; dFA_u = res[f"user_{agg}"]["false_alarm"] - res["user_single"]["false_alarm"]
