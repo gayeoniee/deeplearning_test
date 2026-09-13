@@ -1,0 +1,26 @@
+# STEP 57 — 1단계 다중 창 합치기 `cmax` (= max(중심 창, 3×3 평균)) · holdout 사전등록 (2026-09-13 15:10, holdout 열기 전)
+
+> STEP 56 ②(val 1차)에서 `mean`·`top3` 가 **라벨 중심 조건을 깨뜨려**(AUROC −0.097) 관문 A 미달. 창별 점수를 저장해 둔 프록시(STEP 55 npz)에서
+> 합치기 방식을 탐색하니 **중심 창 증거를 희석하지 않는 `cmax`** 만 두 조건을 다 지켰습니다(라벨 AUROC 0.8483 vs 창 하나 0.8477 · 사용자 헛알림 −5.3%p).
+> val 2차(원본 사진, 창별 점수)에서 같은 표를 확인한 뒤 **holdout 은 `cmax` 하나로 한 번만** 엽니다. 이 문서는 holdout 을 보기 전에 씁니다.
+
+## 점수 정의
+
+사용자 네모 중심 주변 3×3 창(간격 160px, 320px 창, 학습 픽셀 공간) 각각의 1단계 raw 이상 확률 p_1..p_9 (p_5 = 중심 창).
+`cmax = max(p_5, mean(p_1..p_9))`. 중심이 정확하면 p_5 가 크므로 그대로 쓰이고, 중심이 어긋나면 이웃 평균이 받쳐 줍니다.
+문턱: val 2차에서 **라벨 중심 cmax 의 recall 0.95** 로 뽑은 값(`reports/stage1_multiwindow_val.json` → `label_mw_cmax`).
+
+## 관문 (holdout 5,000장 seed 7, 같은 사진에서 창 하나와 나란히)
+
+| | 값 | 근거 |
+|---|---|---|
+| **A 상한 조건 유지** | 라벨 중심 `label_mw_cmax` AUROC ≥ `label_single` AUROC − 0.01 · recall(각자 val 문턱) ≥ single − 0.01 · 헛알림 ≤ single + 2%p | 네모가 정확한 사진에서 잃으면 안 됨(holdout 0.9304 의 조건) |
+| **B 보호자 조건 개선** | 사용자 흉내 중심 `user_mw_cmax` recall ≥ `user_single` recall **+5%p** 이고 헛알림 ≤ `user_single` + 2%p | STEP 55 의 이득이 holdout 원본에서도 남아야 함 |
+| 찍기만 | 위치 민감도(라벨 − 사용자 recall) single vs cmax · `mean`/`top3`(STEP 56 관문으로 이미 미달, 참고) · 2단계 3팔 커버리지(STEP 56 ①, `s1mw_cmax_user2 − user ≥ −2%p`) |
+
+판정: **후보**(A·B·① 통과 → 배선·릴리스 `v2`) / 구분 불가 / 기각. holdout 을 보고 문턱·합치기 방식을 바꾸지 않습니다 —
+바꾸고 싶으면 다시 사전등록하고, 그때 holdout 은 이미 한 번 본 것으로 적습니다.
+
+## 실측
+
+*(결과 나오면 여기에.)*
