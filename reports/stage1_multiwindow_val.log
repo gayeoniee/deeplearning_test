@@ -1,0 +1,28 @@
+[측정] 사람 네모 긴 변 49.7%~70.0% · 중심 이탈 중앙값 0.161  (n=40)
+■ val 63,617행 중 5,000장 · 정상 49.3%
+■ 1단계 stage1_effnetv2_s_f320_384_n233k_moderate_photometric · 배포 raw 문턱 0.1466 · mps
+   500/5,000  8.2분
+   1,000/5,000  16.4분
+   1,500/5,000  24.7분
+   2,000/5,000  32.9분
+   2,500/5,000  41.1분
+   3,000/5,000  49.3분
+   3,500/5,000  57.5분
+   4,000/5,000  65.6분
+   4,500/5,000  73.9분
+   5,000/5,000  82.1분
+
+■ 표본 5,000장 (병변 2,536) · 82.1분
+
+■ ★ STEP 56 · val · 문턱 val 에서 새로 (recall 0.95)
+    점수                           AUROC       문턱   recall      헛알림
+    label_single                0.9221   0.0816    95.0%    38.5%
+    label_single@deployed_raw   0.9221   0.1466    91.3%    25.6%
+    label_mw_mean               0.8251   0.1421    95.0%    59.3%
+    label_mw_top3               0.8299   0.2901    95.0%    59.6%
+    user_single                 0.7787   0.0816    83.9%    45.7%
+    user_mw_mean                0.8005   0.1421    94.0%    58.4%
+    user_mw_top3                0.8066   0.2901    93.9%    58.7%
+
+    라벨 중심 AUROC 차(mw_mean − single) -0.0970 · 위치 민감도 감소(single − mw_mean, recall 차이) +10.1%p
+원본: /Users/gayeon/orca/workspaces/deeplearning_test/bristlemouth/reports/stage1_multiwindow_val.json
