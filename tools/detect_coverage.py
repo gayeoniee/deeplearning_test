@@ -54,6 +54,7 @@ def main() -> None:
     ap.add_argument("--detector-kind", choices=["boxhead", "dfine"], default="boxhead")
     ap.add_argument("--detector-stage1", action="store_true", help="검출기 최고 점수를 1단계 점수로도 잽니다 (STEP 52, dfine 만)")
     ap.add_argument("--n", type=int, default=2500)
+    ap.add_argument("--stage1-multiwin", action="store_true", help="STEP 56: 1단계 점수를 사용자 중심 3×3(간격 160) 창 평균으로 바꿔 2단계 커버리지를 다시 잽니다")
     ap.add_argument("--seed", type=int, default=31)
     ap.add_argument("--batch", type=int, default=24)
     ap.add_argument("--release", type=Path, default=RELEASE)
@@ -169,6 +170,9 @@ def main() -> None:
     MW = [f"mw{w}" for w in MULTI_WINDOWS]
     res = {c: {"p1": [], "p2": []} for c in list(CONDS) + MW}
     buf = {(c, k): [] for c in list(CONDS) + MW for k in range(1+len(net2))}
+    if a.stage1_multiwin:                      # STEP 56: 사용자 중심 3×3 창 9개 (k=0 이라 1단계 모델로 흐름)
+        res["s1mw"] = {"p1": [], "p2": []}; buf[("s1mw", 0)] = []
+    S1MW_N, S1MW_STRIDE = 3, 160
     truth, det_pred, det_true, det_scores, uw_pred = [], [], [], [], []
     t0 = time.perf_counter()
 
@@ -229,11 +233,16 @@ def main() -> None:
                 for k, (_, tag) in enumerate(net2, start=1):
                     win = crop.crop_window({"bbox": None, "img_w": w, "img_h": w}, tag=tag, cfg=cfg)
                     pending[(f"mw{w}", k)] = tf(sub.crop(tuple(int(v) for v in win)))
+        if pending is not None and a.stage1_multiwin:
+            off = [(i - (S1MW_N-1)/2) * S1MW_STRIDE for i in range(S1MW_N)]
+            for j, (dy, dx) in enumerate([(dy, dx) for dy in off for dx in off]):
+                cx = min(max(ucx + dx, 160), W - 160); cy = min(max(ucy + dy, 160), W - 160)
+                pending[("s1mw", 0, j)] = tf(im.crop((int(cx-160), int(cy-160), int(cx+160), int(cy+160))))
         if pending is None:               # 조건 하나라도 창을 못 만들면 그 사진은 전 조건에서 뺍니다
             det_pred.pop(); det_true.pop(); det_scores.pop(); uw_pred.pop()
             continue
         for key, x in pending.items():
-            buf[key].append(x)
+            buf[key[:2]].append(x)
         truth.append(r.label)
         if len(buf[("label", 0)]) >= a.batch:
             flush()
@@ -275,6 +284,14 @@ def main() -> None:
     for w in MULTI_WINDOWS:                                          # 창 하나씩
         out[f"user1_mw{w}"] = coverage("user", f"mw{w}")
     out["user1_multiwin"] = coverage("user", MW)                     # ★ STEP 54: 창 셋 평균 (3팔 × 3창 = 9 확률 평균)
+    if a.stage1_multiwin:
+        # ★ STEP 56 — 1단계 점수 = 사용자 중심 3×3 창 평균 (STEP 55 후보). 2단계는 지금대로(user) / 창 셋 평균(multiwin)
+        P1MW = torch.cat(res["s1mw"]["p1"]).numpy().reshape(-1, S1MW_N*S1MW_N)[:len(y)]
+        p1mw_mean, p1mw_top3 = P1MW.mean(1), np.sort(P1MW, 1)[:, -3:].mean(1)
+        out["s1mw_mean_user2"] = coverage("user", "user", p1_override=p1mw_mean)
+        out["s1mw_top3_user2"] = coverage("user", "user", p1_override=p1mw_top3)
+        out["s1mw_mean_multiwin2"] = coverage("user", MW, p1_override=p1mw_mean)
+        out["s1mw_mean_label2"] = coverage("label", "label", p1_override=p1mw_mean)   # 참고: 라벨 네모 2단계 + 다중창 1단계
     band_uw = band_report(np.asarray(uw_pred)[lesion], np.asarray(det_true)[lesion])
     stage1 = None
     if a.detector_stage1 and not np.isnan(det_scores).all():
@@ -302,7 +319,7 @@ def main() -> None:
     band_les = band_report(np.asarray(det_pred)[lesion], np.asarray(det_true)[lesion])
     print("\n■ 계열 4군 커버리지 (오답률 20% 목표, 헛알림 포함) · 1단계 recall (raw 문턱)")
     print(f"    {'조건':14}{'커버리지':>10}{'장수':>8}{'계열정확도(병변)':>16}{'1단계 recall':>14}{'헛알림':>8}")
-    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", *[f"user1_mw{w}" for w in MULTI_WINDOWS], "user1_multiwin", "det1_user2", "det1_detect2"] if k in out]:
+    for c in list(CONDS) + [k for k in ["user1_detect2", "user1_detect_fixed2", "user1_uwdetect2", *[f"user1_mw{w}" for w in MULTI_WINDOWS], "user1_multiwin", "s1mw_mean_user2", "s1mw_top3_user2", "s1mw_mean_multiwin2", "s1mw_mean_label2", "det1_user2", "det1_detect2"] if k in out]:
         o = out[c]
         print(f"    {c:20}{o['coverage']:>10.1%}{o['n_said']:>8,}{o['group_acc_lesion']:>16.1%}{o['stage1_recall']:>14.1%}{o['stage1_false_alarm']:>8.1%}")
     gain = out["detect"]["coverage"] - out["user"]["coverage"]
@@ -310,6 +327,10 @@ def main() -> None:
     gain_mw = out["user1_multiwin"]["coverage"] - out["user"]["coverage"]
     print(f"\n■ ★ STEP 54 다중 창(사용자 중심 {MULTI_WINDOWS}, 2단계 확률 평균, 재학습 0): user1_multiwin − user = {gain_mw:+.1%}p  (관문 +5%p)")
     print(f"\n■ ★ 배선 '검출기는 2단계에만' (1단계는 사용자 중심 그대로): user1_detect2 − user = {gain2:+.1%}p")
+    if a.stage1_multiwin:
+        g = out["s1mw_mean_user2"]["coverage"] - out["user"]["coverage"]
+        print(f"\n■ ★ STEP 56 — 1단계 3×3 평균 (raw 문턱 그대로): s1mw_mean_user2 − user = {g:+.1%}p  (관문: ≥ −2%p, 1단계 recall/헛알림은 문턱 재산정 전이라 참고만)")
+        print(f"    top3: {out['s1mw_top3_user2']['coverage'] - out['user']['coverage']:+.1%}p · +창 셋 평균 2단계: {out['s1mw_mean_multiwin2']['coverage'] - out['user']['coverage']:+.1%}p · 라벨 네모 2단계: {out['s1mw_mean_label2']['coverage'] - out['label']['coverage']:+.1%}p (vs label)")
     span = out["label"]["coverage"] - out["user"]["coverage"]
     print(f"\n■ ★ 관문: detect − user = {gain:+.1%}p  (문턱 +{DETECT_MIN_COVERAGE_GAIN:.0%})  "
           f"· 메울 수 있던 폭 {span:.1%}p 중 {gain/span if span > 0 else 0:.0%} 회복")
@@ -331,7 +352,7 @@ def main() -> None:
     a.out.write_text(json.dumps({"n": int(len(y)), "n_lesion": int(lesion.sum()), "conditions": out, "gain": gain, "span": span,
                                  "verdict": verdict, "gain_stage2_only": gain2, "gain_multiwin": gain_mw, "multi_windows": list(MULTI_WINDOWS), "band_lesion": band_les, "band_user_window": band_uw, "stage1_candidates": stage1, "band_all": band,
                                  "arms": [d.name for d in s2s], "stage1": s1.name, "threshold_raw": t1,
-                                 "detector": str(a.detector), "detector_kind": a.detector_kind, "seed": a.seed}, ensure_ascii=False, indent=1))
+                                 "detector": str(a.detector), "detector_kind": a.detector_kind, "seed": a.seed, "stage1_multiwin": bool(a.stage1_multiwin)}, ensure_ascii=False, indent=1))
     print(f"원본: {a.out}")
 
 
